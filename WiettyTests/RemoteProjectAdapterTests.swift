@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import ItermplexShared
+import WiettyShared
 @testable import Wietty
 
 /// Minimal `GitInfoProviding` fake for the round trip test below. Distinct from

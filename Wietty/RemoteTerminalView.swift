@@ -1,6 +1,6 @@
 import SwiftUI
 import SwiftTerm
-import ItermplexShared
+import WiettyShared
 
 /// Hosts a SwiftTerm `TerminalView` (AppKit) wired to a `RemoteTerminalConnection`
 /// for one remote session: incoming VT bytes feed the terminal, incoming resizes

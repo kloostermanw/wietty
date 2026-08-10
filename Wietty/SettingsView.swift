@@ -1,5 +1,5 @@
 import SwiftUI
-import ItermplexShared
+import WiettyShared
 
 struct SettingsView: View {
     @Bindable var store: ProjectStore

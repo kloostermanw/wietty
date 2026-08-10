@@ -1,5 +1,5 @@
 import SwiftUI
-import ItermplexShared
+import WiettyShared
 
 @main
 struct WiettyApp: App {

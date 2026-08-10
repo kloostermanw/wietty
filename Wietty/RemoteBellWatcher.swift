@@ -1,5 +1,5 @@
 import Foundation
-import ItermplexShared
+import WiettyShared
 
 /// A remote session that is asking for attention, with what a notification needs
 /// to say about it.

@@ -16,9 +16,9 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     from: "1.2.0"
-  ItermplexShared:
-    url: https://github.com/kloostermanw/itermplex-shared
-    from: "0.2.0"
+  WiettyShared:
+    url: https://github.com/kloostermanw/wietty-shared
+    from: "0.4.0"
   # The libghostty embedding API is explicitly unstable: pin exactly, never a range.
   #
   # Unconditional on the app target on purpose, even though it is the largest
@@ -48,8 +48,8 @@ targets:
         product: HummingbirdWebSocket
       - package: SwiftTerm
         product: SwiftTerm
-      - package: ItermplexShared
-        product: ItermplexShared
+      - package: WiettyShared
+        product: WiettyShared
       - package: GhosttyKit
         product: GhosttyKit
       - target: wietty-pty

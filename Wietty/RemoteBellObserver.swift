@@ -1,6 +1,6 @@
 import Foundation
 import Combine
-import ItermplexShared
+import WiettyShared
 
 /// Watches every connected Mac's snapshots for bells.
 ///

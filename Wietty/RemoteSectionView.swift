@@ -1,5 +1,5 @@
 import SwiftUI
-import ItermplexShared
+import WiettyShared
 
 /// One remote connection's sidebar section: a header, a status line while the connection
 /// is not up, and otherwise the same `WorkspaceCardView` the local section uses.

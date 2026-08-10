@@ -1,5 +1,5 @@
 import SwiftUI
-import ItermplexShared
+import WiettyShared
 
 /// The bar across the top of the window's right half, above the pane.
 ///

@@ -1,5 +1,5 @@
 import Foundation
-import ItermplexShared
+import WiettyShared
 
 /// The decoded remote state in the shape the local UI consumes.
 struct DecodedRemoteWorkspaces: Equatable {

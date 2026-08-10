@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import ItermplexShared
+import WiettyShared
 @testable import Wietty
 
 /// What a bell notification carries, and what tapping it routes to.

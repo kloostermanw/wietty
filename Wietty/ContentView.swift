@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import ItermplexShared
+import WiettyShared
 
 struct ContentView: View {
     let store: ProjectStore
