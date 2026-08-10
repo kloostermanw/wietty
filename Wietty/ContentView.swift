@@ -1,0 +1,541 @@
+import SwiftUI
+import AppKit
+import ItermplexShared
+
+struct ContentView: View {
+    let store: ProjectStore
+    let terminals: TerminalStack
+    @ObservedObject var remoteConnections: RemoteConnectionsStore
+    @ObservedObject var remoteWorkspaces: RemoteWorkspacesController
+    let bells: BellNotifier
+    @Environment(\.openWindow) private var openWindow
+    @State private var mcpHost: MCPServerHost?
+    @State private var remoteServer: RemoteServer?
+    @State private var isBusy = false
+    @State private var renameTarget: (project: Project, ref: TerminalRef)?
+    @State private var renameText = ""
+    /// The workspace being renamed, and the name typed for it. Held here rather
+    /// than on the card because the alert is the window's, not the row's.
+    @State private var workspaceRenameTarget: Project?
+    @State private var workspaceRenameText = ""
+    @State private var sections = SectionCollapseState()
+    @State private var remoteCardCollapsed: Set<UUID> = []
+    /// The local terminal the pane shows, mirrored from `GhosttyService` so a
+    /// selection it makes redraws the pane. Nil on the other two substrates, where
+    /// nothing reads it.
+    @State private var selectedTerminal: String?
+    /// What is covering the local terminal in the pane, if anything: a remote
+    /// session or a process log. One value, so picking either replaces the other and
+    /// nothing has to remember to clear it.
+    @State private var paneOverride: PaneOverride?
+    /// The sidebar's live width while the divider is being dragged, and nil until
+    /// one has been.
+    ///
+    /// Separate from `store.sidebarWidth`, which is the persisted value: a drag
+    /// moves this on every frame and writes the store once, on release, so one drag
+    /// is one `UserDefaults` write rather than hundreds. Nil rather than seeded,
+    /// because a `@State` initial value cannot read `store` and seeding it from
+    /// `.task` would lay the first frame out at the wrong width, before the hook
+    /// runs. Falling back to the store on read has neither problem.
+    @State private var sidebarWidth: Double?
+    /// The width the current drag started from, so the gesture offsets a fixed
+    /// origin instead of accumulating rounding on every frame.
+    @State private var dragStartWidth: Double?
+    /// Watches connected Macs for bells. Held here so its Combine subscriptions live
+    /// as long as the window, and built once in `task`.
+    @State private var remoteBells: RemoteBellObserver?
+
+    var body: some View {
+        // Not `HSplitView`. It handed the surplus to the sidebar as the window
+        // grew, so widening the window widened the workspace list and left the
+        // terminal pinned at its minimum, and it exposes neither a binding nor an
+        // autosave name for the divider. An explicit sidebar width fixes both: the
+        // sidebar is rigid, so the pane is the only flexible half and absorbs every
+        // resize, and the number is ours to persist.
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                sidebar
+                    .frame(width: SidebarWidth.clamped(desired: liveSidebarWidth.wrappedValue,
+                                                       totalWidth: geometry.size.width))
+                SidebarDivider(width: liveSidebarWidth,
+                               dragStart: $dragStartWidth,
+                               totalWidth: geometry.size.width,
+                               onCommit: { store.sidebarWidth = $0 })
+                // The bar belongs to the right column, not to the window: only the
+                // divider is to its left, so the sidebar keeps the full height.
+                VStack(spacing: 0) {
+                    NavBarView(store: store, remoteWorkspaces: remoteWorkspaces,
+                               selection: paneSelection)
+                    Divider()
+                    RightTerminalView(store: store, stack: terminals.ghostty,
+                                      remoteConnections: remoteConnections,
+                                      selection: paneSelection)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        // `GeometryReader` answers with whatever size it is offered and never
+        // reports what its content needs, so the two halves' minimums would not
+        // reach the window on their own: measured `contentMin=0.0x32.0`, and at 500
+        // points the terminal ran 226 points off the right edge while the sidebar's
+        // own content was squeezed under its 240. Restated here, which is the one
+        // place that can still tell the window.
+        .frame(minWidth: SidebarWidth.windowMinimumWidth,
+               minHeight: SidebarWidth.windowMinimumHeight)
+        .navigationTitle("")
+        .task {
+            store.startPeriodicRefresh()
+            // libghostty or the bundled helper failing to start is reported the same
+            // way a failed terminal action is, so the message is visible on launch
+            // rather than only after the first click that fails. There is nothing to
+            // fall back to, so this message is all the user gets.
+            if let setupError = terminals.setupError { store.lastError = setupError }
+            // PTYs die with the app, so every stored
+            // session id is dead. Cleared before the monitor starts, so no event
+            // can arrive for an id that is about to be wiped.
+            store.clearDeadSessions()
+            // The pane reads SwiftUI state, and the selection lives in
+            // `GhosttyService`, which is where every path that changes it already
+            // is: opening a terminal, focusing a row, closing one. Mirrored rather
+            // than reached into, so a selection made from the MCP server or a
+            // remote client redraws the pane the same way a click does.
+            if let service = terminals.ghostty.ghosttyService {
+                selectedTerminal = service.selected
+                service.onSelectionChanged = { session in
+                    selectedTerminal = session
+                    // A local terminal coming into view takes the pane back from a
+                    // remote one, which is what makes opening or focusing a local
+                    // terminal show it even while a remote session is on screen.
+                    // Only for a real selection: the service also selects nil when
+                    // the last local terminal is closed, and blanking the pane
+                    // someone is watching a remote terminal in would be a bug rather
+                    // than an intent. Closing one local terminal while another
+                    // remains still takes the pane, because the service selects that
+                    // other one and this cannot tell it apart from a click.
+                    if session != nil { paneOverride = nil }
+                }
+            }
+            startBellNotifications()
+            terminals.monitor.start { event in store.handle(event) }
+            if mcpHost == nil {
+                let host = MCPServerHost(router: MCPToolRouter(store: store), port: store.mcpPort,
+                                         onStartupError: { message in store.mcpStartupError = message })
+                mcpHost = host
+                await host.start()
+            }
+            await syncRemoteServer()
+            remoteWorkspaces.sync()
+        }
+        // A connection removed while its terminal is on screen takes the terminal
+        // with it and puts the local one back. Without this the pane would sit on
+        // `RightTerminalView`'s "Connection removed" placeholder with nothing in the
+        // sidebar left to click out of it, since the rows went with the connection.
+        // Keyed on the ids rather than the connections, so an edited name or token
+        // does not count as a removal. The placeholder still earns its place: it
+        // covers the frame between the store changing and this firing.
+        .onChange(of: remoteConnections.connections.map(\.id)) { _, ids in
+            if case let .remote(session) = paneOverride,
+               !ids.contains(session.connectionId) {
+                paneOverride = nil
+            }
+        }
+        .onChange(of: store.remoteEnabled) { Task { await syncRemoteServer() } }
+        .onChange(of: store.remotePort) { Task { await syncRemoteServer(forceRestart: true) } }
+        .onChange(of: store.mcpPort) { Task { await restartMCPHost() } }
+        .alert("Rename terminal", isPresented: renameIsPresented) {
+            TextField("Name", text: $renameText)
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+            Button("Rename") {
+                if let target = renameTarget {
+                    let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        store.rename(target.ref, in: target.project, to: trimmed)
+                    }
+                }
+                renameTarget = nil
+            }
+        }
+        .alert("Rename workspace", isPresented: workspaceRenameIsPresented) {
+            TextField("Name", text: $workspaceRenameText)
+            Button("Cancel", role: .cancel) { workspaceRenameTarget = nil }
+            Button("Rename") {
+                if let target = workspaceRenameTarget {
+                    store.renameWorkspace(target, to: workspaceRenameText)
+                }
+                workspaceRenameTarget = nil
+            }
+        } message: {
+            Text("The folder on disk keeps its own name. Clear the field to go back "
+                 + "to that name, or to the one in this workspace's wietty.json.")
+        }
+        .alert(
+            store.lastError ?? "",
+            isPresented: Binding(
+                get: { store.lastError != nil },
+                set: { presented in if !presented { store.lastError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { store.lastError = nil }
+        }
+    }
+
+    /// What the pane shows and which row is marked, from the two selections that
+    /// live apart: the local one in `GhosttyService`, the remote one here.
+    private var paneSelection: PaneSelection {
+        .resolve(local: selectedTerminal, override: paneOverride)
+    }
+
+    /// The width to lay out and to drag: whatever this window's drag left, or the
+    /// persisted one until a drag replaces it. Reading the store here is what makes
+    /// the first frame after a launch the right width.
+    private var liveSidebarWidth: Binding<Double> {
+        Binding(
+            get: { sidebarWidth ?? store.sidebarWidth },
+            set: { sidebarWidth = $0 }
+        )
+    }
+
+    private var workspaceRenameIsPresented: Binding<Bool> {
+        Binding(
+            get: { workspaceRenameTarget != nil },
+            set: { presented in if !presented { workspaceRenameTarget = nil } }
+        )
+    }
+
+    /// Opens the rename dialog pre-filled with the name the workspace shows now, so
+    /// the user edits rather than retypes, and so clearing the field is visibly the
+    /// way to undo a rename.
+    private func startWorkspaceRename(for project: Project) {
+        workspaceRenameText = project.name
+        workspaceRenameTarget = project
+    }
+
+    private var renameIsPresented: Binding<Bool> {
+        Binding(
+            get: { renameTarget != nil },
+            set: { presented in if !presented { renameTarget = nil } }
+        )
+    }
+
+    /// The workspace list: the left half of the window, beside the terminal pane.
+    private var sidebar: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                localSection
+                ForEach(remoteConnections.connections) { connection in
+                    if let remoteStore = remoteWorkspaces.stores[connection.id] {
+                        RemoteSectionView(
+                            store: remoteStore,
+                            sections: sections,
+                            onRemoveConnection: {
+                                remoteConnections.remove(id: connection.id)
+                                remoteWorkspaces.sync()
+                            },
+                            onAttach: { openRemoteTerminal(remoteStore, $0) },
+                            isSelected: {
+                                paneSelection.selects(remoteSession: $0.sessionId,
+                                                      on: connection.id)
+                            },
+                            collapsedCards: $remoteCardCollapsed
+                        )
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 240)
+        .disabled(isBusy)
+        .overlay {
+            if isBusy {
+                ProgressView().controlSize(.small)
+            }
+        }
+    }
+
+    private var localSectionButtons: [SidebarSectionHeaderView.ButtonSpec] {
+        Self.localSectionButtons(
+            refresh: { Task { await store.refreshAllGitInfo() } },
+            add: addProject)
+    }
+
+    /// The Local header's trailing buttons.
+    ///
+    /// A static function taking its actions rather than a computed property, so
+    /// which buttons the header shows is asserted in CI rather than only checkable
+    /// by looking at the window.
+    static func localSectionButtons(refresh: @escaping () -> Void,
+                                    add: @escaping () -> Void)
+        -> [SidebarSectionHeaderView.ButtonSpec] {
+        [.init(system: "arrow.clockwise", help: "Refresh git status", action: refresh),
+         .init(system: "plus", help: "Add project folder", action: add)]
+    }
+
+    @ViewBuilder
+    private var localSection: some View {
+        SidebarSectionHeaderView(
+            title: "Local",
+            collapsed: sections.isCollapsed("local"),
+            onToggle: { sections.setCollapsed("local", !sections.isCollapsed("local")) },
+            buttons: localSectionButtons
+        )
+        if !sections.isCollapsed("local") {
+            ForEach(store.projects) { project in
+                WorkspaceCardView(
+                    project: project,
+                    collapsed: project.collapsed,
+                    gitInfo: store.gitInfo[project.id],
+                    runState: { store.runState(for: $0) },
+                    needsAttention: { store.attention.contains($0.id) },
+                    syncEnabled: store.isSyncEnabled(project),
+                    configChanged: store.configChangedOnDisk.contains(project.id),
+                    isLocalOnly: { store.localOnlyTerminals.contains($0.id) },
+                    // The same selection the pane is drawn from, so the highlighted
+                    // row and the terminal on screen cannot disagree.
+                    isSelected: { paneSelection.selects(localSession: $0.sessionId) },
+                    // A process row is marked while its log is in the pane, the same
+                    // way a terminal row is marked while its terminal is. Only the
+                    // local card: a remote card's processes are not shown here.
+                    isProcessSelected: {
+                        paneSelection.selects(processLog: ProcessLogRef(projectId: project.id,
+                                                                        name: $0))
+                    },
+                    onActivate: { activate($0, in: project) },
+                    onRestartTerminal: { restartTerminal($0, in: project) },
+                    onRenameTerminal: { startRename($0, in: project) },
+                    onRemoveTerminal: { store.removeTerminal($0, in: project) },
+                    onCloseTerminal: { closeTerminal($0, in: project) },
+                    onOpenTerminal: { openTerminal(for: project) },
+                    onOpenClaude: { openClaude(for: project) },
+                    onRemoveProject: { store.remove(project) },
+                    onRenameWorkspace: { startWorkspaceRename(for: project) },
+                    onToggleCollapsed: { store.toggleCollapsed(project) },
+                    onEnableSync: { store.enableConfigSync(for: project) },
+                    onApplyConfig: { store.applyConfigChanges(for: project) },
+                    processes: store.processes.processes(for: project.id),
+                    onProcessStart: { $0.start() },
+                    onProcessStop: { $0.stop() },
+                    onProcessRestart: { $0.restart() },
+                    onProcessKill: { $0.kill() },
+                    onOpenProcessLog: { openProcessLog($0, in: project) },
+                    tests: store.testSupervisor.tests(for: project.id),
+                    onTestRun: { store.testSupervisor.run(projectId: project.id, name: $0.name) },
+                    onTestRunAll: { store.testSupervisor.runAll(projectId: project.id) },
+                    onOpenTestLog: { openTestLog($0, in: project) }
+                )
+                .draggable(project.id.uuidString)
+                .dropDestination(for: String.self) { items, _ in
+                    guard let first = items.first, let dragged = UUID(uuidString: first) else { return false }
+                    store.move(id: dragged, before: project.id)
+                    return true
+                }
+                if project.id != store.projects.last?.id {
+                    Divider()
+                }
+            }
+            Color.clear
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .contentShape(Rectangle())
+                .dropDestination(for: String.self) { items, _ in
+                    guard let first = items.first, let dragged = UUID(uuidString: first) else { return false }
+                    store.moveToEnd(id: dragged)
+                    return true
+                }
+        }
+    }
+
+    /// Starts or stops `RemoteServer` to match `store.remoteEnabled`. When the
+    /// port changes, `forceRestart` tears down the running server first so it
+    /// rebinds on the new port.
+    private func syncRemoteServer(forceRestart: Bool = false) async {
+        if store.remoteEnabled {
+            if forceRestart, remoteServer != nil {
+                remoteServer?.stop()
+                remoteServer = nil
+            }
+            if remoteServer == nil {
+                store.remoteStartupError = nil
+                let server = RemoteServer(store: store, streamer: terminals.streamer,
+                                          token: store.remoteToken, port: store.remotePort,
+                                          onStartupError: { message in store.remoteStartupError = message })
+                remoteServer = server
+                await server.start()
+            }
+        } else {
+            remoteServer?.stop()
+            remoteServer = nil
+            // The hub is deliberately left running. It is shared with the pane's
+            // own viewer and its `stop()` cancels the flush timer for good, so
+            // stopping it here would leave every later local viewer silent.
+            // Tearing the server down closes its sockets anyway, and each socket
+            // detaches its own viewer on the way out.
+            store.remoteStartupError = nil
+        }
+    }
+
+    /// Recreates the MCP host on the currently configured port.
+    private func restartMCPHost() async {
+        mcpHost?.stop()
+        store.mcpStartupError = nil
+        let host = MCPServerHost(router: MCPToolRouter(store: store), port: store.mcpPort,
+                                 onStartupError: { message in store.mcpStartupError = message })
+        mcpHost = host
+        await host.start()
+    }
+
+    private func addProject() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add"
+        if panel.runModal() == .OK, let url = panel.url {
+            store.addProject(url: url)
+        }
+    }
+
+    private func openTerminal(for project: Project) {
+        Task {
+            isBusy = true
+            await store.openTerminal(for: project)
+            isBusy = false
+        }
+    }
+
+    private func openClaude(for project: Project) {
+        Task {
+            isBusy = true
+            await store.openClaude(for: project)
+            isBusy = false
+        }
+    }
+
+    /// Opens the row's terminal if it was gone, starts its agent if it had
+    /// stopped, and shows it.
+    ///
+    /// Showing it is `store.activate`'s own doing: selecting a session is what puts
+    /// its surface in the pane, and the pane is the only place a terminal is ever
+    /// drawn. Nothing further is needed here.
+    private func activate(_ ref: TerminalRef, in project: Project) {
+        Task {
+            isBusy = true
+            await store.activate(ref, in: project)
+            isBusy = false
+        }
+    }
+
+    private func closeTerminal(_ ref: TerminalRef, in project: Project) {
+        Task {
+            isBusy = true
+            await store.closeTerminal(ref, in: project)
+            isBusy = false
+        }
+    }
+
+    private func restartTerminal(_ ref: TerminalRef, in project: Project) {
+        Task {
+            isBusy = true
+            try? await store.restart(sessionId: ref.sessionId)
+            isBusy = false
+        }
+    }
+
+    private func startRename(_ ref: TerminalRef, in project: Project) {
+        renameText = ref.label
+        renameTarget = (project, ref)
+    }
+
+    /// Puts a process's log in the pane. Deliberately reached only from "Open log"
+    /// and the context menu, never from a click on the row: a process row has no
+    /// activate action, so clicking one still does nothing.
+    private func openProcessLog(_ process: ManagedProcess, in project: Project) {
+        paneOverride = .log(ProcessLogRef(projectId: project.id, name: process.name))
+    }
+
+    private func openTestLog(_ test: ManagedProcess, in project: Project) {
+        paneOverride = .log(ProcessLogRef(projectId: project.id, name: test.name, isTest: true))
+    }
+
+    private func openRemoteTerminal(_ remoteStore: RemoteWorkspaceStore, _ ref: TerminalRef) {
+        showRemote(RemoteSessionRef(connectionId: remoteStore.connection.id,
+                                    sessionId: ref.sessionId))
+    }
+
+    /// Shows a remote session in the main window's pane, the same one the local
+    /// terminals use, so it arrives beside the sidebar with no second window.
+    private func showRemote(_ session: RemoteSessionRef) {
+        paneOverride = .remote(session)
+    }
+
+    // MARK: - Bells
+
+    /// Wires bells to Notification Center: local ones from the store, remote ones
+    /// from every connection's snapshots, and a tap back to whatever shows a
+    /// terminal.
+    ///
+    /// Called before `terminals.monitor.start`, so no bell can arrive before there is
+    /// somewhere for it to go.
+    private func startBellNotifications() {
+        bells.onTap = { target in showBell(target) }
+        store.onBell = { project, ref in
+            guard BellAlert.shouldPost(
+                appIsFrontmost: NSApp.isActive,
+                terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
+            let notification = BellNotification.local(workspace: project.name,
+                                                      label: ref.label, refId: ref.id)
+            Task { await bells.post(notification) }
+        }
+        // Visiting a row takes its notification back, so Notification Center does not
+        // keep bells that have already been dealt with.
+        store.onAttentionCleared = { ids in
+            bells.withdraw(ids.map { .local(refId: $0) })
+        }
+        guard remoteBells == nil else { return }
+        let observer = RemoteBellObserver { connection, diff in
+            handleRemoteBells(connection: connection, diff: diff)
+        }
+        remoteBells = observer
+        observer.start(controller: remoteWorkspaces)
+    }
+
+    private func handleRemoteBells(connection: UUID, diff: RemoteBellDiff) {
+        // The connection's own name, because a bell says nothing useful without which
+        // Mac it came from. Falls back rather than dropping the notification: a
+        // connection being renamed at that instant is not a reason to stay silent.
+        let name = remoteConnections.connections.first { $0.id == connection }?.name ?? "Remote"
+        for ringer in diff.ringing {
+            let session = RemoteSessionRef(connectionId: connection, sessionId: ringer.sessionId)
+            guard BellAlert.shouldPost(
+                appIsFrontmost: NSApp.isActive,
+                terminalIsOnScreen: paneSelection.selects(remoteSession: ringer.sessionId,
+                                                         on: connection)) else { continue }
+            let notification = BellNotification.remote(connection: name, workspace: ringer.workspace,
+                                                       label: ringer.label, session: session)
+            Task { await bells.post(notification) }
+        }
+        bells.withdraw(diff.cleared.map {
+            .remote(RemoteSessionRef(connectionId: connection, sessionId: $0))
+        })
+    }
+
+    /// A tapped notification, which does exactly what clicking the row does, after
+    /// bringing the window it lives in forward.
+    ///
+    /// `openWindow` rather than reaching into `NSApp.windows`, so this also works when
+    /// the main window has been closed: for a `Window` scene it reopens a closed one
+    /// and focuses an open one.
+    private func showBell(_ target: BellTarget) {
+        openWindow(id: "main")
+        NSApp.activate()
+        switch target {
+        case .local(let refId):
+            // Gone in the meantime: a notification outlives the row it is about, and a
+            // removed row has nothing to show.
+            guard let found = store.session(withRefId: refId) else { return }
+            activate(found.ref, in: found.project)
+        case .remote(let session):
+            guard let remoteStore = remoteWorkspaces.stores[session.connectionId] else { return }
+            let label = remoteStore.workspaces.flatMap(\.sessions)
+                .first { $0.sessionId == session.sessionId }?.label
+            showRemote(session)
+        }
+    }
+}
