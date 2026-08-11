@@ -29,9 +29,9 @@ Which side of the remote protocol lives where decides which repo a bug belongs i
 **One terminal.** A terminal is a pseudo terminal the app spawns and owns, rendered by libghostty in
 the main window's pane. Nothing needs to be installed for it: no iTerm2, no tmux, not even
 Ghostty.app. `TerminalStack` builds it at launch and there is nothing to choose. See
-`documentation/terminal.md`.
+`docs/terminal.md`.
 
-`documentation/remote-access.md` is the protocol reference for all three repos.
+`docs/remote-access.md` is the protocol reference for all three repos.
 
 ## Setup
 This project uses [XcodeGen](https://github.com/yonaskolb/XcodeGen). `project.yml` is the source of
@@ -72,9 +72,9 @@ xcodebuild -scheme Wietty -destination 'platform=macOS' test
 ```
 
 ## Documentation
-The `documentation/` folder must stay in sync with the code it describes. Whenever you change
+The `docs/` folder must stay in sync with the code it describes. Whenever you change
 something a document covers, update that document in the same change. For example,
-`documentation/AsciiScreens/` holds one ASCII layout per SwiftUI view (`ContentView.md`,
+`docs/AsciiScreens/` holds one ASCII layout per SwiftUI view (`ContentView.md`,
 `WorkspaceCardView.md`, `SettingsView.md`, and so on), so editing a view means updating its matching
 file (and adding a new file when you add a view worth documenting). A view whose layout is already
 drawn inside a parent's file, as the remote sidebar section is inside `ContentView.md`, is
