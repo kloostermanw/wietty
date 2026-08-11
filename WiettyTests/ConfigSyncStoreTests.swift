@@ -392,6 +392,24 @@ import Foundation
         #expect(store.lastError != nil)
     }
 
+    /// The alert shows `lastError` alone, with nothing around it to say which
+    /// workspace it came from, and a watcher can fire it for a workspace the user
+    /// is not looking at. So the folder has to be named in the message itself.
+    @Test func aBadConfigFileNamesItsWorkspaceAndTheMissingKey() throws {
+        let store = ProjectStore(defaults: makeDefaults(), service: FakeTerminalService())
+        let folder = tempFolder()
+        store.addProject(url: folder)
+
+        try Data("""
+        { "name": "x", "agents": [], "iterm": ["Terminal 1"] }
+        """.utf8).write(to: ConfigFile.url(in: folder))
+        #expect(store.reconcileWithFile(store.projects[0].id) == false)
+
+        let message = try #require(store.lastError)
+        #expect(message.contains(folder.lastPathComponent))
+        #expect(message.contains("terminals"))
+    }
+
     @Test func processesBlockSurvivesConfigEmit() async throws {
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "s1", windowId: "w1")]

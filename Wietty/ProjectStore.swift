@@ -1162,6 +1162,15 @@ final class ProjectStore {
         }
     }
 
+    /// Wording for a config file that could not be read. The alert shows
+    /// `lastError` and nothing else, and the file watcher can raise one for a
+    /// workspace the user is not looking at, so the folder has to be named here
+    /// rather than left to the surrounding UI.
+    private static func configFailure(_ error: Error, in folder: URL) -> String {
+        let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        return "\(folder.lastPathComponent): \(detail)"
+    }
+
     /// Reads the workspace config and applies it to the current rows, preserving
     /// live sessions and keeping running rows dropped by the file as local-only.
     /// No-op when the file is absent (sync off).
@@ -1173,7 +1182,7 @@ final class ProjectStore {
         do {
             config = try ConfigFile.read(in: url)
         } catch {
-            lastError = error.localizedDescription
+            lastError = Self.configFailure(error, in: url)
             return false
         }
         guard let config else { return false }

@@ -21,7 +21,7 @@ The file lives at the root of the workspace folder:
 The filename is fixed. A workspace with no `wietty.json` still works; it just
 has no persisted layout and no processes.
 
-### Coming from Wietty
+### Coming from itermplex
 
 Before the product was renamed, this file was `itermplex.json` and the terminals
 key was `iterm`. Neither old name is read any more, and there is no migration: a
@@ -29,6 +29,21 @@ workspace still holding an `itermplex.json` looks to the app like a workspace wi
 no configuration at all, and a file that still uses `iterm` fails to parse because
 a required key is missing. Rename the file, rename the key, and the contents carry
 over unchanged.
+
+The two cases fail differently, and only one of them says anything. A leftover
+`itermplex.json` is silent, because a workspace with no `wietty.json` is a
+supported state and the app cannot tell the two apart. A `wietty.json` that still
+uses `iterm` raises an alert naming the workspace and the key:
+
+```
+genotool: wietty.json is missing the required "terminals" key. A workspace
+written before the rename lists its terminals under "iterm". Rename that key
+to "terminals".
+```
+
+Commands in the file that referred to `$ITERMPLEX_*` variables need renaming too.
+They are `$WIETTY_*` now, and an unrenamed one expands to nothing rather than
+failing. See [Variables](#variables).
 
 ## How Wietty uses the file
 

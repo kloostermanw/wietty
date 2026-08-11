@@ -3,6 +3,14 @@ import Foundation
 @testable import Wietty
 
 @Suite struct WorkspaceConfigTests {
+    /// The user facing wording for a file that fails to parse.
+    private func failureMessage(for json: Data) throws -> String {
+        let error = try #require(#expect(throws: WorkspaceConfigError.self) {
+            try WorkspaceConfig.parse(json)
+        })
+        return try #require(error.errorDescription)
+    }
+
     @Test func parsesSampleFile() throws {
         let json = Data("""
         {
@@ -28,7 +36,55 @@ import Foundation
         let json = Data("""
         { "name": "laravel-test", "agents": [], "iterm": ["Terminal 1"] }
         """.utf8)
-        #expect(throws: DecodingError.self) { try WorkspaceConfig.parse(json) }
+        #expect(throws: WorkspaceConfigError.missingKey("terminals")) {
+            try WorkspaceConfig.parse(json)
+        }
+    }
+
+    /// The clean break guarantees every workspace written before the rename fails
+    /// this way, so the message has to name the key and say what to do about it.
+    /// Foundation's own wording for a missing key is "The data couldn't be read
+    /// because it is missing", which names neither the file nor the key.
+    @Test func aMissingKeySaysWhichKeyAndHowToFixIt() throws {
+        let json = Data("""
+        { "name": "laravel-test", "agents": [], "iterm": ["Terminal 1"] }
+        """.utf8)
+        let message = try failureMessage(for: json)
+        #expect(message.contains(ConfigFile.fileName))
+        #expect(message.contains("terminals"))
+        #expect(message.contains("iterm"))
+        #expect(!message.contains("The data couldn't be read"))
+    }
+
+    /// A key other than `terminals` gets the same treatment minus the rename hint,
+    /// which only makes sense for the one key the rename moved.
+    @Test func anotherMissingKeyIsNamedWithoutTheRenameHint() throws {
+        let json = Data("""
+        { "name": "laravel-test", "terminals": ["Terminal 1"] }
+        """.utf8)
+        let message = try failureMessage(for: json)
+        #expect(message.contains("agents"))
+        #expect(!message.contains("iterm"))
+    }
+
+    /// A file that is not JSON at all is a different failure from a missing key and
+    /// must not claim a key is missing.
+    @Test func malformedJsonIsReportedAsMalformed() throws {
+        let message = try failureMessage(for: Data("{ not json".utf8))
+        #expect(message.contains(ConfigFile.fileName))
+        #expect(!message.contains("missing the required"))
+    }
+
+    /// A key that is present but holds the wrong type is neither missing nor
+    /// malformed JSON, and saying "missing" would send the reader looking for a key
+    /// that is right there.
+    @Test func aWrongTypeNamesTheKeyWithoutCallingItMissing() throws {
+        let json = Data("""
+        { "agents": [], "terminals": "Terminal 1" }
+        """.utf8)
+        let message = try failureMessage(for: json)
+        #expect(message.contains("terminals"))
+        #expect(!message.contains("missing the required"))
     }
 
     @Test func encodesTerminalsUnderItsOwnKey() throws {
