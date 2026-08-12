@@ -5,6 +5,9 @@ struct SettingsView: View {
     @Bindable var store: ProjectStore
     @ObservedObject var remoteConnections: RemoteConnectionsStore
     @ObservedObject var remoteWorkspaces: RemoteWorkspacesController
+    /// The app's own notifier, not one built here: the permission the Notifications
+    /// tab reports has to be the permission the bells are subject to.
+    let bells: BellNotifier
 
     /// View state, not a preference. The panel is destroyed when the pane shows
     /// anything else, so this resets on the way back in, which is what a user who
@@ -27,10 +30,12 @@ struct SettingsView: View {
     init(store: ProjectStore,
          remoteConnections: RemoteConnectionsStore,
          remoteWorkspaces: RemoteWorkspacesController,
+         bells: BellNotifier,
          tab: SettingsTab = .default) {
         _store = Bindable(wrappedValue: store)
         _remoteConnections = ObservedObject(wrappedValue: remoteConnections)
         _remoteWorkspaces = ObservedObject(wrappedValue: remoteWorkspaces)
+        self.bells = bells
         _tab = State(initialValue: tab)
     }
 
@@ -65,7 +70,9 @@ struct SettingsView: View {
                 badgeSection
                 periodicChecksSection
             }
-        case .notifications, .agents:
+        case .notifications:
+            form { NotificationSettings(store: store, bells: bells) }
+        case .agents:
             placeholder
         case .remote:
             form {
@@ -221,6 +228,143 @@ struct SettingsView: View {
                 Spacer()
                 Text("\(value.wrappedValue) s").foregroundStyle(.secondary).monospacedDigit()
             }
+        }
+    }
+}
+
+/// The Notifications tab: whether macOS lets this app post at all, a way to prove
+/// the whole path works, and which sound it makes.
+///
+/// A view of its own rather than three `@ViewBuilder` properties on `SettingsView`
+/// because it is the only tab with state of its own: the permission it read and the
+/// verdict on the last test. Both are answers that arrive asynchronously and neither
+/// is a preference, so neither belongs on the store.
+struct NotificationSettings: View {
+    @Bindable var store: ProjectStore
+    let bells: BellNotifier
+
+    /// Nil until the first read comes back, which is a state worth drawing: "not
+    /// asked yet" and "we have not looked yet" are different things to say.
+    @State private var permission: NotificationPermission?
+    @State private var testResult: BellNotifier.TestResult?
+
+    /// - Parameters:
+    ///   - permission: what the tab starts out believing, and
+    ///   - testResult: what it starts out reporting. Both default to the real state,
+    ///     which is "nothing known yet" until the `task` below answers; only the
+    ///     tests pass anything else, because these two decide four of the branches
+    ///     drawn here and a render test that could not set them would cover one.
+    init(store: ProjectStore, bells: BellNotifier,
+         permission: NotificationPermission? = nil,
+         testResult: BellNotifier.TestResult? = nil) {
+        _store = Bindable(wrappedValue: store)
+        self.bells = bells
+        _permission = State(initialValue: permission)
+        _testResult = State(initialValue: testResult)
+    }
+
+    var body: some View {
+        Section("System notifications") {
+            HStack {
+                Text("Permission")
+                Spacer()
+                Label(permissionTitle, systemImage: permissionIcon)
+                    .foregroundStyle(permissionColour)
+                    .labelStyle(.titleAndIcon)
+            }
+            // Only while nobody has answered. macOS shows the prompt once per
+            // install, so after a denial this button would do nothing at all, and a
+            // button that does nothing is worse than the sentence explaining why.
+            if permission == .notAsked {
+                Button("Allow notifications…") {
+                    Task { permission = await bells.requestPermission() }
+                }
+            }
+            if permission == .denied {
+                Text("Turn Wietty's notifications back on in System Settings › Notifications. macOS asks only once, so this app cannot ask again.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("A terminal notifies you in two ways: the bell character, which every shell rings, and the OSC 9 and OSC 777 escape sequences, which a program uses to send a message of its own. That second one is how coding agents say they are waiting on your input. Either way the terminal's row gets a 🔔 in the sidebar, and a banner is posted unless you are already looking at that terminal.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("A Focus mode can hold banners back even when this says Allowed. Add Wietty to the Focus's allowed apps if you want them through.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+
+        Section("Test notification") {
+            HStack {
+                Button("Send test notification") {
+                    Task {
+                        testResult = await bells.sendTest(sound: store.bellSound)
+                        // The test is also the one moment permission is decided, if
+                        // it had not been asked for yet.
+                        permission = await bells.permission()
+                    }
+                }
+                Spacer()
+            }
+            switch testResult {
+            case .posted:
+                Text("Posted. If no banner appeared, a Focus mode or Notification Centre is holding it back.")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .failed(let reason):
+                Label("Not posted: \(reason)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red)
+            case nil:
+                Text("Posts one notification, so the whole path can be checked without waiting for a terminal to ring. It reports what happened either way: macOS refuses an app bundle run from a scratch directory outright.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+
+        Section("Bell sound") {
+            HStack {
+                Picker("Sound", selection: $store.bellSound) {
+                    ForEach(soundChoices) { sound in
+                        Text(sound.title).tag(sound)
+                    }
+                }
+                Button("Test") { store.bellSound.play() }
+                    .disabled(store.bellSound == .silent)
+            }
+            Text("Played by every notification a terminal posts. \"Default\" is the alert sound chosen in System Settings › Sound.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        // Read on the way in rather than once per app launch: permission can be
+        // granted or revoked in System Settings while Wietty runs, and this tab is
+        // the one place that would then be wrong about it.
+        .task { permission = await bells.permission() }
+    }
+
+    /// The installed sounds, plus whatever is stored if it is not among them. A
+    /// macOS update that removes a sound would otherwise leave the picker showing an
+    /// empty selection, which reads as a broken control rather than as a sound that
+    /// is no longer there.
+    private var soundChoices: [BellSound] {
+        let offered = BellSound.offered
+        return offered.contains(store.bellSound) ? offered : offered + [store.bellSound]
+    }
+
+    private var permissionTitle: String {
+        switch permission {
+        case .granted: return "Allowed"
+        case .denied: return "Not allowed"
+        case .notAsked: return "Not asked yet"
+        case nil: return "Checking…"
+        }
+    }
+
+    private var permissionIcon: String {
+        switch permission {
+        case .granted: return "checkmark.circle.fill"
+        case .denied: return "xmark.circle.fill"
+        case .notAsked, nil: return "questionmark.circle"
+        }
+    }
+
+    private var permissionColour: Color {
+        switch permission {
+        case .granted: return .green
+        case .denied: return .red
+        case .notAsked, nil: return .secondary
         }
     }
 }

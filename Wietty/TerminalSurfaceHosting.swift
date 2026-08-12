@@ -96,6 +96,13 @@ protocol TerminalSurfaceHosting: AnyObject {
     var onTitle: (@MainActor (_ id: String, _ title: String) -> Void)? { get set }
     /// libghostty reported a bell.
     var onBell: (@MainActor (_ id: String) -> Void)? { get set }
+    /// A process asked for a desktop notification (`OSC 9` or `OSC 777`).
+    ///
+    /// Its own callback rather than a bell with words attached, because the two are
+    /// treated differently everywhere downstream: a bell is one ambiguous byte a
+    /// shell also rings for tab completion, and this is a message a program chose to
+    /// send. `title` is empty for `OSC 9;text`, which carries a body and nothing else.
+    var onDesktopNotification: (@MainActor (_ id: String, _ title: String, _ body: String) -> Void)? { get set }
     /// The surface's grid changed, so the pty behind it has to follow.
     ///
     /// Every new surface reports its grid once, and that first report is guaranteed
@@ -128,6 +135,7 @@ protocol TerminalSurfaceHosting: AnyObject {
 final class InertSurfaceHost: TerminalSurfaceHosting {
     var onTitle: (@MainActor (String, String) -> Void)?
     var onBell: (@MainActor (String) -> Void)?
+    var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
     var onResized: (@MainActor (String, TerminalSize) -> Void)?
     var onCloseRequested: (@MainActor (String) -> Void)?
 

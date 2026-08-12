@@ -28,7 +28,15 @@ import WiettyShared
             stack: GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true"),
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
+            bells: notifier(),
             selection: selection)
+    }
+
+    /// A notifier over a fake centre. The real one needs an authorized bundle and
+    /// would put a permission prompt on screen during a test run, which is the whole
+    /// reason `NotificationSink` is a protocol.
+    private func notifier() -> BellNotifier {
+        BellNotifier(sink: FakeNotificationSink())
     }
 
     private func sizeOffered<V: View>(_ view: V, _ size: NSSize) -> NSSize {
@@ -121,10 +129,54 @@ import WiettyShared
                 store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
                 remoteConnections: connections,
                 remoteWorkspaces: RemoteWorkspacesController(connections: connections),
+                bells: notifier(),
                 tab: tab)
             let renderer = ImageRenderer(content: view.frame(width: 600, height: 800))
             #expect(renderer.nsImage != nil, "\(tab.title) failed to render")
         }
+    }
+
+    /// The Notifications tab draws four different things depending on what the
+    /// notification centre answered and what the last test did, and `everyTabRenders`
+    /// reaches only the "nothing known yet" one: `task` does not run under
+    /// `ImageRenderer`, so the permission is never read there. Both are passed in
+    /// here instead, which is the same reason `SettingsView.init` takes a `tab:`.
+    ///
+    /// The permission button and the failure label are the two branches worth the
+    /// trouble: one appears in exactly one state, the other only after a refusal.
+    @Test func theNotificationsTabRendersInEveryState() {
+        let states: [(NotificationPermission?, BellNotifier.TestResult?)] = [
+            (nil, nil),
+            (.notAsked, nil),
+            (.granted, .posted),
+            (.denied, .failed(reason: "Notifications are not allowed for this application"))
+        ]
+        for (permission, result) in states {
+            let defaults = UserDefaults(suiteName: UUID().uuidString)!
+            let view = Form {
+                NotificationSettings(
+                    store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
+                    bells: notifier(),
+                    permission: permission,
+                    testResult: result)
+            }
+            .formStyle(.grouped)
+            let renderer = ImageRenderer(content: view.frame(width: 600, height: 900))
+            #expect(renderer.nsImage != nil, "\(String(describing: permission)) failed to render")
+        }
+    }
+
+    /// A sound the picker does not offer still has to select, or a macOS release that
+    /// drops a sound leaves the control blank rather than saying which sound is gone.
+    @Test func theSoundPickerRendersASoundItDoesNotOffer() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
+        store.bellSound = .named("SoundFromAnotherMac")
+        let view = Form {
+            NotificationSettings(store: store, bells: notifier(), permission: .granted)
+        }
+        .formStyle(.grouped)
+        #expect(ImageRenderer(content: view.frame(width: 600, height: 900)).nsImage != nil)
     }
 
     /// The same, for the two sub-trees an empty store never reaches: the URL and QR
@@ -146,6 +198,7 @@ import WiettyShared
             store: store,
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
+            bells: notifier(),
             tab: .remote)
         let renderer = ImageRenderer(content: view.frame(width: 600, height: 1200))
         #expect(renderer.nsImage != nil)

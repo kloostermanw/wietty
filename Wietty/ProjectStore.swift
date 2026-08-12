@@ -51,6 +51,18 @@ final class ProjectStore {
     /// row's attention flag on rather than on every bell. A program ringing in a
     /// loop is then one event, and visiting the row re-arms it.
     var onBell: ((Project, TerminalRef) -> Void)?
+    /// Called for every desktop notification a process asks for on a tracked row,
+    /// including the second one on a row that is already flagged.
+    ///
+    /// Deliberately not the once-per-flag rule `onBell` uses. That rule exists
+    /// because a shell rings the bell for ambiguous tab completion, so a bell is
+    /// ambiguous by nature and a run of them says nothing new. An `OSC 9` is a
+    /// program choosing to send words, and an agent that says "waiting for input"
+    /// and then "build failed" has said two things; suppressing the second because
+    /// the row had not been visited would lose the one that matters. Nothing stacks
+    /// as a result: the identifier is per terminal, so the newer banner replaces the
+    /// older one.
+    var onNotification: ((Project, TerminalRef, _ title: String, _ body: String) -> Void)?
     /// Called with the row ids whose attention flag has just been cleared, so a
     /// notification about a bell that has been dealt with can be taken back.
     var onAttentionCleared: ((Set<UUID>) -> Void)?
@@ -98,6 +110,7 @@ final class ProjectStore {
     let testSupervisor: TestSupervisor
     private let storageKey = "wietty.projects.bookmarks"
     private let badgeKey = "wietty.showWorkspaceBadge"
+    private let bellSoundKey = "wietty.bellSound"
     private let intervalsKey = "wietty.checkIntervals"
     private let remoteEnabledKey = "wietty.remote.enabled"
     private let mcpPortKey = "wietty.mcpPort"
@@ -149,6 +162,15 @@ final class ProjectStore {
         didSet {
             guard showWorkspaceBadge != oldValue else { return }
             defaults.set(showWorkspaceBadge, forKey: badgeKey)
+        }
+    }
+
+    /// The sound every notification a terminal posts plays. Persisted, and applied
+    /// to the next notification rather than needing a restart.
+    var bellSound: BellSound {
+        didSet {
+            guard bellSound != oldValue else { return }
+            defaults.set(bellSound.stored, forKey: bellSoundKey)
         }
     }
 
@@ -289,6 +311,9 @@ final class ProjectStore {
         self.processes = processSupervisor
         self.testSupervisor = testSupervisor
         self.showWorkspaceBadge = defaults.bool(forKey: badgeKey)
+        // No stored value reads as "", which `BellSound` maps to the system default:
+        // the sound this app played before there was a setting.
+        self.bellSound = BellSound(stored: defaults.string(forKey: bellSoundKey) ?? "")
         if let arr = defaults.array(forKey: intervalsKey) as? [Int], arr.count == 3 {
             self.checkIntervals = CheckIntervals(fast: arr[0], normal: arr[1], slow: arr[2]).clamped()
         } else {
@@ -624,6 +649,15 @@ final class ProjectStore {
             if attention.insert(projects[p].terminals[t].id).inserted {
                 onBell?(projects[p], projects[p].terminals[t])
             }
+        case .notification(let sessionId, let title, let body):
+            guard let (p, t) = indexOfSession(sessionId) else { return }
+            // The flag goes up the same way a bell raises it, so the 🔔 in the
+            // sidebar means "this terminal wants you" whichever way it said so, and
+            // visiting the row withdraws the banner through the same path. What is
+            // reported is every notification rather than only the transition; see
+            // `onNotification` for why the two rules differ.
+            attention.insert(projects[p].terminals[t].id)
+            onNotification?(projects[p], projects[p].terminals[t], title, body)
         case .job(let sessionId, let jobName):
             guard let (p, t) = indexOfSession(sessionId) else { return }
             jobNames[projects[p].terminals[t].id] = jobName

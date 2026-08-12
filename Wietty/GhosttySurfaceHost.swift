@@ -60,6 +60,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
 
     var onTitle: (@MainActor (String, String) -> Void)?
     var onBell: (@MainActor (String) -> Void)?
+    var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
     var onResized: (@MainActor (String, TerminalSize) -> Void)?
     var onCloseRequested: (@MainActor (String) -> Void)?
 
@@ -316,6 +317,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
     private enum SurfaceEvent: Sendable {
         case render
         case bell
+        case notification(title: String, body: String)
         case title(String)
         case cellSize
     }
@@ -340,6 +342,15 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
             event = .render
         case GHOSTTY_ACTION_RING_BELL:
             event = .bell
+        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
+            // A body is what there is to show, so a notification without one is
+            // dropped here rather than becoming an empty banner. A missing title is
+            // kept: `OSC 9;text` sets only the body, and libghostty passes the title
+            // as an empty C string in that case.
+            let payload = action.action.desktop_notification
+            guard let body = payload.body else { return false }
+            event = .notification(title: payload.title.map { String(cString: $0) } ?? "",
+                                  body: String(cString: body))
         case GHOSTTY_ACTION_CELL_SIZE:
             // The font metrics changed, so the grid has to be derived again even
             // though the view did not move.
@@ -382,6 +393,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
             surface.view.requestRedraw()
         case .bell:
             onBell?(id)
+        case .notification(let title, let body):
+            onDesktopNotification?(id, title, body)
         case .title(let title):
             setTitle(title, for: id)
             onTitle?(id, title)

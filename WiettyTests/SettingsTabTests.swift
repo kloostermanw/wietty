@@ -23,11 +23,12 @@ import Testing
         #expect(SettingsTab.default == .general)
     }
 
-    /// Two tabs exist ahead of the settings that will fill them, so the panel has a
-    /// place to put them. They say so on screen instead of drawing an empty form,
-    /// and this is what marks them.
-    @Test func agentsAndNotificationsAreTheEmptyOnes() {
-        #expect(SettingsTab.allCases.filter(\.isEmptyForNow) == [.notifications, .agents])
+    /// Agents is the last tab still waiting for its settings. Notifications was the
+    /// other one, and filling it is what deleted its placeholder: an empty tab is
+    /// meant to stop being empty.
+    @Test func agentsIsTheOnlyEmptyOne() {
+        #expect(SettingsTab.allCases.filter(\.isEmptyForNow) == [.agents])
+        #expect(SettingsTab.notifications.placeholder == nil)
     }
 
     /// An empty tab that drew nothing would read as a tab that failed to load, so
@@ -35,7 +36,7 @@ import Testing
     /// `ContentUnavailableView` renders a blank line rather than closing the gap.
     @Test func everyEmptyTabExplainsItself() {
         let placeholders = SettingsTab.allCases.compactMap(\.placeholder)
-        #expect(placeholders.count == 2)
+        #expect(placeholders.count == 1)
         for placeholder in placeholders {
             #expect(!placeholder.title.isEmpty)
             #expect(!placeholder.message.isEmpty)

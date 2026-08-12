@@ -8,10 +8,11 @@ import Foundation
 /// offers and in what order is then asserted in CI rather than only checkable by
 /// opening the panel.
 ///
-/// `Agents` and `Notifications` are here ahead of any setting to put in them. The
-/// app has both concepts already (`WorkspaceConfig.Agent`, `BellNotifier`), neither
-/// is configurable yet, and giving them a tab now means the settings that arrive
-/// later have a place to go instead of another regrouping.
+/// `Agents` is here ahead of any setting to put in it. The app has the concept
+/// already (`WorkspaceConfig.Agent`), it is not configurable yet, and giving it a
+/// tab now means the settings that arrive later have a place to go instead of
+/// another regrouping. `Notifications` was the same and is no longer: it was filled
+/// in, which is what the reserved space was for.
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case notifications
@@ -43,7 +44,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     ///
     /// The copy lives here rather than in the view's `switch` so that a tab and the
     /// reason it is empty stay one thing: adding the first real setting to `Agents`
-    /// means deleting its case here, and the view follows.
+    /// means deleting its case here, and the view follows. That is exactly what
+    /// filling the Notifications tab did.
     var placeholder: Placeholder? {
         switch self {
         case .agents:
@@ -51,12 +53,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
                 title: "No agent settings yet",
                 message: "Settings for the agents a workspace starts will appear here.",
                 systemImage: "sparkles")
-        case .notifications:
-            return Placeholder(
-                title: "No notification settings yet",
-                message: "Settings for the notifications a terminal's bell posts will appear here.",
-                systemImage: "bell")
-        case .mcp, .remote, .general:
+        case .mcp, .remote, .general, .notifications:
             return nil
         }
     }

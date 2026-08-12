@@ -261,7 +261,7 @@ does for a local terminal whose command exited.
 
 A session that rings the bell on a connected Mac also posts a notification here,
 built by diffing the `needs_attention` flag across successive snapshots, since
-the protocol has no bell message of its own. `documentation/bell-notifications.md`
+the protocol has no bell message of its own. `documentation/notifications.md`
 covers that diff and the two rules that keep a reconnect from re-announcing every
 waiting agent.
 

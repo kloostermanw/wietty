@@ -265,11 +265,12 @@ red caption from `store.lastActionError`, so the failure is visible.
 
 Legend:
 
-- Bells: `task` wires `store.onBell` and a `RemoteBellObserver` to
+- Bells: `task` wires `store.onBell`, `store.onNotification` (the messages a
+  program sends with `OSC 9` or `OSC 777`) and a `RemoteBellObserver` to
   `BellNotifier`, and `bells.onTap` back to `showBell(_:)`, which brings this
   window forward and then takes the same path a row click does. The 🔔 on a row is
   unrelated plumbing (`store.attention`) and shows with or without notification
-  permission. See `../bell-notifications.md`.
+  permission. See `../notifications.md`.
 - `SidebarSectionHeaderView`: one per section, title, chevron, and trailing
   icon buttons. Local: refresh git status, add a project folder.
   Remote: reconnect (`store.stop(); store.start()`), remove connection

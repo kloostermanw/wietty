@@ -20,6 +20,10 @@ struct RightTerminalView: View {
     /// Only for `SettingsView`, which edits the connection list and has to make the
     /// controller resync when it does.
     @ObservedObject var remoteWorkspaces: RemoteWorkspacesController
+    /// Only for `SettingsView`, whose Notifications tab shows the permission state
+    /// and posts the test notification. The app's one notifier, so what that tab
+    /// reports is the state the bells themselves are subject to.
+    let bells: BellNotifier
     let selection: PaneSelection
 
     var body: some View {
@@ -38,7 +42,7 @@ struct RightTerminalView: View {
             // built from it, so a panel that asked for its own size would change how
             // small the window can get depending on what is on screen.
             SettingsView(store: store, remoteConnections: remoteConnections,
-                         remoteWorkspaces: remoteWorkspaces)
+                         remoteWorkspaces: remoteWorkspaces, bells: bells)
                 .frame(minWidth: SidebarWidth.paneMinimum,
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)

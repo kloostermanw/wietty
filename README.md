@@ -19,11 +19,18 @@ saying which workspace and which row rang. Clicking the notification brings Wiet
 shows that terminal, the same as clicking the row. Sessions on a connected Mac notify too, with that
 connection's name in the notification.
 
+A program can also ask for a notification by name, with the `OSC 9` or `OSC 777` escape sequence,
+and then the banner carries the words it sent instead of "rang the bell". That is how coding agents
+announce that they are waiting on your input.
+
 Permission is asked for the first time something rings rather than at launch, and macOS keeps its own
 per app switch under System Settings → Notifications. One notification is posted per row until the
 row is visited, so a shell beeping at an ambiguous tab completion cannot flood Notification Center,
-and visiting a row takes its notification back. Nothing is posted about a terminal already on screen
-in front of you. See `documentation/bell-notifications.md`.
+and visiting a row takes its notification back. A message a program sent is posted every time,
+because it is deliberate and the second one says something the first did not. Nothing is posted
+about a terminal already on screen in front of you. Settings → Notifications shows whether macOS
+allows any of this, posts a test notification, and picks the sound.
+See `documentation/notifications.md`.
 
 ## Build
 

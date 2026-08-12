@@ -71,6 +71,7 @@ struct ContentView: View {
                     RightTerminalView(store: store, stack: terminals.ghostty,
                                       remoteConnections: remoteConnections,
                                       remoteWorkspaces: remoteWorkspaces,
+                                      bells: bells,
                                       selection: paneSelection)
                 }
                 .frame(maxWidth: .infinity)
@@ -490,7 +491,21 @@ struct ContentView: View {
                 appIsFrontmost: NSApp.isActive,
                 terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
             let notification = BellNotification.local(workspace: project.name,
-                                                      label: ref.label, refId: ref.id)
+                                                      label: ref.label, refId: ref.id,
+                                                      sound: store.bellSound)
+            Task { await bells.post(notification) }
+        }
+        // A notification the process asked for by name, with its own words. The same
+        // on screen rule as a bell: a terminal the user is already looking at needs
+        // no banner. The rule that differs is upstream, in the store, which reports
+        // every one of these rather than only the first per flag.
+        store.onNotification = { project, ref, title, body in
+            guard BellAlert.shouldPost(
+                appIsFrontmost: NSApp.isActive,
+                terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
+            let notification = BellNotification.sent(workspace: project.name, label: ref.label,
+                                                     refId: ref.id, title: title, body: body,
+                                                     sound: store.bellSound)
             Task { await bells.post(notification) }
         }
         // Visiting a row takes its notification back, so Notification Center does not
@@ -518,7 +533,8 @@ struct ContentView: View {
                 terminalIsOnScreen: paneSelection.selects(remoteSession: ringer.sessionId,
                                                          on: connection)) else { continue }
             let notification = BellNotification.remote(connection: name, workspace: ringer.workspace,
-                                                       label: ringer.label, session: session)
+                                                       label: ringer.label, session: session,
+                                                       sound: store.bellSound)
             Task { await bells.post(notification) }
         }
         bells.withdraw(diff.cleared.map {
