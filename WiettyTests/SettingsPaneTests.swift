@@ -145,20 +145,25 @@ import WiettyShared
     /// The permission button and the failure label are the two branches worth the
     /// trouble: one appears in exactly one state, the other only after a refusal.
     @Test func theNotificationsTabRendersInEveryState() {
-        let states: [(NotificationPermission?, BellNotifier.TestResult?)] = [
-            (nil, nil),
-            (.notAsked, nil),
-            (.granted, .posted),
-            (.denied, .failed(reason: "Notifications are not allowed for this application"))
+        let refusal = "Notifications are not allowed for this application"
+        let states: [(NotificationPermission?, BellNotifier.TestResult?, String?)] = [
+            (nil, nil, nil),
+            (.notAsked, nil, nil),
+            (.granted, .posted, nil),
+            (.denied, .failed(reason: refusal), nil),
+            // The one the button being pressed and nothing happening produces: still
+            // not asked, because macOS turned the request down without a prompt.
+            (.notAsked, nil, refusal)
         ]
-        for (permission, result) in states {
+        for (permission, result, failure) in states {
             let defaults = UserDefaults(suiteName: UUID().uuidString)!
             let view = Form {
                 NotificationSettings(
                     store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
                     bells: notifier(),
                     permission: permission,
-                    testResult: result)
+                    testResult: result,
+                    requestFailure: failure)
             }
             .formStyle(.grouped)
             let renderer = ImageRenderer(content: view.frame(width: 600, height: 900))

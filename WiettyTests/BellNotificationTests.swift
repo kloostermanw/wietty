@@ -290,8 +290,60 @@ import WiettyShared
     @Test func askingFromTheTabPromptsAndReportsTheAnswer() async {
         let sink = FakeSink()
         let notifier = BellNotifier(sink: sink)
-        #expect(await notifier.requestPermission() == .granted)
+        #expect(await notifier.requestPermission() == .decided(.granted))
         #expect(sink.authorizationRequests == 1)
+    }
+
+    /// The bug this pair exists for. macOS turns a request from a bundle it does not
+    /// accept down in about a millisecond, without showing anyone a prompt, and the
+    /// state afterwards is the state before. Reported as a denial, or as another
+    /// "not asked yet", the button is indistinguishable from a dead one, which is
+    /// exactly what it looked like.
+    @Test func aRefusedRequestSaysMacOSTurnedItDown() async {
+        let sink = FakeSink()
+        sink.requestFailure = SinkRefusal()
+        sink.status = .notAsked
+        let notifier = BellNotifier(sink: sink)
+        #expect(await notifier.requestPermission()
+                == .failed(reason: "Notifications are not allowed for this application"))
+    }
+
+    /// And a denial still reads as a denial rather than as a failure: one is the
+    /// user's answer and the other is the request never reaching them.
+    @Test func aDenialIsNotReportedAsAFailure() async {
+        let sink = FakeSink()
+        sink.granted = false
+        let notifier = BellNotifier(sink: sink)
+        #expect(await notifier.requestPermission() == .decided(.denied))
+    }
+
+    /// A test notification after a refused request says the same thing, rather than
+    /// blaming System Settings for a switch the user never touched.
+    @Test func aTestAfterARefusedRequestBlamesTheRefusal() async {
+        let sink = FakeSink()
+        sink.requestFailure = SinkRefusal()
+        sink.status = .notAsked
+        let notifier = BellNotifier(sink: sink)
+        #expect(await notifier.sendTest(sound: .systemDefault)
+                == .failed(reason: "Notifications are not allowed for this application"))
+        #expect(sink.added.isEmpty)
+    }
+
+    /// A refusal must not turn into permanent silence once the app is signed and
+    /// permission is granted: the next read of the state re-arms the request.
+    @Test func aRefusalIsNotCachedForever() async {
+        let sink = FakeSink()
+        sink.requestFailure = SinkRefusal()
+        sink.status = .notAsked
+        let notifier = BellNotifier(sink: sink)
+        #expect(await notifier.requestPermission()
+                == .failed(reason: "Notifications are not allowed for this application"))
+
+        sink.requestFailure = nil
+        sink.status = nil
+        #expect(await notifier.permission() == .granted)
+        await notifier.post(notification())
+        #expect(sink.added.count == 1)
     }
 
     @Test func aTestNotificationIsPostedWithTheChosenSound() async {

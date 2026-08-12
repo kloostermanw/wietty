@@ -72,9 +72,19 @@ targets:
         MARKETING_VERSION: "0.0.1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
+        # Ad hoc signed, and signed at all, which is not the same thing as the
+        # `CODE_SIGNING_ALLOWED: NO` this used to say. That produced a bundle whose
+        # Mach-O carried a linker signature and whose bundle carried none: the
+        # signing identifier was "Wietty" rather than the bundle id, the Info.plist
+        # was not bound, and nothing was sealed. macOS refuses to ask for
+        # notification permission for such a bundle, turning the request down in
+        # about a millisecond with `UNErrorDomain Code=1` and no prompt, so bells
+        # and OSC 9 notifications could never work in a shipped build. No developer
+        # account is involved: "-" is the ad hoc identity, and it is enough.
+        # See docs/notifications.md.
         CODE_SIGN_IDENTITY: "-"
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: YES
+        CODE_SIGNING_ALLOWED: YES
   # The helper libghostty surfaces run as their command (Task 7 of the
   # libghostty substrate work). See wietty-pty/main.swift for why it exists.
   wietty-pty:
@@ -85,9 +95,11 @@ targets:
       base:
         PRODUCT_NAME: wietty-pty
         SWIFT_VERSION: "6.0"
+        # Signed for the same reason, and it has to be: an unsigned executable
+        # inside a signed bundle breaks the seal on the bundle that contains it.
         CODE_SIGN_IDENTITY: "-"
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: YES
+        CODE_SIGNING_ALLOWED: YES
   WiettyTests:
     type: bundle.unit-test
     platform: macOS
