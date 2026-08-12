@@ -5,9 +5,10 @@ so the intended structure stays readable without running the app.
 
 The view is a segmented tab control above a grouped `Form`, and the tab decides
 what the form holds. Five tabs (`SettingsTab`), in this order: "General" (the
-badge toggle and the three interval steppers), "Notifications" and "Agents"
-(both empty for now), "Remote" (the LAN toggle, the remote terminal port, the URL
-and QR, and the list of other Wietty instances this one connects to), and "MCP"
+badge toggle and the three interval steppers), "Notifications" (the permission
+state, a test notification, and the sound), "Agents" (empty for now), "Remote"
+(the LAN toggle, the remote terminal port, the URL and QR, and the list of other
+Wietty instances this one connects to), and "MCP"
 (the MCP server port). The panel opens on "General" (`SettingsTab.default`),
 which is the first segment but is named rather than derived from that, so
 reordering the segments does not quietly move where the panel lands. The
@@ -75,13 +76,62 @@ the whole window can get.
 └──────────────────────────────────────────────────┘
 ```
 
-## Notifications and Agents
+## Notifications
 
-Both draw a `ContentUnavailableView` from `SettingsTab.placeholder` instead of a
-form, outside the `Form` rather than as a section inside one. Notifications reads
-"No notification settings yet", Agents reads "No agent settings yet". Agents is
-the one drawn below; Notifications is the same layout with the other copy and a
-`bell` rather than a `sparkles` glyph.
+Three sections (`NotificationSettings`, in `SettingsView.swift`): whether macOS
+lets this app post at all, a way to prove the whole path works, and which sound it
+makes. See
+`../notifications.md` for what the app does with a bell and with an `OSC 9`.
+
+```
+┌─ pane ───────────────────────────────────────────┐
+│ ┌─────────┬─────────┬────────┬────────┬───────┐   │
+│ │ General │ Notifi… │ Agents │ Remote │  MCP  │   │
+│ └─────────┴─────────┴────────┴────────┴───────┘   │
+│ ────────────────────────────────────────────────  │
+│  System notifications                             │
+│    Permission                        ✓ Allowed    │
+│    (only while nobody has been asked:)            │
+│    [ Allow notifications… ]                       │
+│    (only after a denial:)                         │
+│    Turn Wietty's notifications back on in System  │
+│    Settings › Notifications. macOS asks only      │
+│    once, so this app cannot ask again.            │
+│    A terminal notifies you in two ways: the bell  │
+│    character, which every shell rings, and the    │
+│    OSC 9 and OSC 777 escape sequences, which a    │
+│    program uses to send a message of its own.     │
+│    That second one is how coding agents say they  │
+│    are waiting on your input. …                   │
+│    A Focus mode can hold banners back even when   │
+│    this says Allowed. …                           │
+│                                                    │
+│  Test notification                                │
+│    [ Send test notification ]                     │
+│    (before the first press:)                      │
+│    Posts one notification, so the whole path can  │
+│    be checked without waiting for a terminal to   │
+│    ring. …                                        │
+│    (after a successful press:)                    │
+│    Posted. If no banner appeared, a Focus mode    │
+│    or Notification Centre is holding it back.     │
+│    (after a refusal:)                             │
+│    ⚠ Not posted: <reason>                        │
+│                                                    │
+│  Bell sound                                       │
+│    Sound          [ Default   ▾ ]   [ Test ]      │
+│    Played by every notification a terminal posts. │
+│    "Default" is the alert sound chosen in System  │
+│    Settings › Sound.                              │
+└──────────────────────────────────────────────────┘
+```
+
+## Agents
+
+Draws a `ContentUnavailableView` from `SettingsTab.placeholder` instead of a form,
+outside the `Form` rather than as a section inside one. It is the last tab that
+exists ahead of its settings; Notifications was the other one until it was filled
+in, which is what the reserved space was for.
 
 ```
 ┌─ pane ───────────────────────────────────────────┐
@@ -174,6 +224,32 @@ Legend:
   `TerminalService.open`. It has no effect today: libghostty exposes no way to
   set a surface's title, which the caption says outright. It stays because the
   plumbing is intact and the day libghostty gains a title setter it is one line.
+- `Permission`: what `BellNotifier.permission()` last answered, read in the tab's
+  `task` on the way in rather than once per launch, because permission can be
+  granted or revoked in System Settings while Wietty runs. Four states, each with
+  its own glyph and colour: "Checking…" (nothing read yet), "Not asked yet",
+  "Allowed" (green), "Not allowed" (red). Reading it never prompts.
+- `[ Allow notifications… ]` appears only while the state is "Not asked yet".
+  macOS shows the prompt once per install, so after a denial the button could do
+  nothing at all, and the sentence pointing at System Settings takes its place.
+- `[ Send test notification ]`: `BellNotifier.sendTest(sound:)`, which posts
+  `BellNotification.test()` with the sound currently selected below. It reports
+  what happened either way: `UNUserNotificationCenter` refuses an app bundle run
+  from a scratch directory outright, and a Test button that fails silently answers
+  the opposite question from the one it was pressed to answer. The test notification's
+  target matches no row, so tapping it reopens the window and activates nothing.
+- `Sound`: a `Picker` over `BellSound.offered` bound to `$store.bellSound`:
+  "None", "Default" (the system alert sound), then every sound in
+  `/System/Library/Sounds` by name. Persisted under `wietty.bellSound` and applied
+  to the next notification. A stored sound that is no longer installed is appended
+  to the list, so the control names what is missing rather than showing a blank
+  selection. `[ Test ]` plays the selection now (`BellSound.play()`), and is
+  disabled for "None", which has nothing to play.
+- `NotificationSettings` is a view of its own because it is the only tab with state
+  of its own (the permission it read, the verdict on the last test), and its `init`
+  takes both for the same reason `SettingsView.init` takes a `tab:`: they decide
+  four of the branches drawn here, and a render test that could not set them would
+  cover one (`SettingsPaneTests.theNotificationsTabRendersInEveryState`).
 - `Fast` / `Normal` / `Slow`: one `Stepper` row each (`SettingsView.intervalStepper`),
   bound to `$store.checkIntervals.fast`, `.normal`, `.slow`.
 - `15 s` / `60 s` / `300 s`: the current value in seconds, shown next to each

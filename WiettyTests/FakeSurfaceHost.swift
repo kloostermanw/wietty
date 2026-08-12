@@ -34,6 +34,7 @@ final class FakeSurfaceHost: TerminalSurfaceHosting {
 
     var onTitle: (@MainActor (String, String) -> Void)?
     var onBell: (@MainActor (String) -> Void)?
+    var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
     var onResized: (@MainActor (String, TerminalSize) -> Void)?
     var onCloseRequested: (@MainActor (String) -> Void)?
 
@@ -77,6 +78,9 @@ final class FakeSurfaceHost: TerminalSurfaceHosting {
 
     func emitTitle(_ id: String, _ title: String) { onTitle?(id, title) }
     func emitBell(_ id: String) { onBell?(id) }
+    func emitNotification(_ id: String, title: String, body: String) {
+        onDesktopNotification?(id, title, body)
+    }
     func emitResize(_ id: String, _ size: TerminalSize) {
         sizes[id] = size
         onResized?(id, size)

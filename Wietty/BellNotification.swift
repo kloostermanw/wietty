@@ -71,7 +71,9 @@ enum BellTarget: Equatable, Hashable {
     }
 }
 
-/// One bell, ready to hand to the notification centre.
+/// One notification from a terminal, ready to hand to the notification centre.
+/// Either a bell, which carries only that it rang, or a message a process sent
+/// with `OSC 9` or `OSC 777`.
 ///
 /// Built here rather than at the call site so what the banner says is asserted in
 /// tests instead of only being visible when something rings.
@@ -80,28 +82,70 @@ struct BellNotification: Equatable {
     let title: String
     let subtitle: String
     let body: String
+    /// What it plays, from `ProjectStore.bellSound`. Carried on the value rather
+    /// than read inside the sink, so the sink stays the untestable part and the
+    /// preference reaching a banner is something a test can see.
+    let sound: BellSound
 
     var identifier: String { target.notificationIdentifier }
 
     /// macOS puts the app's own name above the banner, so the title does not repeat
     /// it and instead says which terminal of which workspace rang, which is the
     /// thing that tells two agents apart.
-    static func local(workspace: String, label: String, refId: UUID) -> BellNotification {
+    static func local(workspace: String, label: String, refId: UUID,
+                      sound: BellSound = .systemDefault) -> BellNotification {
         BellNotification(target: .local(refId: refId),
                          title: "\(workspace) / \(label)",
                          subtitle: "",
-                         body: Self.body)
+                         body: Self.body,
+                         sound: sound)
+    }
+
+    /// A notification a process asked for, with the words it supplied.
+    ///
+    /// The process's own title goes on top, because it is the thing it wanted read,
+    /// and the terminal it came from goes underneath, because with two agents
+    /// running "Waiting for input" says nothing about which one. A process that sent
+    /// no title (`OSC 9;text`) leaves nothing to put on top, so the terminal moves up
+    /// into the title and the subtitle is empty rather than blank: an empty subtitle
+    /// closes the gap, a repeated one wastes the line.
+    static func sent(workspace: String, label: String, refId: UUID,
+                     title: String, body: String,
+                     sound: BellSound = .systemDefault) -> BellNotification {
+        let terminal = "\(workspace) / \(label)"
+        return BellNotification(target: .local(refId: refId),
+                                title: title.isEmpty ? terminal : title,
+                                subtitle: title.isEmpty ? "" : terminal,
+                                body: body,
+                                sound: sound)
     }
 
     /// The connection's name goes in the subtitle, because a remote bell is
     /// otherwise indistinguishable from a local one and "which Mac" is the first
     /// thing you need to know.
     static func remote(connection: String, workspace: String, label: String,
-                       session: RemoteSessionRef) -> BellNotification {
+                       session: RemoteSessionRef,
+                       sound: BellSound = .systemDefault) -> BellNotification {
         BellNotification(target: .remote(session),
                          title: "\(workspace) / \(label)",
                          subtitle: connection,
-                         body: Self.body)
+                         body: Self.body,
+                         sound: sound)
+    }
+
+    /// The one the Test button in Settings posts, so the whole path (permission,
+    /// centre, banner, sound) can be checked without waiting for a real bell.
+    ///
+    /// Its target is a random row id, which matches no row: tapping it reopens the
+    /// window and finds nothing to activate, which is the right amount of nothing
+    /// for a test banner, and a fresh id per press means two presses do not replace
+    /// each other.
+    static func test(sound: BellSound = .systemDefault) -> BellNotification {
+        BellNotification(target: .local(refId: UUID()),
+                         title: "Wietty",
+                         subtitle: "",
+                         body: "This is what a notification from a terminal looks like.",
+                         sound: sound)
     }
 
     /// Deliberately plain. All a bell carries is that it rang; anything more

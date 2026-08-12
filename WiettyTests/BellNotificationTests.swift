@@ -77,6 +77,56 @@ import WiettyShared
         #expect(notification.identifier == BellTarget.local(refId: refId).notificationIdentifier)
     }
 
+    /// A notification a process sent says what the process wanted said, with the
+    /// terminal underneath: with two agents running, "Waiting for input" on its own
+    /// does not say which one.
+    @Test func aSentNotificationLeadsWithTheProcessesOwnTitle() {
+        let refId = UUID()
+        let notification = BellNotification.sent(workspace: "Wietty", label: "Claude Code",
+                                                 refId: refId,
+                                                 title: "Claude", body: "Waiting for input")
+        #expect(notification.title == "Claude")
+        #expect(notification.subtitle == "Wietty / Claude Code")
+        #expect(notification.body == "Waiting for input")
+        // The same target a bell from that row has, so the newer banner replaces the
+        // older one rather than the two stacking.
+        #expect(notification.target == .local(refId: refId))
+    }
+
+    /// `OSC 9;text` carries a body and no title, so the terminal moves up into the
+    /// title rather than leaving it empty. A blank subtitle line is what
+    /// `ContentUnavailableView` taught us to avoid, and the same holds in a banner.
+    @Test func aSentNotificationWithoutATitleNamesTheTerminalInstead() {
+        let notification = BellNotification.sent(workspace: "Wietty", label: "Claude Code",
+                                                 refId: UUID(),
+                                                 title: "", body: "Waiting for input")
+        #expect(notification.title == "Wietty / Claude Code")
+        #expect(notification.subtitle == "")
+        #expect(notification.body == "Waiting for input")
+    }
+
+    /// The chosen sound rides on the notification rather than being read inside the
+    /// sink, so it is the one thing about the preference that reaches a test.
+    @Test func theChosenSoundIsCarried() {
+        #expect(BellNotification.local(workspace: "w", label: "l", refId: UUID(),
+                                       sound: .silent).sound == .silent)
+        #expect(BellNotification.sent(workspace: "w", label: "l", refId: UUID(),
+                                      title: "t", body: "b",
+                                      sound: .named("Ping")).sound == .named("Ping"))
+        // The default is what the app played before there was a setting.
+        #expect(BellNotification.local(workspace: "w", label: "l", refId: UUID()).sound
+                == .systemDefault)
+    }
+
+    /// The Test button's banner. Its target matches no row on purpose, and it is a
+    /// fresh one per press so two presses do not replace each other.
+    @Test func theTestNotificationIsSelfExplanatoryAndUnique() {
+        let first = BellNotification.test()
+        let second = BellNotification.test()
+        #expect(!first.body.isEmpty)
+        #expect(first.identifier != second.identifier)
+    }
+
     /// A remote bell is otherwise indistinguishable from a local one, and which Mac
     /// rang is the first thing you need.
     @Test func aRemoteBellNamesTheConnectionToo() {
@@ -109,21 +159,11 @@ import WiettyShared
 /// Posting, and the permission it needs.
 @MainActor
 @Suite struct BellNotifierTests {
-    /// Records what a real notification centre would have been asked to do.
-    private final class FakeSink: NotificationSink {
-        var granted = true
-        var authorizationRequests = 0
-        var added: [BellNotification] = []
-        var withdrawn: [[String]] = []
-        var onTap: (@MainActor (BellTarget) -> Void)?
-
-        func requestAuthorization() async -> Bool {
-            authorizationRequests += 1
-            return granted
-        }
-        func add(_ notification: BellNotification) { added.append(notification) }
-        func removeDelivered(identifiers: [String]) { withdrawn.append(identifiers) }
-    }
+    /// Records what a real notification centre would have been asked to do. Shared
+    /// with the Settings panel's render tests, which also need a notifier that is
+    /// not the real one (`FakeNotificationSink`).
+    private typealias FakeSink = FakeNotificationSink
+    private typealias SinkRefusal = FakeSinkRefusal
 
     private func notification(_ label: String = "Claude Code") -> BellNotification {
         BellNotification.local(workspace: "Wietty", label: label, refId: UUID())
@@ -195,6 +235,96 @@ import WiettyShared
         await notifier.post(notification())
         notifier.withdraw([])
         #expect(sink.withdrawn.isEmpty)
+    }
+
+    /// A centre that refuses the request is silent on the bell path, the same way a
+    /// denial is. This is what an unsigned bundle in a scratch directory does.
+    @Test func aRefusedPostIsSwallowedOnTheBellPath() async {
+        let sink = FakeSink()
+        sink.addFailure = SinkRefusal()
+        let notifier = BellNotifier(sink: sink)
+        await notifier.post(notification())
+        #expect(sink.added.isEmpty)
+    }
+
+    // MARK: - What the settings tab asks
+
+    /// Reading the state must never be what puts the prompt on screen: the tab shows
+    /// it whenever it is opened, and a panel that asks for permission because it was
+    /// looked at is exactly the prompt the lazy request avoids.
+    @Test func readingPermissionAsksForNothing() async {
+        let sink = FakeSink()
+        sink.status = .notAsked
+        let notifier = BellNotifier(sink: sink)
+        #expect(await notifier.permission() == .notAsked)
+        #expect(sink.authorizationRequests == 0)
+    }
+
+    /// And it is read afresh every time, because permission can be taken away in
+    /// System Settings while the app runs.
+    @Test func permissionIsNotCached() async {
+        let sink = FakeSink()
+        let notifier = BellNotifier(sink: sink)
+        #expect(await notifier.permission() == .granted)
+        sink.status = .denied
+        #expect(await notifier.permission() == .denied)
+        #expect(sink.statusReads == 2)
+    }
+
+    /// Permission granted from the tab has to reach the bell path too. Without the
+    /// cache being updated, a first bell before the button was pressed would leave
+    /// `granted` false and every later bell silent.
+    @Test func permissionGrantedFromTheTabUnblocksBells() async {
+        let sink = FakeSink()
+        sink.granted = false
+        let notifier = BellNotifier(sink: sink)
+        await notifier.post(notification("before"))
+        #expect(sink.added.isEmpty)
+
+        sink.granted = true
+        #expect(await notifier.permission() == .granted)
+        await notifier.post(notification("after"))
+        #expect(sink.added.count == 1)
+    }
+
+    @Test func askingFromTheTabPromptsAndReportsTheAnswer() async {
+        let sink = FakeSink()
+        let notifier = BellNotifier(sink: sink)
+        #expect(await notifier.requestPermission() == .granted)
+        #expect(sink.authorizationRequests == 1)
+    }
+
+    @Test func aTestNotificationIsPostedWithTheChosenSound() async {
+        let sink = FakeSink()
+        let notifier = BellNotifier(sink: sink)
+        #expect(await notifier.sendTest(sound: .named("Submarine")) == .posted)
+        #expect(sink.added.count == 1)
+        #expect(sink.added.first?.sound == .named("Submarine"))
+    }
+
+    /// The whole point of the button: `UNUserNotificationCenter` refuses a bundle run
+    /// from a scratch directory outright, and a Test button that fails silently
+    /// answers the opposite question from the one it was pressed to answer.
+    @Test func aRefusedTestNotificationSaysWhy() async {
+        let sink = FakeSink()
+        sink.addFailure = SinkRefusal()
+        let notifier = BellNotifier(sink: sink)
+        let result = await notifier.sendTest(sound: .systemDefault)
+        #expect(result == .failed(reason: "Notifications are not allowed for this application"))
+    }
+
+    /// A denied test says so in the tab's own words, because the centre is never
+    /// reached at all and has no error to give.
+    @Test func aDeniedTestNotificationSaysSo() async {
+        let sink = FakeSink()
+        sink.granted = false
+        let notifier = BellNotifier(sink: sink)
+        guard case .failed(let reason) = await notifier.sendTest(sound: .systemDefault) else {
+            Issue.record("a denied test notification reported success")
+            return
+        }
+        #expect(reason.contains("System Settings"))
+        #expect(sink.added.isEmpty)
     }
 }
 
@@ -438,6 +568,81 @@ import WiettyShared
         store.onBell = { _, _ in count += 1 }
         store.handle(.bell(sessionId: "someone-elses-session"))
         #expect(count == 0)
+    }
+
+    /// A notification a process asked for carries its words through, and raises the
+    /// same flag a bell raises: the 🔔 means "this terminal wants you" whichever way
+    /// the terminal said so.
+    @Test func aNotificationCarriesItsWordsAndRaisesTheFlag() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = makeStore(fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+        let ref = store.projects[0].terminals[0]
+
+        var posted: [(String, UUID, String, String)] = []
+        store.onNotification = { project, ref, title, body in
+            posted.append((project.name, ref.id, title, body))
+        }
+
+        store.handle(.notification(sessionId: "sess-A", title: "Claude Code",
+                                   body: "Waiting for input"))
+        #expect(posted.count == 1)
+        #expect(posted.first?.0 == "proj")
+        #expect(posted.first?.1 == ref.id)
+        #expect(posted.first?.2 == "Claude Code")
+        #expect(posted.first?.3 == "Waiting for input")
+        #expect(store.attention.contains(ref.id))
+    }
+
+    /// The rule that differs from bells. A bell is ambiguous, and a run of them says
+    /// nothing new, so only the first is reported. An `OSC 9` is a program choosing
+    /// to send words, and "waiting for input" followed by "build failed" is two
+    /// things: swallowing the second because the row had not been visited would lose
+    /// the one that matters.
+    @Test func aSecondNotificationOnTheSameRowIsStillReported() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = makeStore(fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+
+        var bodies: [String] = []
+        store.onNotification = { _, _, _, body in bodies.append(body) }
+        store.handle(.notification(sessionId: "sess-A", title: "", body: "Waiting for input"))
+        store.handle(.notification(sessionId: "sess-A", title: "", body: "Build failed"))
+        #expect(bodies == ["Waiting for input", "Build failed"])
+    }
+
+    /// And a bell that follows a notification is still swallowed by its own rule:
+    /// the flag is up, so the bell has nothing to add.
+    @Test func aBellAfterANotificationIsStillSilent() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = makeStore(fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+
+        var bells = 0
+        store.onBell = { _, _ in bells += 1 }
+        store.handle(.notification(sessionId: "sess-A", title: "", body: "Waiting for input"))
+        store.handle(.bell(sessionId: "sess-A"))
+        #expect(bells == 0)
+    }
+
+    @Test func aNotificationForAnUnknownSessionReportsNothing() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = makeStore(fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+
+        var count = 0
+        store.onNotification = { _, _, _, _ in count += 1 }
+        store.handle(.notification(sessionId: "someone-elses-session", title: "", body: "hi"))
+        #expect(count == 0)
+        #expect(store.attention.isEmpty)
     }
 
     /// Visiting a row reports its id, which is what withdraws its notification. The

@@ -9,6 +9,23 @@ import Foundation
         #expect(store.checkIntervals == .default)
     }
 
+    /// The sound this app played before the setting existed, so an upgrade is
+    /// silent about itself.
+    @Test func theBellSoundStartsAtTheSystemDefault() {
+        let store = ProjectStore(defaults: UserDefaults(suiteName: UUID().uuidString)!, service: FakeTerminalService())
+        #expect(store.bellSound == .systemDefault)
+    }
+
+    @Test func theBellSoundPersistsAcrossInstances() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let store1 = ProjectStore(defaults: defaults, service: FakeTerminalService())
+        store1.bellSound = .named("Submarine")
+        let store2 = ProjectStore(defaults: defaults, service: FakeTerminalService())
+        #expect(store2.bellSound == .named("Submarine"))
+        store2.bellSound = .silent
+        #expect(ProjectStore(defaults: defaults, service: FakeTerminalService()).bellSound == .silent)
+    }
+
     @Test func persistsAndClampsAcrossInstances() {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         let store1 = ProjectStore(defaults: defaults, service: FakeTerminalService())

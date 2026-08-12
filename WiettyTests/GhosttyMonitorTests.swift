@@ -29,6 +29,19 @@ import Foundation
         #expect(events == [.bell(sessionId: "gt:2")])
     }
 
+    /// `OSC 9` and `OSC 777` reach the same callback, and stay a different event
+    /// from a bell all the way through: they carry words a program chose to send.
+    @Test func aDesktopNotificationFromTheSurfaceBecomesItsOwnEvent() {
+        let host = FakeSurfaceHost()
+        let monitor = GhosttyMonitor(host: host)
+        var events: [MonitorEvent] = []
+        monitor.start { events.append($0) }
+        host.emitNotification("gt:6", title: "Claude Code", body: "Waiting for input")
+        #expect(events == [.notification(sessionId: "gt:6",
+                                         title: "Claude Code",
+                                         body: "Waiting for input")])
+    }
+
     /// The service owns terminations, because the child exiting is what a
     /// termination is and only the service reaps it. The monitor is the app's one
     /// listener, so it has to be the thing that carries the event.

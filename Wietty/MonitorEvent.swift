@@ -5,6 +5,15 @@ import Foundation
 enum MonitorEvent: Equatable, Sendable {
     case title(sessionId: String, name: String)
     case bell(sessionId: String)
+    /// A notification the process asked for by name, through `OSC 9` or `OSC 777`,
+    /// rather than the single byte a bell is.
+    ///
+    /// Separate from `.bell` because the two say different amounts. A bell carries
+    /// nothing but that it rang, and shells ring it for ambiguous tab completion; a
+    /// notification carries words a program chose to send, which is how coding
+    /// agents announce that they are waiting on input. `title` is empty for a bare
+    /// `OSC 9;text`, which supplies a body and nothing else.
+    case notification(sessionId: String, title: String, body: String)
     case job(sessionId: String, jobName: String)
     case terminated(sessionId: String)
 
@@ -25,6 +34,13 @@ enum MonitorEvent: Equatable, Sendable {
             return .title(sessionId: sessionId, name: name)
         case "bell":
             return .bell(sessionId: sessionId)
+        case "notification":
+            // A missing title is a notification with no title, because that is what
+            // `OSC 9;text` is. A missing body is nothing to show, so it is not one.
+            guard let body = object["body"] as? String else { return nil }
+            return .notification(sessionId: sessionId,
+                                 title: object["title"] as? String ?? "",
+                                 body: body)
         case "job":
             // job_name may be JSON null (bare shell / no shell integration);
             // treat null or a missing key as "" (meaning "no agent running").
