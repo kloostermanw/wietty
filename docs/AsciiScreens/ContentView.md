@@ -27,10 +27,11 @@ divider is to the bar's left and the sidebar keeps the full height.
   six points wide and draggable
 ```
 
-The bar says which workspace the pane's content belongs to, and is empty when
-nothing is selected. Its trailing gear is the visible way into settings, which the
-window has no title bar to hold. See `NavBarView.md`, which also covers why its
-height is part of the window's minimum.
+The bar says which workspace the pane's content belongs to, or `Settings` for the
+panel, and is empty when nothing is selected. Its trailing gear toggles that panel and
+is the only way into it that is inside the window, which has no title bar to hold
+anything of its own. See `NavBarView.md`, which also covers why its height is part of
+the window's minimum.
 
 The Local header offers refreshing git status and adding a folder, and nothing
 else. See `ContentView.localSectionButtons(refresh:add:)`.
@@ -57,22 +58,38 @@ pane is not showing.
 `PaneRouter` is owned by `WiettyApp` rather than held as `ContentView` state, for
 one reason: the app menu's "Settings…" item and ⌘, are declared in the scene's
 `commands` (`SettingsCommand`), which cannot reach a view's `@State`. The gear in
-the bar and the menu item then set the same property. The menu item opens or
-focuses the main window first, the way a tapped bell notification does, since the
-window can be closed while the app runs and a panel in a pane nobody can see is not
-an answer. There is no `Settings` scene: settings is one of the things this window's
-pane shows, so a second window would be the only part of the app that opened one.
+the bar and the menu item then go through the same object. It also holds every rule
+that uncovers the terminal, because a rule written inside a `.task` closure cannot be
+asserted in CI, and one of them was wrong for exactly that reason (see below).
+`PaneRouterTests` covers them now.
+
+The menu item opens or focuses the main window before setting the override, the way a
+tapped bell notification does, since the window can be closed while the app runs and a
+panel in a pane nobody can see is not an answer. There is no `Settings` scene: settings
+is one of the things this window's pane shows, so a second window would be the only
+part of the app that opened one.
 
 An override covers the local selection rather than replacing it, so nothing about
 the local terminal changes while a remote session, a log, or settings is on screen,
-and clearing the override puts the local terminal back. A local terminal coming into
-view clears it, which is what makes opening or focusing a local terminal show that
-terminal even while something else is on screen. That is deliberately keyed on a
-non-nil selection: the service also selects nil when the last local terminal
-closes, and blanking a pane someone is watching a remote terminal in would be a
-bug rather than an intent. Closing one local terminal while another remains does
-take the pane, because the service selects that other terminal and nothing here
-can tell that apart from a click.
+and clearing the override puts the local terminal back. Three things clear it.
+
+Activating a terminal row clears it directly (`ContentView.activate`). This is not
+redundant with the callback below, it is the main path: because an override *covers*
+the local selection, the terminal a user clicks to get back is usually the one that is
+still selected, and `GhosttyService.select` returns early when the session is already
+selected, so no callback arrives. Relying on the callback alone left that click dead
+and left the settings panel, which has no close button, with no exit at all.
+
+A selection the service reports clears it too, which is what makes a click on a
+different row, the MCP server, or a remote client show that terminal even while
+something else is on screen. That is deliberately keyed on a non-nil selection: the
+service also selects nil when the last local terminal closes, and blanking a pane
+someone is reading would be a bug rather than an intent. Closing one local terminal
+while another remains does take the pane, because the service selects that other
+terminal and nothing here can tell that apart from a click.
+
+The gear toggles, so it is also a way out, and the only one when no local terminal is
+selected: a fresh install has no row to activate.
 
 Only the remote session on screen holds a socket. Its view carries an explicit
 `.id`, so switching sessions discards the view rather than reusing it, and

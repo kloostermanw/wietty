@@ -33,7 +33,8 @@ prevent horizontally.
 
 ## What it says
 
-The workspace whatever the pane is showing belongs to.
+The workspace whatever the pane is showing belongs to, or `Settings` for the panel,
+which belongs to none.
 
 | Pane content | Bar |
 | --- | --- |
@@ -50,11 +51,20 @@ is the workspace.
 
 ## What it carries
 
-One button, the gear, from `NavBarView.trailingButtons(openSettings:)`. It puts
+One button, the gear, from `NavBarView.trailingButtons(openSettings:)`. It toggles
 `SettingsView` in the pane and is tinted while the panel is the thing on screen
-(`PaneSelection.showsSettings`), the same way the sidebar marks the row whose
-terminal is up. It is the only visible way in: the app menu's "Settings…" item and
-⌘, do the same thing, and the window has no title bar to hold anything else.
+(`PaneSelection.showsSettings`). What is marked is the same idea as the sidebar's
+selected row; how it is drawn is not, since the sidebar uses a background fill and a
+28 point bar has no room for one that would not read as a second selection.
+
+It is the only way in that is inside the window: the app menu's "Settings…" item and
+⌘, are the other two, and the window has no title bar to hold anything of its own.
+Toggling rather than showing is load bearing, not a nicety. See `SettingsView.md` for
+the two ways out and why the gear has to be one of them.
+
+The glyph is given a 22 point frame and an explicit `contentShape`, so the target is
+the bar's height rather than the icon's outline. Without it the only way into settings
+inside the window was a roughly 13 point hit area.
 
 A static function taking its action, rather than buttons written inline, for the
 same reason `ContentView.localSectionButtons` is one: which buttons the bar shows is
@@ -63,8 +73,8 @@ the window.
 
 ## How that is decided
 
-Three pure steps in `NavBarTitle`, all tested without SwiftUI in
-`NavBarTitleTests`, because they can be wrong in different ways:
+Two pure steps in `NavBarTitle`, plus the composition the view calls, all tested
+without SwiftUI in `NavBarTitleTests`. The two steps can be wrong in different ways:
 
 - `NavBarTitle.origin(for:projects:remote:)` finds the workspace, returning a
   `PaneOrigin` (a workspace name, and a connection name for anything on another
@@ -74,10 +84,11 @@ Three pure steps in `NavBarTitle`, all tested without SwiftUI in
   business knowing about.
 - `NavBarTitle.text(for:)` turns that into the line, which is where the
   `connection / workspace` shape lives.
-- `NavBarTitle.line(for:projects:remote:)` composes those two, and answers
-  `Settings` directly. Settings belongs to no workspace, so there is nothing for the
-  lookup to find, and an empty bar over the panel would be a worse answer than
-  naming it.
+`NavBarTitle.line(for:projects:remote:)` is what the view calls. It composes those
+two and answers `Settings` directly, since settings belongs to no workspace, so there
+is nothing for the lookup to find and an empty bar over the panel would be a worse
+answer than naming it. Composition rather than a third step: the only logic of its own
+is that early return.
 
 Nil is a real answer at every branch and never a crash: a session id can outlive
 the row that carried it, a workspace can be removed while its log is on screen, and

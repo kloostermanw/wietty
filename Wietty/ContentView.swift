@@ -8,11 +8,9 @@ struct ContentView: View {
     @ObservedObject var remoteConnections: RemoteConnectionsStore
     @ObservedObject var remoteWorkspaces: RemoteWorkspacesController
     let bells: BellNotifier
-    /// What is covering the local terminal in the pane: a remote session, a process
-    /// log, or settings. One value, so picking any of them replaces the others and
-    /// nothing has to remember to clear them. Owned by the app rather than held here
-    /// as `@State`, because the Settings menu item is declared in the scene's
-    /// `commands` and cannot reach a view's state.
+    /// What is covering the local terminal in the pane, and the rules that uncover
+    /// it. See `PaneRouter`, which is where both live and why it is the app that owns
+    /// them.
     let router: PaneRouter
     @Environment(\.openWindow) private var openWindow
     @State private var mcpHost: MCPServerHost?
@@ -68,7 +66,7 @@ struct ContentView: View {
                 VStack(spacing: 0) {
                     NavBarView(store: store, remoteWorkspaces: remoteWorkspaces,
                                selection: paneSelection,
-                               onOpenSettings: { router.override = .settings })
+                               onOpenSettings: { router.toggleSettings() })
                     Divider()
                     RightTerminalView(store: store, stack: terminals.ghostty,
                                       remoteConnections: remoteConnections,
@@ -107,16 +105,18 @@ struct ContentView: View {
                 selectedTerminal = service.selected
                 service.onSelectionChanged = { session in
                     selectedTerminal = session
-                    // A local terminal coming into view takes the pane back from a
-                    // remote one, which is what makes opening or focusing a local
-                    // terminal show it even while a remote session is on screen.
-                    // Only for a real selection: the service also selects nil when
-                    // the last local terminal is closed, and blanking the pane
-                    // someone is watching a remote terminal in would be a bug rather
-                    // than an intent. Closing one local terminal while another
-                    // remains still takes the pane, because the service selects that
+                    // A local terminal coming into view takes the pane back from
+                    // whatever was covering it, which is what makes opening or
+                    // focusing one show it even while a remote session, a log or
+                    // settings is on screen. Closing one local terminal while another
+                    // remains also takes the pane, because the service selects that
                     // other one and this cannot tell it apart from a click.
-                    if session != nil { router.override = nil }
+                    //
+                    // This is not the whole of it: `select` returns early when the
+                    // session is already selected, so re-activating the terminal the
+                    // pane was already showing arrives nowhere. `activate` clears the
+                    // override itself for that reason.
+                    router.localSelectionChanged(to: session)
                 }
             }
             startBellNotifications()
@@ -138,10 +138,7 @@ struct ContentView: View {
         // does not count as a removal. The placeholder still earns its place: it
         // covers the frame between the store changing and this firing.
         .onChange(of: remoteConnections.connections.map(\.id)) { _, ids in
-            if case let .remote(session) = router.override,
-               !ids.contains(session.connectionId) {
-                router.override = nil
-            }
+            router.connectionsChanged(to: ids)
         }
         .onChange(of: store.remoteEnabled) { Task { await syncRemoteServer() } }
         .onChange(of: store.remotePort) { Task { await syncRemoteServer(forceRestart: true) } }
@@ -183,8 +180,9 @@ struct ContentView: View {
         }
     }
 
-    /// What the pane shows and which row is marked, from the two selections that
-    /// live apart: the local one in `GhosttyService`, the remote one here.
+    /// What the pane shows and which row is marked, from the two pieces of state that
+    /// live apart: the local selection in `GhosttyService`, and whatever covers it in
+    /// `PaneRouter`.
     private var paneSelection: PaneSelection {
         .resolve(local: selectedTerminal, override: router.override)
     }
@@ -415,10 +413,18 @@ struct ContentView: View {
     /// Opens the row's terminal if it was gone, starts its agent if it had
     /// stopped, and shows it.
     ///
-    /// Showing it is `store.activate`'s own doing: selecting a session is what puts
-    /// its surface in the pane, and the pane is the only place a terminal is ever
-    /// drawn. Nothing further is needed here.
+    /// Selecting a session is what puts its surface in the pane, and `store.activate`
+    /// does that. The override is cleared here rather than left to the selection
+    /// callback because `GhosttyService.select` returns early when the session is
+    /// already the selected one, and that is precisely the row a user clicks to get
+    /// out of whatever is covering it: the terminal the pane was showing a moment ago.
+    /// Relying on the callback alone left the click dead and, with settings on screen,
+    /// left the panel with no exit at all.
+    ///
+    /// Before the await, so the pane switches on the click rather than after a
+    /// reopen that may take a moment.
     private func activate(_ ref: TerminalRef, in project: Project) {
+        router.localTerminalActivated()
         Task {
             isBusy = true
             await store.activate(ref, in: project)
@@ -451,11 +457,11 @@ struct ContentView: View {
     /// and the context menu, never from a click on the row: a process row has no
     /// activate action, so clicking one still does nothing.
     private func openProcessLog(_ process: ManagedProcess, in project: Project) {
-        router.override = .log(ProcessLogRef(projectId: project.id, name: process.name))
+        router.show(.log(ProcessLogRef(projectId: project.id, name: process.name)))
     }
 
     private func openTestLog(_ test: ManagedProcess, in project: Project) {
-        router.override = .log(ProcessLogRef(projectId: project.id, name: test.name, isTest: true))
+        router.show(.log(ProcessLogRef(projectId: project.id, name: test.name, isTest: true)))
     }
 
     private func openRemoteTerminal(_ remoteStore: RemoteWorkspaceStore, _ ref: TerminalRef) {
@@ -466,7 +472,7 @@ struct ContentView: View {
     /// Shows a remote session in the main window's pane, the same one the local
     /// terminals use, so it arrives beside the sidebar with no second window.
     private func showRemote(_ session: RemoteSessionRef) {
-        router.override = .remote(session)
+        router.show(.remote(session))
     }
 
     // MARK: - Bells
@@ -527,7 +533,7 @@ struct ContentView: View {
     /// the main window has been closed: for a `Window` scene it reopens a closed one
     /// and focuses an open one.
     private func showBell(_ target: BellTarget) {
-        openWindow(id: "main")
+        openWindow(id: WiettyApp.mainWindowID)
         NSApp.activate()
         switch target {
         case .local(let refId):

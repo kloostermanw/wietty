@@ -30,9 +30,9 @@ struct ProcessLogRef: Equatable, Hashable {
 /// the one that forgot would leave the sidebar marking a row the pane is not
 /// showing.
 ///
-/// Settings is one of them rather than a window of its own. That is also the whole
-/// of how it is dismissed: clicking a terminal row clears the override, which every
-/// path that selects a local terminal already does.
+/// Settings is one of them rather than a window of its own, which is also why the
+/// panel has no close button: activating a terminal row clears the override, and the
+/// gear toggles it. `PaneRouter` owns both rules.
 enum PaneOverride: Equatable {
     case remote(RemoteSessionRef)
     case log(ProcessLogRef)
@@ -42,15 +42,16 @@ enum PaneOverride: Equatable {
 /// What the main window's pane is showing, and therefore which sidebar row is
 /// marked.
 ///
-/// The pane holds one thing at a time and the sidebar lists three kinds, so this
-/// is the one place that says which kind won. It is derived rather than stored:
-/// `GhosttyService` owns the local selection and `ContentView` holds the override,
-/// and neither has to know about the other.
+/// The pane holds one thing at a time, three of which the sidebar lists and one of
+/// which (settings) belongs to no workspace, so this is the one place that says which
+/// won. It is derived rather than stored: `GhosttyService` owns the local selection
+/// and `PaneRouter` holds the override, and neither has to know about the other.
 ///
 /// An override covers the local selection instead of replacing it. Nothing about
-/// the local terminal changes while a remote session or a log is on screen, so
-/// clearing the override puts the local terminal back rather than leaving an empty
-/// pane.
+/// the local terminal changes while a remote session, a log or settings is on screen,
+/// so clearing the override puts the local terminal back rather than leaving an empty
+/// pane. It is also why leaving settings cannot rely on the selection *changing*: the
+/// covered terminal is still the selected one. See `PaneRouter`.
 enum PaneSelection: Equatable {
     /// Nothing selected. The pane shows its placeholder.
     case none
