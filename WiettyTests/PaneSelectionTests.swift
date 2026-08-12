@@ -51,40 +51,29 @@ import Foundation
         #expect(PaneSelection.resolve(local: "gt:1", override: .settings) == .settings)
     }
 
-    /// Settings covers the terminal rather than replacing it, which is the whole of
-    /// its dismissal: clearing the override is what clicking a terminal row already
-    /// does, and the terminal comes back with no close button anywhere.
-    @Test func clearingASettingsOverrideUncoversTheLocalSelection() {
-        var override: PaneOverride? = .settings
-        override = nil
-        #expect(PaneSelection.resolve(local: "gt:1", override: override) == .local("gt:1"))
-    }
-
-    /// Settings is a third thing that can cover the terminal and it is in the same
-    /// value as the other two, so opening it while a log is on screen replaces the
-    /// log rather than leaving both set.
-    @Test func settingsReplacesWhateverElseCoveredTheTerminal() {
-        var override: PaneOverride? = .log(log("npm"))
-        override = .settings
-        #expect(PaneSelection.resolve(local: "gt:1", override: override) == .settings)
-    }
-
     /// The other half of covering: clearing the override puts the local terminal
     /// back rather than emptying the pane, which is what makes leaving a remote
-    /// session or a log return to where the user was.
+    /// session, a log or the settings panel return to where the user was. Which paths
+    /// do the clearing is `PaneRouterTests`.
     @Test func clearingTheOverrideUncoversTheLocalSelection() {
         #expect(PaneSelection.resolve(local: "gt:1", override: nil) == .local("gt:1"))
     }
 
-    /// Two things cover the local terminal and they cannot both be on screen, which
-    /// is why they are one value rather than two. Picking a log after a remote
-    /// session replaces it, and nothing has to remember to clear the other.
+    /// Three things cover the local terminal and no two of them can be on screen,
+    /// which is why they are one value rather than three: picking any of them replaces
+    /// whatever was there, and nothing has to remember to clear the others. Asserted
+    /// against the type rather than by assigning a local variable, which would only
+    /// re-test `resolve`.
+    @MainActor
     @Test func onlyOneThingCoversTheLocalTerminal() {
         let session = RemoteSessionRef(connectionId: connection, sessionId: "%3")
-        var override: PaneOverride? = .remote(session)
-        override = .log(log("npm"))
-        #expect(PaneSelection.resolve(local: "gt:1", override: override)
+        let router = PaneRouter()
+        router.show(.remote(session))
+        router.show(.log(log("npm")))
+        #expect(PaneSelection.resolve(local: "gt:1", override: router.override)
                 == .processLog(log("npm")))
+        router.show(.settings)
+        #expect(PaneSelection.resolve(local: "gt:1", override: router.override) == .settings)
     }
 
     /// The pane draws local and nothing-selected through one view, so both must

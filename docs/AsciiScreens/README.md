@@ -14,13 +14,12 @@ scene, so "the app" is one window rather than a set of them.
 ```
 WiettyApp  (@main App)
 │
-├── Window("Wietty", id: "main")               the only window there is
-│   └── ContentView                            → ContentView.md
-│
-└── .commands
-    ├── Check for Updates…                     CommandGroup(after: .appInfo)
-    └── SettingsCommand                        CommandGroup(replacing: .appSettings)
-                                               "Settings…" and ⌘,, which put
+└── Window("Wietty", id: "main")               the only window there is
+    ├── ContentView                            → ContentView.md
+    └── .commands                              a modifier on this scene
+        ├── Check for Updates…                 CommandGroup(after: .appInfo)
+        └── SettingsCommand                    CommandGroup(replacing: .appSettings)
+                                               "Settings…" plus ⌘,, which put
                                                SettingsView in the window's pane
                                                → SettingsView.md
 ```

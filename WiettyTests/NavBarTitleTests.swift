@@ -4,7 +4,7 @@ import Foundation
 
 /// What the bar above the pane says.
 ///
-/// Split from the view so all four states can be asserted without SwiftUI: the
+/// Split from the view so all five states can be asserted without SwiftUI: the
 /// bar is a `Text` around this, and everything that can be wrong is here.
 @MainActor
 @Suite struct NavBarTitleTests {
@@ -112,5 +112,16 @@ import Foundation
 
     @Test func nothingSelectedIsAnEmptyLine() {
         #expect(NavBarTitle.line(for: .none, projects: [], remote: { _ in nil }) == nil)
+    }
+
+    /// `line` is what the view calls, so it has to forward the remote lookup as well
+    /// as the workspace list. A `line` that dropped the closure would empty the bar for
+    /// every session on another Mac, and the local case above would not notice.
+    @Test func aRemoteSessionsLineNamesItsConnection() {
+        let session = RemoteSessionRef(connectionId: connection, sessionId: "gt:7")
+        #expect(NavBarTitle.line(for: .remote(session), projects: [],
+                                 remote: { _ in PaneOrigin(workspace: "web-app",
+                                                           connection: "Office Mac") })
+                == "Office Mac / web-app")
     }
 }

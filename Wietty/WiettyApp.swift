@@ -15,10 +15,13 @@ struct WiettyApp: App {
     /// installed later from a view's `task` would miss it. `SystemNotificationSink`
     /// holds the tap until `ContentView` is ready for it.
     @State private var bells = BellNotifier(sink: SystemNotificationSink())
-    /// What the window's pane is showing over its terminal. Here rather than in
-    /// `ContentView` because the Settings menu item below is declared in this scene's
-    /// `commands`, which cannot reach a view's `@State`.
+    /// What the window's pane is showing over its terminal. See `PaneRouter`.
     @State private var router = PaneRouter()
+
+    /// The main window's scene id, shared by the three places that reopen or focus it.
+    /// A literal repeated per site fails silently at runtime when one of them is
+    /// mistyped: `openWindow` finds no scene and nothing happens.
+    static let mainWindowID = "main"
 
     init() {
         let stack = TerminalStack()
@@ -33,7 +36,7 @@ struct WiettyApp: App {
     }
 
     var body: some Scene {
-        Window("Wietty", id: "main") {
+        Window("Wietty", id: Self.mainWindowID) {
             ContentView(store: store, terminals: terminals,
                         remoteConnections: remoteConnections, remoteWorkspaces: remoteWorkspaces,
                         bells: bells, router: router)
@@ -67,8 +70,10 @@ struct WiettyApp: App {
 /// The app menu's Settings item, which puts the panel in the window's pane rather
 /// than opening a window.
 ///
-/// A `Commands` type of its own because it needs `openWindow`, and the environment
-/// is reachable from here but not from `App`.
+/// A `Commands` type of its own so it can read `openWindow` from the environment. An
+/// `App` can hold `@Environment`, so that is not the constraint; a `Commands` value
+/// is simply the smallest thing that can, and it keeps the scene declaration above
+/// down to one line.
 struct SettingsCommand: Commands {
     let router: PaneRouter
     @Environment(\.openWindow) private var openWindow
@@ -78,14 +83,18 @@ struct SettingsCommand: Commands {
         // standard item with it, and this is the placement it had, so the item stays
         // where a Mac user looks for it and keeps ⌘, to itself.
         CommandGroup(replacing: .appSettings) {
+            // Shows rather than toggles, unlike the gear. ⌘, is how a Mac opens
+            // settings, and a second press closing them again is not what the rest of
+            // the system does. The gear is the toggle, and it is the one on screen
+            // while the panel is up.
             Button("Settings…") {
                 // The main window can be closed while the app runs, and settings put
                 // in a pane nobody can see is not an answer. `openWindow` reopens a
                 // closed `Window` scene and focuses an open one, the same way a
                 // tapped bell notification gets back to it.
-                openWindow(id: "main")
+                openWindow(id: WiettyApp.mainWindowID)
                 NSApp.activate()
-                router.override = .settings
+                router.show(.settings)
             }
             .keyboardShortcut(",", modifiers: .command)
         }

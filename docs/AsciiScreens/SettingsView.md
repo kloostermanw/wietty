@@ -12,9 +12,20 @@ this one connects to, plus a form to add one).
 It is drawn in the main window's pane, not in a window of its own, so what is
 below fills the right column beside the sidebar (see ContentView.md). The three
 ways in are the gear in the bar above the pane, the app menu's "Settings…" item,
-and ⌘,. All three set `PaneRouter.override` to `.settings`, and clicking any
-terminal row clears it and puts the terminal back, which is why there is no close
-button anywhere in the panel.
+and ⌘,, and all three go through `PaneRouter`.
+
+There are two ways out, and there is no close button because of them. Activating a
+terminal row puts that terminal back. The gear toggles, so a second click on it
+closes the panel. Both are needed: the row a user reaches for is usually the row the
+panel is covering, and activating an already selected terminal changes no selection,
+so the selection callback that clears the other overrides never fires for it. With no
+local terminal selected at all, on a fresh install or after the last one is closed,
+the gear is the only way out. `PaneRouter` owns both rules and `PaneRouterTests`
+asserts them.
+
+One consequence of living in the pane: the panel is destroyed when the pane shows
+anything else, so a half typed remote connection (including a pasted token) is gone
+when the user leaves. As a window it survived until the app quit.
 
 The form carries no width of its own: the pane's width is a divider the user
 drags, and `RightTerminalView` gives the panel the same 480 x 240 floor every

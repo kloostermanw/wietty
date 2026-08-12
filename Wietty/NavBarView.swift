@@ -3,9 +3,10 @@ import WiettyShared
 
 /// The bar across the top of the window's right half, above the pane.
 ///
-/// It says where what is in the pane comes from, and carries the buttons that act
-/// on the pane rather than on a row: the gear, which is the only way into settings
-/// that is visible in a window with no title bar.
+/// It says where what is in the pane comes from, and carries the buttons that act on
+/// the pane rather than on a row: the gear, which is the only way into settings that
+/// is inside the window. The app menu's item and ⌘, are the other two, and the window
+/// has no title bar to hold anything of its own.
 ///
 /// Always present, including when nothing is selected. A bar that appeared and
 /// disappeared would move the whole pane height with it, which is a jump for the
@@ -48,10 +49,19 @@ struct NavBarView: View {
             ForEach(Self.trailingButtons(openSettings: onOpenSettings)) { button in
                 Button(action: button.action) {
                     Image(systemName: button.system)
-                        // Marked while its panel is the thing in the pane, the same
-                        // way the sidebar marks the row whose terminal is on screen.
+                        // Tinted while its panel is the thing in the pane. The sidebar
+                        // marks the row whose terminal is on screen with a background
+                        // fill instead (`SidebarRowBackground`); what is marked is the
+                        // same idea, how it is drawn is not, because a 28 point bar has
+                        // no room for a fill that would not read as a second selection.
                         .foregroundStyle(selection.showsSettings ? Color.accentColor
                                                                  : Color.secondary)
+                        // The glyph alone is a roughly 13 point target in a 28 point
+                        // bar, and this is the only way into settings that is on
+                        // screen. The frame and the shape give it the bar's height to
+                        // be clicked in rather than the icon's outline.
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help(button.help)
