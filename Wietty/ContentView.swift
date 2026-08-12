@@ -8,6 +8,12 @@ struct ContentView: View {
     @ObservedObject var remoteConnections: RemoteConnectionsStore
     @ObservedObject var remoteWorkspaces: RemoteWorkspacesController
     let bells: BellNotifier
+    /// What is covering the local terminal in the pane: a remote session, a process
+    /// log, or settings. One value, so picking any of them replaces the others and
+    /// nothing has to remember to clear them. Owned by the app rather than held here
+    /// as `@State`, because the Settings menu item is declared in the scene's
+    /// `commands` and cannot reach a view's state.
+    let router: PaneRouter
     @Environment(\.openWindow) private var openWindow
     @State private var mcpHost: MCPServerHost?
     @State private var remoteServer: RemoteServer?
@@ -24,10 +30,6 @@ struct ContentView: View {
     /// selection it makes redraws the pane. Nil on the other two substrates, where
     /// nothing reads it.
     @State private var selectedTerminal: String?
-    /// What is covering the local terminal in the pane, if anything: a remote
-    /// session or a process log. One value, so picking either replaces the other and
-    /// nothing has to remember to clear it.
-    @State private var paneOverride: PaneOverride?
     /// The sidebar's live width while the divider is being dragged, and nil until
     /// one has been.
     ///
@@ -65,10 +67,12 @@ struct ContentView: View {
                 // divider is to its left, so the sidebar keeps the full height.
                 VStack(spacing: 0) {
                     NavBarView(store: store, remoteWorkspaces: remoteWorkspaces,
-                               selection: paneSelection)
+                               selection: paneSelection,
+                               onOpenSettings: { router.override = .settings })
                     Divider()
                     RightTerminalView(store: store, stack: terminals.ghostty,
                                       remoteConnections: remoteConnections,
+                                      remoteWorkspaces: remoteWorkspaces,
                                       selection: paneSelection)
                 }
                 .frame(maxWidth: .infinity)
@@ -112,7 +116,7 @@ struct ContentView: View {
                     // than an intent. Closing one local terminal while another
                     // remains still takes the pane, because the service selects that
                     // other one and this cannot tell it apart from a click.
-                    if session != nil { paneOverride = nil }
+                    if session != nil { router.override = nil }
                 }
             }
             startBellNotifications()
@@ -134,9 +138,9 @@ struct ContentView: View {
         // does not count as a removal. The placeholder still earns its place: it
         // covers the frame between the store changing and this firing.
         .onChange(of: remoteConnections.connections.map(\.id)) { _, ids in
-            if case let .remote(session) = paneOverride,
+            if case let .remote(session) = router.override,
                !ids.contains(session.connectionId) {
-                paneOverride = nil
+                router.override = nil
             }
         }
         .onChange(of: store.remoteEnabled) { Task { await syncRemoteServer() } }
@@ -182,7 +186,7 @@ struct ContentView: View {
     /// What the pane shows and which row is marked, from the two selections that
     /// live apart: the local one in `GhosttyService`, the remote one here.
     private var paneSelection: PaneSelection {
-        .resolve(local: selectedTerminal, override: paneOverride)
+        .resolve(local: selectedTerminal, override: router.override)
     }
 
     /// The width to lay out and to drag: whatever this window's drag left, or the
@@ -447,11 +451,11 @@ struct ContentView: View {
     /// and the context menu, never from a click on the row: a process row has no
     /// activate action, so clicking one still does nothing.
     private func openProcessLog(_ process: ManagedProcess, in project: Project) {
-        paneOverride = .log(ProcessLogRef(projectId: project.id, name: process.name))
+        router.override = .log(ProcessLogRef(projectId: project.id, name: process.name))
     }
 
     private func openTestLog(_ test: ManagedProcess, in project: Project) {
-        paneOverride = .log(ProcessLogRef(projectId: project.id, name: test.name, isTest: true))
+        router.override = .log(ProcessLogRef(projectId: project.id, name: test.name, isTest: true))
     }
 
     private func openRemoteTerminal(_ remoteStore: RemoteWorkspaceStore, _ ref: TerminalRef) {
@@ -462,7 +466,7 @@ struct ContentView: View {
     /// Shows a remote session in the main window's pane, the same one the local
     /// terminals use, so it arrives beside the sidebar with no second window.
     private func showRemote(_ session: RemoteSessionRef) {
-        paneOverride = .remote(session)
+        router.override = .remote(session)
     }
 
     // MARK: - Bells

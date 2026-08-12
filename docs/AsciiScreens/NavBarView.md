@@ -13,7 +13,7 @@ height of the window.
 
 ```
 ┌─ Wietty─── ───────────────────────────────────────────────┐
-│ ▾ Local        (⟳) (+)  │ Office Mac / web-app            │  NavBarView, 28 points
+│ ▾ Local        (⟳) (+)  │ Office Mac / web-app          ⚙ │  NavBarView, 28 points
 │ ▾ genotool              │─────────────────────────────────│  Divider
 │   │  > Terminal 1       │ > implement the parser          │
 │   │  ✦ Claude Code      │ ⏺ Reading files…                │  RightTerminalView
@@ -33,13 +33,14 @@ prevent horizontally.
 
 ## What it says
 
-The workspace whatever the pane is showing belongs to, and nothing else yet.
+The workspace whatever the pane is showing belongs to.
 
 | Pane content | Bar |
 | --- | --- |
 | A local terminal | the workspace holding that row, `genotool` |
 | A process log | that log's own workspace, `genotool` |
 | A session on another Mac | the connection first, `Office Mac / web-app` |
+| Settings | `Settings` |
 | Nothing selected | empty |
 
 The connection comes first for a remote session because two Macs routinely have a
@@ -47,9 +48,22 @@ workspace with the same name, so `web-app` alone would not say which one. That i
 also how the sidebar reads: the section header is the connection, the card under it
 is the workspace.
 
+## What it carries
+
+One button, the gear, from `NavBarView.trailingButtons(openSettings:)`. It puts
+`SettingsView` in the pane and is tinted while the panel is the thing on screen
+(`PaneSelection.showsSettings`), the same way the sidebar marks the row whose
+terminal is up. It is the only visible way in: the app menu's "Settings…" item and
+⌘, do the same thing, and the window has no title bar to hold anything else.
+
+A static function taking its action, rather than buttons written inline, for the
+same reason `ContentView.localSectionButtons` is one: which buttons the bar shows is
+then asserted in CI (`SettingsPaneTests`) rather than only checkable by looking at
+the window.
+
 ## How that is decided
 
-Two pure steps in `NavBarTitle`, both tested without SwiftUI in
+Three pure steps in `NavBarTitle`, all tested without SwiftUI in
 `NavBarTitleTests`, because they can be wrong in different ways:
 
 - `NavBarTitle.origin(for:projects:remote:)` finds the workspace, returning a
@@ -60,6 +74,10 @@ Two pure steps in `NavBarTitle`, both tested without SwiftUI in
   business knowing about.
 - `NavBarTitle.text(for:)` turns that into the line, which is where the
   `connection / workspace` shape lives.
+- `NavBarTitle.line(for:projects:remote:)` composes those two, and answers
+  `Settings` directly. Settings belongs to no workspace, so there is nothing for the
+  lookup to find, and an empty bar over the panel would be a worse answer than
+  naming it.
 
 Nil is a real answer at every branch and never a crash: a session id can outlive
 the row that carried it, a workspace can be removed while its log is on screen, and

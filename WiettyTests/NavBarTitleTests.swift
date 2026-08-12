@@ -88,4 +88,29 @@ import Foundation
         #expect(NavBarTitle.text(for: PaneOrigin(workspace: "web-app", connection: "Office Mac"))
                 == "Office Mac / web-app")
     }
+
+    // MARK: - The whole line
+
+    /// Settings belongs to no workspace, so there is nothing for the lookup to find.
+    @Test func settingsHasNoWorkspaceToName() {
+        #expect(NavBarTitle.origin(for: .settings, projects: [project("api")],
+                                   remote: { _ in nil }) == nil)
+    }
+
+    /// Having no workspace must not leave the bar empty: the panel names itself. The
+    /// composition lives here rather than in the view so the one line the bar can
+    /// say that is not a workspace is still asserted in CI.
+    @Test func settingsNamesThePanel() {
+        #expect(NavBarTitle.line(for: .settings, projects: [], remote: { _ in nil }) == "Settings")
+    }
+
+    @Test func aLocalTerminalsLineIsItsWorkspace() {
+        let projects = [project("api", sessions: ["gt:1"])]
+        #expect(NavBarTitle.line(for: .local("gt:1"), projects: projects,
+                                 remote: { _ in nil }) == "api")
+    }
+
+    @Test func nothingSelectedIsAnEmptyLine() {
+        #expect(NavBarTitle.line(for: .none, projects: [], remote: { _ in nil }) == nil)
+    }
 }

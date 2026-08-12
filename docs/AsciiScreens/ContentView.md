@@ -14,7 +14,7 @@ divider is to the bar's left and the sidebar keeps the full height.
 
 ```
 ┌─ Wietty ────────────────────────────────────────────────────────────────────┐
-│ ▾ Local            ( ⟳ )  ( + )  │ Wietty                                   │
+│ ▾ Local            ( ⟳ )  ( + )  │ Wietty                                 ⚙ │
 │                                  ├──────────────────────────────────────────┤
 │ ▾ Wietty  origin/develop ↑1 ↓0   │ > implement the parser                   │
 │   │  > Terminal 1                │ ⏺ Reading files…                         │
@@ -28,33 +28,44 @@ divider is to the bar's left and the sidebar keeps the full height.
 ```
 
 The bar says which workspace the pane's content belongs to, and is empty when
-nothing is selected. See `NavBarView.md`, which also covers why its height is part
-of the window's minimum.
+nothing is selected. Its trailing gear is the visible way into settings, which the
+window has no title bar to hold. See `NavBarView.md`, which also covers why its
+height is part of the window's minimum.
 
 The Local header offers refreshing git status and adding a folder, and nothing
 else. See `ContentView.localSectionButtons(refresh:add:)`.
 
 ## What the pane shows
 
-One thing at a time, and it can be any of the three kinds the sidebar lists: a
-local libghostty surface, a session on another Mac over the LAN remote protocol,
-or a supervised process's log. `RightTerminalView` is only the seam. A local
+One thing at a time. Three of the four are kinds the sidebar lists: a local
+libghostty surface, a session on another Mac over the LAN remote protocol, or a
+supervised process's log. The fourth is the app's own settings, which belongs to no
+workspace and so marks no row. `RightTerminalView` is only the seam. A local
 selection (or none at all) goes to `LocalTerminalView`, described next; a remote
 one to `RemoteTerminalView`, a SwiftTerm viewer over a socket to that Mac; a log
-to `ProcessLogView`, which is text this app already holds.
+to `ProcessLogView`, which is text this app already holds; settings to
+`SettingsView` (see `SettingsView.md`).
 
 `PaneSelection` decides which, from two pieces of state that live apart and stay
-apart: the local selection belongs to `GhosttyService`, and
-`ContentView.paneOverride` holds whatever covers it. That override is one value
-(`PaneOverride`, either a remote session or a log) rather than two, because those
-are the two things that can take the pane and they cannot both be on screen:
-held apart, every place that set one would have to remember to clear the other,
-and the one that forgot would leave the sidebar marking a row the pane is not
-showing.
+apart: the local selection belongs to `GhosttyService`, and `PaneRouter.override`
+holds whatever covers it. That override is one value (`PaneOverride`: a remote
+session, a log, or settings) rather than three, because no two of them can be on
+screen at once: held apart, every place that set one would have to remember to
+clear the others, and the one that forgot would leave the sidebar marking a row the
+pane is not showing.
+
+`PaneRouter` is owned by `WiettyApp` rather than held as `ContentView` state, for
+one reason: the app menu's "Settings…" item and ⌘, are declared in the scene's
+`commands` (`SettingsCommand`), which cannot reach a view's `@State`. The gear in
+the bar and the menu item then set the same property. The menu item opens or
+focuses the main window first, the way a tapped bell notification does, since the
+window can be closed while the app runs and a panel in a pane nobody can see is not
+an answer. There is no `Settings` scene: settings is one of the things this window's
+pane shows, so a second window would be the only part of the app that opened one.
 
 An override covers the local selection rather than replacing it, so nothing about
-the local terminal changes while a remote session or a log is on screen and
-clearing the override puts the local terminal back. A local terminal coming into
+the local terminal changes while a remote session, a log, or settings is on screen,
+and clearing the override puts the local terminal back. A local terminal coming into
 view clears it, which is what makes opening or focusing a local terminal show that
 terminal even while something else is on screen. That is deliberately keyed on a
 non-nil selection: the service also selects nil when the last local terminal
@@ -73,11 +84,11 @@ so what is lost is that viewer's scrollback and not the screen. A remote session
 that ends while it is on screen keeps its last output under a `[session ended]`
 banner, matching what this pane does for a local terminal whose command exited.
 
-A connection removed, from the sidebar or from Settings, takes its terminal off
-the screen and puts the local one back, because the rows went with it and a
-placeholder would be a dead end with nothing left to click out of it.
+A connection removed, from the sidebar or from the settings panel, takes its
+terminal off the screen and puts the local one back, because the rows went with it
+and a placeholder would be a dead end with nothing left to click out of it.
 `RightTerminalView`'s "Connection removed" placeholder still earns its place: it
-covers the frame between the store changing and `paneOverride` being cleared.
+covers the frame between the store changing and the override being cleared.
 
 ## The local terminal in the pane
 
@@ -111,11 +122,11 @@ clicked. The fill itself is `SidebarRowBackground` and is described in
 
 ## The process log in the pane
 
-A log is the one pane content that is not a selection. Clicking a process row
-still does nothing; the log arrives through `[▤]` or the context menu's "Open
-log", which is what `ProcessRowView.md` describes. Once it is there it behaves
-exactly like a remote session: it stays until a terminal or remote row is clicked,
-and its process row is marked while it is on screen.
+A log is not something a click on its row selects, the way a terminal is. Clicking
+a process row still does nothing; the log arrives through `[▤]` or the context
+menu's "Open log", which is what `ProcessRowView.md` describes. Once it is there it
+behaves exactly like a remote session: it stays until a terminal or remote row is
+clicked, and its process row is marked while it is on screen.
 
 `ProcessLogView` looks its process up by `ProcessLogRef` on every redraw rather
 than holding it, because a process can be stopped, restarted, or dropped from the
