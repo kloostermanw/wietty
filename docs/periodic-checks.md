@@ -51,7 +51,7 @@ Note: Collapsing a workspace does not trigger Instant checks.
 
 ## Configurable Intervals
 
-The three repeating intervals (Fast, Normal, Slow) are configurable in the settings panel (the gear in the bar above the pane, or ⌘,). Only these three durations are user-editable; Instant remains event-driven and not a separate duration. Settings edits take effect on the next scheduler tick.
+The three repeating intervals (Fast, Normal, Slow) are configurable on the "General" tab of the settings panel (the gear in the bar above the pane, or ⌘,). Only these three durations are user-editable; Instant remains event-driven and not a separate duration. Settings edits take effect on the next scheduler tick.
 
 The valid ranges are:
   * Fast: 5 to 600 seconds
