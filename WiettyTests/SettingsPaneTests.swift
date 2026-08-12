@@ -66,6 +66,18 @@ import WiettyShared
         #expect(Double(size.height) == SidebarWidth.paneMinimumHeight)
     }
 
+    /// Five segments across a 480 point pane is about 90 points each, and
+    /// "Notifications" does not fit in that, so the control has to give up label
+    /// text rather than width. If it ever asks for its ideal width instead, the pane
+    /// floor moves and the window's minimum width moves with it, which is a change
+    /// to the whole window made by a control in one panel.
+    @Test func theTabControlDoesNotWidenThePaneFloor() {
+        let width = SidebarWidth.paneMinimum
+        let size = sizeOffered(pane(.settings),
+                               NSSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+        #expect(Double(size.width) == width)
+    }
+
     /// The bar above the pane is the way in that is inside the window. The app menu's
     /// item and ⌘, are the other two, and the window has no title bar of its own.
     ///
@@ -94,24 +106,47 @@ import WiettyShared
         #expect(renderer.nsImage != nil)
     }
 
+    /// The tabs split the panel into five subtrees and only the one that is up gets
+    /// built, so the render above now covers a fifth of it. Every tab is rendered
+    /// here instead, which is what keeps a crash in a tab nobody opened during
+    /// development from waiting for a user to find it.
+    ///
+    /// Rendered through `SettingsView` rather than the pane, because the tab is the
+    /// thing being varied and `RightTerminalView` has no opinion on it.
+    @Test func everyTabRenders() {
+        for tab in SettingsTab.allCases {
+            let defaults = UserDefaults(suiteName: UUID().uuidString)!
+            let connections = RemoteConnectionsStore(defaults: defaults)
+            let view = SettingsView(
+                store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
+                remoteConnections: connections,
+                remoteWorkspaces: RemoteWorkspacesController(connections: connections),
+                tab: tab)
+            let renderer = ImageRenderer(content: view.frame(width: 600, height: 800))
+            #expect(renderer.nsImage != nil, "\(tab.title) failed to render")
+        }
+    }
+
     /// The same, for the two sub-trees an empty store never reaches: the URL and QR
     /// block behind `remoteEnabled`, and `RemoteConnectionRow`. Both draw inside the
     /// main window now, so a crash in either takes the window rather than a secondary
     /// one. `LocalNetwork.primaryIPv4()` returning nil on a machine with no interface
     /// picks the other branch of that block, which is also worth passing through.
-    @Test func thePaneRendersSettingsWithRemoteAccessOnAndAConnection() {
+    ///
+    /// On the Remote tab explicitly: both live there, and the panel opens on General,
+    /// so without naming the tab this would render neither and still pass.
+    @Test func settingsRendersWithRemoteAccessOnAndAConnection() {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         let connections = RemoteConnectionsStore(defaults: defaults)
         connections.add(RemoteConnection(id: UUID(), name: "Office Mac",
                                          host: "192.168.1.20", port: 7434, token: "t"))
         let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
         store.remoteEnabled = true
-        let view = RightTerminalView(
+        let view = SettingsView(
             store: store,
-            stack: GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true"),
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
-            selection: .settings)
+            tab: .remote)
         let renderer = ImageRenderer(content: view.frame(width: 600, height: 1200))
         #expect(renderer.nsImage != nil)
     }

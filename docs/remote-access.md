@@ -141,8 +141,8 @@ the local `Project` type `WorkspaceCardView` expects.
 
 ### Setting up a connection
 
-Settings has a "Remote connections" section, below "Remote access
-(experimental)". It lists the connections already added
+The "Remote" tab of Settings has a "Remote connections" section, below "Remote
+access (experimental)". It lists the connections already added
 (`RemoteConnectionsStore`), each row showing the connection's name and
 `host:port` with edit and delete buttons, and below the list a form to add a
 new one (name, host, port, token). The token here is the same shared token
@@ -272,8 +272,8 @@ its connection leaves nothing in the sidebar to click out of a placeholder with.
 
 ## Ports
 
-Two servers run on separate ports, both configurable in the "Ports" section
-of Settings:
+Two servers run on separate ports, each configurable on its own tab of Settings
+(the MCP port on "MCP", the remote terminal port on "Remote"):
 
 - MCP server: `127.0.0.1:7433` (loopback only).
 - LAN remote terminal and control API: `0.0.0.0:7434` (reachable on the local
