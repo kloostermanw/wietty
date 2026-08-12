@@ -85,7 +85,11 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 380)
+        // No width of its own. As a window it was a fixed 380 points, which in a
+        // column whose width is a divider the user drags would leave dead space
+        // beside it. The grouped form scrolls, so the height it is offered is
+        // whatever the window has left under the bar.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var newConnectionIsValid: Bool {

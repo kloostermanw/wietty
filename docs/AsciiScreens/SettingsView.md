@@ -9,8 +9,20 @@ port fields), "Remote access (experimental)" (the LAN toggle plus URL and QR
 when enabled), and "Remote connections" (the list of other Wietty instances
 this one connects to, plus a form to add one).
 
+It is drawn in the main window's pane, not in a window of its own, so what is
+below fills the right column beside the sidebar (see ContentView.md). The three
+ways in are the gear in the bar above the pane, the app menu's "Settings…" item,
+and ⌘,. All three set `PaneRouter.override` to `.settings`, and clicking any
+terminal row clears it and puts the terminal back, which is why there is no close
+button anywhere in the panel.
+
+The form carries no width of its own: the pane's width is a divider the user
+drags, and `RightTerminalView` gives the panel the same 480 x 240 floor every
+other thing in the pane has. The grouped form scrolls, so a short window scrolls
+the sections rather than clipping them.
+
 ```
-┌──────────────────────────────────────────────────┐
+┌─ pane ───────────────────────────────────────────┐
 │  ☑ Show workspace name as terminal badge           │
 │    Marks each terminal Wietty opens with its       │
 │    workspace's name. Applies to terminals opened   │

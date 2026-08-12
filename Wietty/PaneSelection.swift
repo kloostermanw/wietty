@@ -24,13 +24,19 @@ struct ProcessLogRef: Equatable, Hashable {
 
 /// What is covering the local terminal, if anything.
 ///
-/// One value rather than two, because these are the two things that can take the
-/// pane from a local terminal and they cannot both be on screen. Held apart, every
-/// place that set one would have to remember to clear the other, and the one that
-/// forgot would leave the sidebar marking a row the pane is not showing.
+/// One value rather than three, because these are the things that can take the
+/// pane from a local terminal and no two of them can be on screen at once. Held
+/// apart, every place that set one would have to remember to clear the others, and
+/// the one that forgot would leave the sidebar marking a row the pane is not
+/// showing.
+///
+/// Settings is one of them rather than a window of its own. That is also the whole
+/// of how it is dismissed: clicking a terminal row clears the override, which every
+/// path that selects a local terminal already does.
 enum PaneOverride: Equatable {
     case remote(RemoteSessionRef)
     case log(ProcessLogRef)
+    case settings
 }
 
 /// What the main window's pane is showing, and therefore which sidebar row is
@@ -54,6 +60,9 @@ enum PaneSelection: Equatable {
     case remote(RemoteSessionRef)
     /// A supervised process's output.
     case processLog(ProcessLogRef)
+    /// The app's own settings. The one thing here that belongs to no workspace, so
+    /// it marks no row in the sidebar and the bar above the pane names it directly.
+    case settings
 
     /// - Parameter local: `GhosttyService.selected`, mirrored into SwiftUI state.
     /// - Parameter override: whatever a sidebar row put in front of it, if any.
@@ -61,6 +70,7 @@ enum PaneSelection: Equatable {
         switch override {
         case let .remote(session): return .remote(session)
         case let .log(process): return .processLog(process)
+        case .settings: return .settings
         case nil: break
         }
         if let local { return .local(local) }
@@ -91,5 +101,11 @@ enum PaneSelection: Equatable {
     /// Whether a process row's log is the one on screen.
     func selects(processLog process: ProcessLogRef) -> Bool {
         self == .processLog(process)
+    }
+
+    /// Whether the settings panel is the one on screen, which is what marks the gear
+    /// in the bar the way the sidebar marks a row.
+    var showsSettings: Bool {
+        self == .settings
     }
 }

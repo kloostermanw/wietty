@@ -27,8 +27,8 @@ the keys you type reach the session.
 
 ### How to use it
 
-1. Open Settings and turn on "Enable LAN remote terminal" in the "Remote
-   access (experimental)" section.
+1. Open the settings panel (the gear in the bar above the pane, or ⌘,) and turn on
+   "Enable LAN remote terminal" in the "Remote access (experimental)" section.
 2. A reachable URL and a QR code appear. The URL looks like
    `http://192.168.1.20:7434/?token=<token>`.
 3. On another device on the same wifi, open the URL or scan the QR code.
