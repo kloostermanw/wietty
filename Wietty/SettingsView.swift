@@ -247,6 +247,11 @@ struct NotificationSettings: View {
     /// asked yet" and "we have not looked yet" are different things to say.
     @State private var permission: NotificationPermission?
     @State private var testResult: BellNotifier.TestResult?
+    /// Why the last press of the button below achieved nothing, when it did. macOS
+    /// turns a request from a bundle it does not accept down in about a millisecond
+    /// without showing anyone a prompt, and the state afterwards is the state
+    /// before, so without this the button is indistinguishable from a dead one.
+    @State private var requestFailure: String?
 
     /// - Parameters:
     ///   - permission: what the tab starts out believing, and
@@ -256,11 +261,13 @@ struct NotificationSettings: View {
     ///     drawn here and a render test that could not set them would cover one.
     init(store: ProjectStore, bells: BellNotifier,
          permission: NotificationPermission? = nil,
-         testResult: BellNotifier.TestResult? = nil) {
+         testResult: BellNotifier.TestResult? = nil,
+         requestFailure: String? = nil) {
         _store = Bindable(wrappedValue: store)
         self.bells = bells
         _permission = State(initialValue: permission)
         _testResult = State(initialValue: testResult)
+        _requestFailure = State(initialValue: requestFailure)
     }
 
     var body: some View {
@@ -277,8 +284,23 @@ struct NotificationSettings: View {
             // button that does nothing is worse than the sentence explaining why.
             if permission == .notAsked {
                 Button("Allow notifications…") {
-                    Task { permission = await bells.requestPermission() }
+                    Task {
+                        switch await bells.requestPermission() {
+                        case .decided(let answer):
+                            permission = answer
+                            requestFailure = nil
+                        case .failed(let reason):
+                            requestFailure = reason
+                            permission = await bells.permission()
+                        }
+                    }
                 }
+            }
+            if let requestFailure {
+                Label("macOS turned the request down: \(requestFailure)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red)
+                Text("No prompt was shown, so this is not something you answered. It happens when macOS does not accept this copy of the app: a build whose bundle is not signed gets exactly this. Signing it, even ad hoc (`codesign --force --deep --sign - Wietty.app`), is what lets the prompt appear.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if permission == .denied {
                 Text("Turn Wietty's notifications back on in System Settings › Notifications. macOS asks only once, so this app cannot ask again.")

@@ -168,9 +168,15 @@ at least as well as the first bell does.
 If permission is denied, or the notification centre refuses the bundle, nothing is
 posted and nothing is said on the bell path. The 🔔 in the sidebar still works, and
 an alert about a failed notification would be an interruption complaining about an
-interruption. The Test button in Settings is the one caller that does show the
-failure, because a button pressed to find out whether the path works answers the
-opposite question when it fails silently.
+interruption. The Settings tab is where both do get said, because a button pressed
+to find out whether the path works answers the opposite question when it fails
+silently.
+
+A denial and a refusal are kept apart, which is what `requestAuthorization`
+throwing is for. A denial is the user's answer, so the tab points at System
+Settings. A refusal means the request never reached them, so the tab says macOS
+turned it down and what usually causes that. Reporting a refusal as a denial sends
+someone to a switch in System Settings that will not be there.
 
 `BellNotifier.permission()` reads the state afresh every time rather than from its
 own cache, and writes what it read back into that cache. Permission can be granted
@@ -179,12 +185,32 @@ answer would be the one place that is wrong about it, and a `granted` of false
 decided at the first bell would otherwise outlive the permission being granted from
 the tab.
 
-One thing worth knowing when testing this by hand: `UNUserNotificationCenter`
-refuses an app bundle run from a scratch directory outright
-(`UNErrorDomain Code=1`, "Notifications are not allowed for this application"),
-whatever its signature. A build under DerivedData or an app in `/Applications` is
-fine. The app's ad-hoc signature is not the problem, and no entitlement is needed.
-This is exactly what the Test button reports rather than swallowing.
+## The app has to be signed
+
+`UNUserNotificationCenter` refuses an app bundle macOS does not accept, and it
+refuses it in about a millisecond, with `UNErrorDomain Code=1` ("Notifications are
+not allowed for this application") and without ever showing a prompt. Nothing about
+that is visible from the outside: the request comes back, nobody was asked, and the
+state is still "not asked yet".
+
+The bundle has to carry a real signature for that not to happen. Ad hoc is enough
+and no developer account or entitlement is involved, but "unsigned" is not enough,
+and `CODE_SIGNING_ALLOWED: NO` in `project.yml` means unsigned: it leaves the
+Mach-O with a linker signature and the *bundle* with none, so `codesign -dv`
+reports `Identifier=Wietty` rather than the bundle id, `Info.plist=not bound` and
+`Sealed Resources=none`. Every shipped build was in that state until this was
+fixed, so notifications could never have worked for anyone, and the silent failure
+path meant nothing said so. A correctly signed build reports
+`Identifier=eu.kloosterman.wietty`, an Info.plist entry count, and sealed
+resources, and `scripts/make-dmg.sh` now refuses to package anything else.
+
+An earlier version of this document blamed the directory the app was run from
+("a scratch directory is refused outright, whatever its signature"). That was
+wrong on both halves: the signature is exactly what it was, and where the bundle
+sits is not what the centre objects to.
+
+The Test button and the permission button both report this rather than swallowing
+it, which is what makes it findable at all.
 
 A Focus mode is the other reason a banner does not appear while permission says
 "Allowed", and no API tells the app that happened, so the Notifications tab says it

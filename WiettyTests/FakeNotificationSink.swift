@@ -15,14 +15,19 @@ final class FakeNotificationSink: NotificationSink {
     var status: NotificationPermission?
     /// What the centre refuses with, for the one caller that shows the failure.
     var addFailure: (any Error)?
+    /// What the centre turns the request itself down with, which is what an app
+    /// bundle macOS does not consider properly signed gets: no prompt, no
+    /// permission, an error in about a millisecond.
+    var requestFailure: (any Error)?
     var authorizationRequests = 0
     var statusReads = 0
     var added: [BellNotification] = []
     var withdrawn: [[String]] = []
     var onTap: (@MainActor (BellTarget) -> Void)?
 
-    func requestAuthorization() async -> Bool {
+    func requestAuthorization() async throws -> Bool {
         authorizationRequests += 1
+        if let requestFailure { throw requestFailure }
         return granted
     }
 

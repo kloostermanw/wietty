@@ -97,6 +97,10 @@ makes. See
 │    Turn Wietty's notifications back on in System  │
 │    Settings › Notifications. macOS asks only      │
 │    once, so this app cannot ask again.            │
+│    (only after macOS refused to even ask:)        │
+│    ⚠ macOS turned the request down: <reason>     │
+│    No prompt was shown, so this is not something  │
+│    you answered. …                                │
 │    A terminal notifies you in two ways: the bell  │
 │    character, which every shell rings, and the    │
 │    OSC 9 and OSC 777 escape sequences, which a    │
@@ -232,6 +236,12 @@ Legend:
 - `[ Allow notifications… ]` appears only while the state is "Not asked yet".
   macOS shows the prompt once per install, so after a denial the button could do
   nothing at all, and the sentence pointing at System Settings takes its place.
+- `⚠ macOS turned the request down` is the third outcome, and the reason this row
+  exists: a request from a bundle macOS does not accept comes back in about a
+  millisecond with an error and no prompt, leaving the state exactly as it was.
+  Drawing only the unchanged state made the button look dead, which is how this
+  was found. `BellNotifier.PermissionRequest` keeps that case apart from a
+  denial, since only one of the two is a switch in System Settings.
 - `[ Send test notification ]`: `BellNotifier.sendTest(sound:)`, which posts
   `BellNotification.test()` with the sound currently selected below. It reports
   what happened either way: `UNUserNotificationCenter` refuses an app bundle run

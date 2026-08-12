@@ -18,6 +18,15 @@ xcodebuild -scheme "$APP_NAME" -configuration Release -derivedDataPath "$DERIVED
 APP_PATH="$DERIVED/Build/Products/Release/$APP_NAME.app"
 [ -d "$APP_PATH" ] || { echo "build failed: $APP_PATH missing" >&2; exit 1; }
 
+# The bundle has to be signed, ad hoc is enough, and shipping one that is not is a
+# silent failure rather than a loud one: macOS refuses to ask for notification
+# permission for a bundle it does not accept, so bells and OSC 9 notifications
+# stop working while everything else looks fine. That is what
+# CODE_SIGNING_ALLOWED: NO shipped for months. See docs/notifications.md.
+echo "==> Checking the signature"
+codesign --verify --deep --strict "$APP_PATH" \
+  || { echo "refusing to package an unsigned app: check CODE_SIGN settings in project.yml" >&2; exit 1; }
+
 echo "==> Staging disk-image contents"
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
