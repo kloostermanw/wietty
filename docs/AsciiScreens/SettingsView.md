@@ -36,6 +36,23 @@ survived until the app quit. Within one visit the half typed connection does sur
 a look at another tab, because its state is held on `SettingsView` rather than
 inside the tab's own subtree.
 
+Every field is bordered, and that is set in one place: `SettingsView.form(_:)`, the
+one grouped `Form` all five tabs draw, carries `.textFieldStyle(.roundedBorder)`.
+The style travels down the environment, so it reaches every `TextField` and
+`SecureField` in every tab and a field added later gets it without anyone
+remembering to. Without it a grouped form draws a field as its label with the value
+as plain right aligned text, with no border and no background of its own: nothing
+said the value was editable, and an empty field was invisible, indistinguishable
+from a caption.
+
+A field only a few characters wide (a port, and nothing else so far) is a
+`NarrowFieldRow` rather than a `.frame(width:)` on the field, which is not the same
+thing: a grouped form gives up its label-left, field-right layout for a field with
+a width of its own, moving the label to a line above and leaving the narrow field
+under it, out of line with every other field in the section. The row keeps the
+layout and narrows only what is inside it, and both port fields plus the two
+connection forms share it, so the four cannot drift apart by a few points each.
+
 The form carries no width of its own: the pane's width is a divider the user
 drags, and `RightTerminalView` gives the panel the same 480 x 240 floor every
 other thing in the pane has. The grouped form scrolls, so a short window scrolls
@@ -149,9 +166,9 @@ holds settings of its own.
 │    claude                                         │
 │    Codex                               (✎) (🗑)   │
 │    codex --model o3                               │
-│    [ Name____________ ]                            │
-│    [ Command_________ ]                            │
-│    [ Default Arguments ]                           │
+│    Name                    [________________ ]    │
+│    Command                 [________________ ]    │
+│    Default Arguments       [________________ ]    │
 │    [ Add Agent ]                                   │
 │    Each agent is one entry in a workspace's        │
 │    "Add Agent" menu. Starting one opens a          │
@@ -206,10 +223,10 @@ Agent" submenu holds one disabled line pointing back here.
 │    192.168.1.20:7434                              │
 │    Home Mac                            (✎) (🗑)   │
 │    10.0.0.5:7434                                  │
-│    [ Name____________ ]                            │
-│    [ Host____________ ]                            │
-│    [ Port__ ]                                      │
-│    [ Token___________ ]                            │
+│    Name                    [________________ ]    │
+│    Host                    [________________ ]    │
+│    Port                              [  7434 ]    │
+│    Token                   [________________ ]    │
 │    [ Add connection ]                              │
 │    Connect to another Mac running Wietty with      │
 │    its LAN remote terminal enabled. Enter the      │
@@ -298,7 +315,8 @@ Changing a value updates `ProjectStore.checkIntervals` directly (the property
 clamps and persists on set), so the new interval takes effect on the
 scheduler's next tick, no restart needed.
 
-- `MCP server` / `Port`: two `TextField`s (`SettingsView.portField`) bound to
+- `MCP server` / `Port`: two `TextField`s (`SettingsView.portField`, a
+  `NarrowFieldRow` around a number formatted field) bound to
   `$store.mcpPort` and `$store.remotePort`. They sat together under one "Ports"
   section before the tabs, which is why each now carries its own caption instead
   of sharing one. Each value is clamped to `ProjectStore.portRange` (1024 to
