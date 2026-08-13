@@ -26,6 +26,15 @@ enum NavBarTitle {
                      projects: [Project],
                      remote: (RemoteSessionRef) -> PaneOrigin?) -> String? {
         if case .settings = selection { return "Settings" }
+        // A workspace's own page is named for the workspace and for what it is, so
+        // it does not read as one of that workspace's terminals. Nil when the
+        // workspace is gone, which the lookup below already answers.
+        if case .workspaceSettings = selection {
+            guard let origin = origin(for: selection, projects: projects, remote: remote) else {
+                return nil
+            }
+            return "\(origin.workspace) settings"
+        }
         return text(for: origin(for: selection, projects: projects, remote: remote))
     }
 
@@ -53,6 +62,9 @@ enum NavBarTitle {
             return owner.map { PaneOrigin(workspace: $0.name) }
         case let .processLog(log):
             return projects.first { $0.id == log.projectId }
+                .map { PaneOrigin(workspace: $0.name) }
+        case let .workspaceSettings(project):
+            return projects.first { $0.id == project }
                 .map { PaneOrigin(workspace: $0.name) }
         case let .remote(session):
             return remote(session)

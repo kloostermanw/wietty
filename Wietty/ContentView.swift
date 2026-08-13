@@ -22,6 +22,11 @@ struct ContentView: View {
     /// than on the card because the alert is the window's, not the row's.
     @State private var workspaceRenameTarget: Project?
     @State private var workspaceRenameText = ""
+    /// The workspace and agent "Add Agent with args" was chosen for, and the
+    /// arguments typed for it. Held here for the same reason the renames are: the
+    /// dialog is the window's, not the card's.
+    @State private var agentArgumentsTarget: (project: Project, agent: AgentDefinition)?
+    @State private var agentArgumentsText = ""
     @State private var sections = SectionCollapseState()
     @State private var remoteCardCollapsed: Set<UUID> = []
     /// The local terminal the pane shows, mirrored from `GhosttyService` so a
@@ -141,6 +146,12 @@ struct ContentView: View {
         .onChange(of: remoteConnections.connections.map(\.id)) { _, ids in
             router.connectionsChanged(to: ids)
         }
+        // The same for a workspace removed while its own page is on screen: the card
+        // went with it, so the page would be left with nothing in the sidebar to
+        // click out of it. Keyed on the ids, so a rename is not a removal.
+        .onChange(of: store.projects.map(\.id)) { _, ids in
+            router.workspacesChanged(to: ids)
+        }
         .onChange(of: store.remoteEnabled) { Task { await syncRemoteServer() } }
         .onChange(of: store.remotePort) { Task { await syncRemoteServer(forceRestart: true) } }
         .onChange(of: store.mcpPort) { Task { await restartMCPHost() } }
@@ -169,6 +180,20 @@ struct ContentView: View {
         } message: {
             Text("The folder on disk keeps its own name. Clear the field to go back "
                  + "to that name, or to the one in this workspace's wietty.json.")
+        }
+        .alert("Arguments for \(agentArgumentsTarget?.agent.displayName ?? "")",
+               isPresented: agentArgumentsIsPresented) {
+            TextField("Arguments", text: $agentArgumentsText)
+            Button("Cancel", role: .cancel) { agentArgumentsTarget = nil }
+            Button("Add") {
+                if let target = agentArgumentsTarget {
+                    openAgent(target.agent, arguments: agentArgumentsText, in: target.project)
+                }
+                agentArgumentsTarget = nil
+            }
+        } message: {
+            Text("Typed after the agent's command. Clear the field to run it with no "
+                 + "arguments at all.")
         }
         .alert(
             store.lastError ?? "",
@@ -211,6 +236,13 @@ struct ContentView: View {
     private func startWorkspaceRename(for project: Project) {
         workspaceRenameText = project.name
         workspaceRenameTarget = project
+    }
+
+    private var agentArgumentsIsPresented: Binding<Bool> {
+        Binding(
+            get: { agentArgumentsTarget != nil },
+            set: { presented in if !presented { agentArgumentsTarget = nil } }
+        )
     }
 
     private var renameIsPresented: Binding<Bool> {
@@ -309,6 +341,7 @@ struct ContentView: View {
                         paneSelection.selects(processLog: ProcessLogRef(projectId: project.id,
                                                                         name: $0))
                     },
+                    agents: store.agents,
                     onActivate: { activate($0, in: project) },
                     onRestartTerminal: { restartTerminal($0, in: project) },
                     onRenameTerminal: { startRename($0, in: project) },
@@ -316,7 +349,11 @@ struct ContentView: View {
                     onCloseTerminal: { closeTerminal($0, in: project) },
                     onOpenTerminal: { openTerminal(for: project) },
                     onOpenClaude: { openClaude(for: project) },
+                    onAddAgent: { openAgent($0, in: project) },
+                    onAddAgentWithArgs: { startAgentArguments($0, in: project) },
+                    onAddWorkspace: addProject,
                     onRemoveProject: { store.remove(project) },
+                    onEditWorkspace: { router.show(.workspaceSettings(project.id)) },
                     onRenameWorkspace: { startWorkspaceRename(for: project) },
                     onToggleCollapsed: { store.toggleCollapsed(project) },
                     onEnableSync: { store.enableConfigSync(for: project) },
@@ -417,6 +454,26 @@ struct ContentView: View {
             await store.openClaude(for: project)
             isBusy = false
         }
+    }
+
+    /// Starts a row for one of the configured agents.
+    ///
+    /// - Parameter arguments: what the "with args" dialog collected, or nil for the
+    ///   plain menu item, which uses the agent's defaults.
+    private func openAgent(_ agent: AgentDefinition, arguments: String? = nil, in project: Project) {
+        Task {
+            isBusy = true
+            await store.openAgent(agent, arguments: arguments, for: project)
+            isBusy = false
+        }
+    }
+
+    /// Opens the arguments dialog pre-filled with the agent's defaults, so a user
+    /// edits them rather than retyping them, and so clearing the field is visibly the
+    /// way to run the agent bare.
+    private func startAgentArguments(_ agent: AgentDefinition, in project: Project) {
+        agentArgumentsText = agent.defaultArguments
+        agentArgumentsTarget = (project, agent)
     }
 
     /// Opens the row's terminal if it was gone, starts its agent if it had

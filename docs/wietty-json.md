@@ -2,7 +2,7 @@
 
 Each workspace can hold one `wietty.json` in its root folder. It is the per
 workspace configuration file: it names the workspace, lists the terminals and
-Claude agents to lay out, and declares the supervised processes and
+agents to lay out, and declares the supervised processes and
 test-processes Wietty runs.
 
 This document covers the file format and how the file is created and maintained.
@@ -106,18 +106,24 @@ Optional. Overrides the workspace card title. When absent, the folder name is us
 
 ### `agents`
 
-An ordered list of Claude agent rows. Each entry is an object:
+An ordered list of agent rows. Each entry is an object:
 
 ```json
 "agents": [
-  { "slot": "Design the sync feature", "type": "claude" }
+  { "slot": "Design the sync feature", "type": "claude" },
+  { "slot": "codex1", "type": "codex --model o3" }
 ]
 ```
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `slot` | string | The row's stable label and identity. |
-| `type` | string | The agent kind. Currently `claude`. |
+| `type` | string | What the row runs: the line typed into its shell. `claude` is the default and what every file written before agents were configurable says. |
+
+A row started from Settings › Agents is written down with the line that agent
+runs, so a workspace that syncs its file keeps a Codex row a Codex row. A `type` of
+`claude` means the row carries no line of its own and runs `claude`, which is what
+a hand written file means by it too.
 
 ### `terminals`
 

@@ -16,6 +16,9 @@ struct WorkspaceCardView: View {
     /// The same question for a process row, by name. Defaulted for the same reason:
     /// a remote card's processes are not this app's to show.
     var isProcessSelected: (String) -> Bool = { _ in false }
+    /// The agents the two "Add Agent" submenus offer, in menu order. Empty on a
+    /// remote card, which offers neither: those are this Mac's agents.
+    var agents: [AgentDefinition] = []
     /// A tap on a row, which shows that terminal in the pane.
     let onActivate: (TerminalRef) -> Void
     let onRestartTerminal: (TerminalRef) -> Void
@@ -24,7 +27,18 @@ struct WorkspaceCardView: View {
     let onCloseTerminal: (TerminalRef) -> Void
     let onOpenTerminal: () -> Void
     let onOpenClaude: () -> Void
+    /// Starts one of the agents above with its default arguments.
+    var onAddAgent: (AgentDefinition) -> Void = { _ in }
+    /// The same, after asking what to run it with.
+    var onAddAgentWithArgs: (AgentDefinition) -> Void = { _ in }
+    /// Adds another workspace, which is what the `+` in the Local header does. Here
+    /// too because a right click on a card is where a user already is when they want
+    /// one more.
+    var onAddWorkspace: () -> Void = {}
     let onRemoveProject: () -> Void
+    /// Opens this workspace's own page in the pane. Nil on a remote card, whose
+    /// workspace is not this app's to edit, and the menu item is then absent.
+    var onEditWorkspace: (() -> Void)?
     /// Renames the workspace. Nil on a remote card, whose name belongs to the Mac
     /// serving it, and the menu item is then absent.
     var onRenameWorkspace: (() -> Void)?
@@ -119,15 +133,63 @@ struct WorkspaceCardView: View {
         .contentShape(Rectangle())
         .onTapGesture { onToggleCollapsed() }
         .contextMenu {
-            Button("Terminal", action: onOpenTerminal)
-            Button("Claude", action: onOpenClaude)
+            // Built from `WorkspaceMenu` rather than written out here, so which
+            // items a card offers is asserted in CI rather than only by right
+            // clicking one. This view supplies the actions, which is the half that
+            // needs a card.
+            ForEach(WorkspaceMenu.items(isLocal: onEditWorkspace != nil,
+                                        syncEnabled: syncEnabled)) { item in
+                menuItem(item)
+            }
+        }
+    }
+
+    @ViewBuilder private func menuItem(_ item: WorkspaceMenuItem) -> some View {
+        switch item {
+        case .addTerminal:
+            Button(item.title, action: onOpenTerminal)
+        case .addAgent:
+            agentSubmenu(item, action: onAddAgent)
+        case .addAgentWithArgs:
+            agentSubmenu(item, action: onAddAgentWithArgs)
+        case .addClaude:
+            Button(item.title, action: onOpenClaude)
+        case .addWorkspace:
+            Button(item.title, action: onAddWorkspace)
+        case .separator:
+            Divider()
+        case .editWorkspace:
+            // Present only when the action is, which is the same question
+            // `WorkspaceMenu` was asked to build the list. The `if let` is for the
+            // closure, not for the item.
+            if let onEditWorkspace {
+                Button(item.title, action: onEditWorkspace)
+            }
+        case .renameWorkspace:
             if let onRenameWorkspace {
-                Button("Rename workspace…", action: onRenameWorkspace)
+                Button(item.title, action: onRenameWorkspace)
             }
-            if !syncEnabled {
-                Button("Enable config sync", action: onEnableSync)
+        case .enableConfigSync:
+            Button(item.title, action: onEnableSync)
+        case .removeWorkspace:
+            Button(item.title, action: onRemoveProject)
+        }
+    }
+
+    /// One of the two agent submenus. Empty is a state worth drawing: a submenu with
+    /// nothing in it reads as a menu that failed to build, so it says where agents
+    /// come from instead.
+    @ViewBuilder private func agentSubmenu(_ item: WorkspaceMenuItem,
+                                           action: @escaping (AgentDefinition) -> Void)
+        -> some View {
+        Menu(item.title) {
+            if agents.isEmpty {
+                Button(WorkspaceMenu.noAgents) {}.disabled(true)
+            } else {
+                ForEach(agents) { agent in
+                    Button(agent.displayName) { action(agent) }
+                }
             }
-            Button("Remove", action: onRemoveProject)
         }
     }
 

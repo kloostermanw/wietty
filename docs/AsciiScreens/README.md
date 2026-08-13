@@ -110,10 +110,11 @@ main window. See `UpdateAlertModifier.md`.
 | xterm.js | `remote_index.html`, not a SwiftUI view | the browser client this app serves |
 
 `RightTerminalView` is the one place a libghostty surface, a SwiftTerm view, a
-plain text log and the settings form can appear, because the pane holds one thing.
-It draws none of them itself: a local selection goes to `LocalTerminalView`, a
-remote one to `RemoteTerminalView`, a log to `ProcessLogView`, settings to
-`SettingsView`, and `PaneSelection` (not a view) says which. The remote branch
+plain text log, the settings form and a workspace's own page can appear, because
+the pane holds one thing. It draws none of them itself: a local selection goes to
+`LocalTerminalView`, a remote one to `RemoteTerminalView`, a log to
+`ProcessLogView`, settings to `SettingsView`, a workspace page to
+`WorkspaceSettingsView`, and `PaneSelection` (not a view) says which. The remote branch
 carries an explicit `.id`, without which switching between two remote sessions
 would reuse one view and keep the first session's connection.
 
@@ -147,7 +148,8 @@ Every view type, and where its layout is documented.
 | `NavBarView` | `NavBarView.swift` | `NavBarView.md`. What it says is `NavBarTitle.swift`, which is not a view |
 | `SidebarDivider` | `SidebarDivider.swift` | `ContentView.md`, under "Who gets the surplus, and where the divider is". Its arithmetic is `SidebarWidth.swift`, which is not a view |
 | `RemoteTerminalView` | `RemoteTerminalView.swift` | `ContentView.md`, under "What the pane shows" |
-| `SettingsView`, `RemoteConnectionRow` | `SettingsView.swift` | `SettingsView.md`. Drawn in the pane, and reached through `PaneRouter.swift` and `SettingsCommand` (in `WiettyApp.swift`), neither of which is a view |
+| `SettingsView`, `AgentRow`, `RemoteConnectionRow` | `SettingsView.swift` | `SettingsView.md`. Drawn in the pane, and reached through `PaneRouter.swift` and `SettingsCommand` (in `WiettyApp.swift`), neither of which is a view |
+| `WorkspaceSettingsView` | `WorkspaceSettingsView.swift` | `WorkspaceSettingsView.md`. Drawn in the same pane, reached from a card's "Edit workspace…" |
 | `UpdateAlertModifier` | `UpdateAlertModifier.swift` | `UpdateAlertModifier.md` |
 
 A view whose layout is already drawn inside a parent's file is documented there

@@ -41,22 +41,24 @@ chevron only appear once there is a remote section to tell it apart from. See
 
 ## What the pane shows
 
-One thing at a time. Three of the four are kinds the sidebar lists: a local
+One thing at a time. Three of the five are kinds the sidebar lists: a local
 libghostty surface, a session on another Mac over the LAN remote protocol, or a
-supervised process's log. The fourth is the app's own settings, which belongs to no
-workspace and so marks no row. `RightTerminalView` is only the seam. A local
+supervised process's log. The other two are pages: the app's own settings, which
+belongs to no workspace and so marks no row, and one workspace's own page, reached
+from that card's "Edit workspace…". `RightTerminalView` is only the seam. A local
 selection (or none at all) goes to `LocalTerminalView`, described next; a remote
 one to `RemoteTerminalView`, a SwiftTerm viewer over a socket to that Mac; a log
 to `ProcessLogView`, which is text this app already holds; settings to
-`SettingsView` (see `SettingsView.md`).
+`SettingsView` (see `SettingsView.md`); a workspace to `WorkspaceSettingsView`
+(see `WorkspaceSettingsView.md`).
 
 `PaneSelection` decides which, from two pieces of state that live apart and stay
 apart: the local selection belongs to `GhosttyService`, and `PaneRouter.override`
 holds whatever covers it. That override is one value (`PaneOverride`: a remote
-session, a log, or settings) rather than three, because no two of them can be on
-screen at once: held apart, every place that set one would have to remember to
-clear the others, and the one that forgot would leave the sidebar marking a row the
-pane is not showing.
+session, a log, settings, or a workspace page) rather than four, because no two of
+them can be on screen at once: held apart, every place that set one would have to
+remember to clear the others, and the one that forgot would leave the sidebar
+marking a row the pane is not showing.
 
 `PaneRouter` is owned by `WiettyApp` rather than held as `ContentView` state, for
 one reason: the app menu's "Settings…" item and ⌘, are declared in the scene's
@@ -109,6 +111,12 @@ terminal off the screen and puts the local one back, because the rows went with 
 and a placeholder would be a dead end with nothing left to click out of it.
 `RightTerminalView`'s "Connection removed" placeholder still earns its place: it
 covers the frame between the store changing and the override being cleared.
+
+A workspace removed while its own page is on screen is the same situation and gets
+the same treatment (`PaneRouter.workspacesChanged`, wired to the workspace ids
+rather than the workspaces, so a rename is not a removal). Only that page: a
+process log belongs to a workspace too and stays readable after it is gone, and the
+settings panel belongs to no workspace at all. See `WorkspaceSettingsView.md`.
 
 ## The local terminal in the pane
 
@@ -328,8 +336,8 @@ Legend:
 ## Overlays and alerts
 
 `ContentView` is disabled and shows a small `ProgressView` while `isBusy` (a
-terminal or Claude session is being opened, activated, or closed). It also hosts
-three alerts:
+terminal or agent session is being opened, activated, or closed). It also hosts
+four alerts:
 
 ```
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
@@ -354,7 +362,29 @@ three alerts:
 │                  [ Cancel ] [ Rename ] │
 └────────────────────────────────────────┘
   (workspaceRenameTarget != nil)
+
+┌────────────────────────────────────────┐
+│ Arguments for Codex                    │
+│                                        │
+│ Typed after the agent's command. Clear │
+│ the field to run it with no arguments  │
+│ at all.                                │
+│                                        │
+│  [ --model o3________________ ]        │
+│                                        │
+│                     [ Cancel ] [ Add ] │
+└────────────────────────────────────────┘
+  (agentArgumentsTarget != nil)
 ```
+
+The arguments dialog is what "Add Agent with args" opens, after the agent has been
+picked from the submenu (`WorkspaceCardView.md`). Its field is pre-filled with that
+agent's default arguments, so the user edits rather than retypes, and so clearing
+the field is visibly the way to run the agent bare: what is typed replaces the
+defaults rather than being appended to them. Confirming starts the row through
+`ProjectStore.openAgent`, exactly as the plain "Add Agent" item does with the
+defaults. `ContentView` holds both halves of its state, `agentArgumentsTarget` and
+`agentArgumentsText`, which is why this alert lives here rather than on the card.
 
 The workspace rename dialog is opened from the workspace header's context menu
 (`WorkspaceCardView.md` covers which cards offer the item at all). Its field is

@@ -116,6 +116,7 @@ final class ProjectStore {
     private let mcpPortKey = "wietty.mcpPort"
     private let remotePortKey = "wietty.remotePort"
     private let sidebarWidthKey = "wietty.sidebarWidth"
+    private let agentsKey = "wietty.agents"
 
     /// Guards `clearDeadSessions()` against running twice in one process.
     ///
@@ -238,6 +239,49 @@ final class ProjectStore {
         }
     }
 
+    /// The agents a workspace's context menu offers, in menu order. A preference
+    /// like the ports and the bell sound: persisted, and edited in the Agents tab.
+    ///
+    /// Seeded with Claude on a fresh install and never reseeded after that, so
+    /// deleting the last entry sticks. See `loadAgents`.
+    var agents: [AgentDefinition] {
+        didSet {
+            guard agents != oldValue else { return }
+            guard let data = try? JSONEncoder().encode(agents) else { return }
+            defaults.set(data, forKey: agentsKey)
+        }
+    }
+
+    /// Appends an agent to the end of the menu.
+    func addAgent(_ agent: AgentDefinition) {
+        agents.append(agent)
+    }
+
+    /// Replaces the agent with the same id, and does nothing when there is none:
+    /// the edit form is on screen while the list can change under it, and an edit
+    /// of a deleted agent must not put it back.
+    func updateAgent(_ agent: AgentDefinition) {
+        guard let index = agents.firstIndex(where: { $0.id == agent.id }) else { return }
+        agents[index] = agent
+    }
+
+    func removeAgent(id: UUID) {
+        agents.removeAll { $0.id == id }
+    }
+
+    /// The stored list, or the seed when nothing has ever been stored.
+    ///
+    /// The distinction matters: seeding on an empty list rather than on an absent
+    /// key would put Claude back on the launch after the last entry was deleted,
+    /// which reads as a delete that did not work.
+    private static func loadAgents(_ defaults: UserDefaults, key: String) -> [AgentDefinition] {
+        guard let data = defaults.data(forKey: key),
+              let stored = try? JSONDecoder().decode([AgentDefinition].self, from: data) else {
+            return [.claude]
+        }
+        return stored
+    }
+
     /// The shared secret required on every remote request and socket.
     let remoteToken: RemoteAccessToken
 
@@ -331,6 +375,7 @@ final class ProjectStore {
             ? SidebarWidth.default
             : max(storedSidebarWidth, SidebarWidth.minimum)
         self.remoteToken = RemoteAccessToken(defaults: defaults)
+        self.agents = Self.loadAgents(defaults, key: agentsKey)
         load()
     }
 
@@ -452,6 +497,20 @@ final class ProjectStore {
         await openSession(for: project, command: "claude", kind: .claude)
     }
 
+    /// Opens a row for one of the configured agents.
+    ///
+    /// An agent row in every other respect: same kind, same numbering, same glyph.
+    /// What it carries of its own is the line to type, because that is the one thing
+    /// the kind cannot answer once there is more than one agent.
+    ///
+    /// - Parameter arguments: what "Add Agent with args" collected, or nil for a
+    ///   plain "Add Agent", which uses the agent's defaults.
+    func openAgent(_ agent: AgentDefinition, arguments: String? = nil, for project: Project) async {
+        await openSession(for: project, command: nil, kind: .claude,
+                          agent: (name: agent.displayName,
+                                  line: agent.launchCommand(arguments: arguments)))
+    }
+
     /// The one way a row is ever started: a plain shell, with the row's command
     /// typed into it.
     ///
@@ -469,20 +528,31 @@ final class ProjectStore {
     /// it, leaving a dead surface; a shell outlives its command, so the row falls
     /// back to a prompt and can be used or restarted.
     ///
-    /// The command is derived from the kind here rather than passed in, so no
-    /// caller can hand one to `open` again.
+    /// The line is the row's own or the kind's, never a caller's, so no caller can
+    /// hand one to `open` again.
+    ///
+    /// - Parameter command: the row's stored line (`TerminalRef.command`), or nil for
+    ///   a row that runs whatever its kind runs.
     private func openShell(folder: URL, existingWindowId: String?, badge: String?,
-                           kind: TerminalKind) async throws -> TerminalHandle {
+                           kind: TerminalKind, command: String? = nil) async throws -> TerminalHandle {
         let handle = try await service.open(folder: folder, existingWindowId: existingWindowId,
                                             command: nil, badge: badge)
-        if let command = Self.command(for: kind) {
-            try await service.send(sessionId: handle.sessionId, text: command + "\n")
+        if let line = command ?? Self.command(for: kind) {
+            try await service.send(sessionId: handle.sessionId, text: line + "\n")
         }
         return handle
     }
 
+    /// What a row types into its shell: its own line if it has one, else whatever
+    /// its kind runs.
+    static func command(for ref: TerminalRef) -> String? {
+        ref.command ?? command(for: ref.kind)
+    }
+
     /// What a row of this kind types into its shell, and nil for a plain terminal,
-    /// whose shell is the terminal.
+    /// whose shell is the terminal. Claude rather than an agent from the list: a row
+    /// with no line of its own predates the list, or came from a `wietty.json`, and
+    /// both of those are Claude rows.
     static func command(for kind: TerminalKind) -> String? {
         switch kind {
         case .terminal: return nil
@@ -490,9 +560,10 @@ final class ProjectStore {
         }
     }
 
-    private func openSession(for project: Project, command: String?, kind: TerminalKind) async {
+    private func openSession(for project: Project, command: String?, kind: TerminalKind,
+                             agent: (name: String, line: String)? = nil) async {
         do {
-            _ = try await openSessionThrowing(for: project, command: command, kind: kind)
+            _ = try await openSessionThrowing(for: project, command: command, kind: kind, agent: agent)
         } catch {
             lastError = (error as? TerminalError)?.errorDescription
                 ?? (error as? StoreError)?.errorDescription
@@ -503,8 +574,13 @@ final class ProjectStore {
     /// Opens a session and returns the new terminal ref, propagating failures
     /// instead of routing them to `lastError`. The UI paths use
     /// `openSession`; the MCP router uses this.
+    ///
+    /// - Parameter agent: the entry from the agent list this row is for, if it came
+    ///   from one: its name, which the label is built from, and the line it types.
+    ///   Nil for a plain terminal and for the hardcoded Claude row.
     @discardableResult
-    func openSessionThrowing(for project: Project, command: String?, kind: TerminalKind) async throws -> TerminalRef {
+    func openSessionThrowing(for project: Project, command: String?, kind: TerminalKind,
+                             agent: (name: String, line: String)? = nil) async throws -> TerminalRef {
         guard let preIndex = projects.firstIndex(where: { $0.id == project.id }) else {
             throw StoreError.unknownProject
         }
@@ -514,7 +590,7 @@ final class ProjectStore {
         let handle: TerminalHandle
         do {
             handle = try await openShell(folder: folder, existingWindowId: existingWindowId,
-                                          badge: badge, kind: kind)
+                                          badge: badge, kind: kind, command: agent?.line)
         } catch {
             throw StoreError.terminal((error as? TerminalError)?.errorDescription ?? error.localizedDescription)
         }
@@ -527,11 +603,14 @@ final class ProjectStore {
             projects[index].terminalSeq += 1
             label = "Terminal \(projects[index].terminalSeq)"
         case .claude:
+            // One counter for every agent, so two agents in a workspace are numbered
+            // 1 and 2 rather than both 1. The name in front is what tells them apart.
             projects[index].claudeSeq += 1
-            label = "Claude \(projects[index].claudeSeq)"
+            label = "\(agent?.name ?? "Claude") \(projects[index].claudeSeq)"
         }
         recordWorkspaceId(handle.windowId, at: index, openedWith: existingWindowId)
-        let ref = TerminalRef(label: label, sessionId: handle.sessionId, kind: kind)
+        let ref = TerminalRef(label: label, sessionId: handle.sessionId, kind: kind,
+                              command: agent?.line)
         projects[index].terminals.append(ref)
         save()
         emitConfig(for: projects[index].id)
@@ -575,6 +654,11 @@ final class ProjectStore {
               let preTIndex = projects[prePIndex].terminals.firstIndex(where: { $0.id == ref.id }) else { return }
         let sessionId = projects[prePIndex].terminals[preTIndex].sessionId
         let kind = projects[prePIndex].terminals[preTIndex].kind
+        // The row's own line, so a reopen or a restart types what this row runs
+        // rather than what its kind runs. Read from the store rather than from the
+        // `ref` argument, which is a copy the caller may have been holding for a
+        // while.
+        let command = Self.command(for: projects[prePIndex].terminals[preTIndex])
         let folder = projects[prePIndex].url
         let existingWindowId = settleWorkspaceId(at: prePIndex)
         let badge = showWorkspaceBadge ? projects[prePIndex].name : nil
@@ -593,8 +677,9 @@ final class ProjectStore {
                 // `jobKnown` gates this: an unanswered job query is not evidence
                 // the agent stopped, and acting on it types `claude` into a
                 // running agent, which submits it as a prompt.
-                if kind == .claude, result.jobKnown, !claudeIsRunning(jobName: result.jobName) {
-                    try await service.send(sessionId: sessionId, text: "claude\n")
+                if kind == .claude, let command, result.jobKnown,
+                   !claudeIsRunning(jobName: result.jobName) {
+                    try await service.send(sessionId: sessionId, text: command + "\n")
                 }
             } else {
                 // Whatever the service still holds under the old id goes first.
@@ -606,7 +691,7 @@ final class ProjectStore {
                 // NSView on every revival.
                 if !sessionId.isEmpty { await service.discard(sessionId: sessionId) }
                 let handle = try await openShell(folder: folder, existingWindowId: existingWindowId,
-                                                  badge: badge, kind: kind)
+                                                  badge: badge, kind: kind, command: command)
                 guard let pIndex = projects.firstIndex(where: { $0.id == project.id }),
                       let tIndex = projects[pIndex].terminals.firstIndex(where: { $0.id == ref.id }) else { return }
                 // The pane id is recorded either way: a rename moves a session's
@@ -973,20 +1058,22 @@ final class ProjectStore {
     }
 
     /// Restarts a tracked session: closes the current session and opens a
-    /// fresh one in the same window, re-running the kind's command (`claude`
-    /// for claude rows). The terminal ref keeps its id, label, and kind; its
-    /// `sessionId` is updated to the new session. Returns the updated ref.
+    /// fresh one in the same window, re-running the row's line (its own if it has
+    /// one, else `claude` for an agent row and nothing for a terminal). The terminal
+    /// ref keeps its id, label, kind, and line; its `sessionId` is updated to the new
+    /// session. Returns the updated ref.
     @discardableResult
     func restart(sessionId: String) async throws -> TerminalRef {
         guard let (p, t) = indexOfSession(sessionId) else { throw StoreError.unknownSession }
         let kind = projects[p].terminals[t].kind
+        let command = Self.command(for: projects[p].terminals[t])
         let folder = projects[p].url
         let existingWindowId = settleWorkspaceId(at: p)
         let badge = showWorkspaceBadge ? projects[p].name : nil
         do {
             try? await service.close(sessionId: sessionId)
             let handle = try await openShell(folder: folder, existingWindowId: existingWindowId,
-                                              badge: badge, kind: kind)
+                                              badge: badge, kind: kind, command: command)
             guard let (np, nt) = indexOfSession(sessionId) else { throw StoreError.unknownSession }
             let oldId = projects[np].terminals[nt].id
             recordWorkspaceId(handle.windowId, at: np, openedWith: existingWindowId)
