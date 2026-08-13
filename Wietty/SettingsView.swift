@@ -88,11 +88,20 @@ struct SettingsView: View {
         }
     }
 
-    /// The one grouped form every tab with settings in it draws, so the three of
-    /// them cannot drift in style or in how they fill the pane.
+    /// The one grouped form every tab with settings in it draws, so the tabs cannot
+    /// drift in style or in how they fill the pane.
+    ///
+    /// The field style is set here rather than at each field for the same reason.
+    /// `textFieldStyle` travels down the environment, so this one line reaches every
+    /// `TextField` and `SecureField` in every tab, and a field added later gets it
+    /// without anyone remembering to. Without it a grouped form draws a field as its
+    /// label and its value as plain right aligned text, with no border and no
+    /// background of its own: nothing said the value was editable, and an empty field
+    /// was invisible, indistinguishable from a caption.
     private func form<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         Form(content: content)
             .formStyle(.grouped)
+            .textFieldStyle(.roundedBorder)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -179,8 +188,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 TextField("Name", text: $newName)
                 TextField("Host", text: $newHost)
-                TextField("Port", text: $newPort)
-                    .frame(width: 80)
+                NarrowFieldRow("Port") { TextField("Port", text: $newPort) }
                 SecureField("Token", text: $newToken)
                 Button("Add connection", action: addConnection)
                     .disabled(!newConnectionIsValid)
@@ -248,13 +256,8 @@ struct SettingsView: View {
     }
 
     private func portField(_ label: String, value: Binding<Int>) -> some View {
-        HStack {
-            Text(label)
-            Spacer()
+        NarrowFieldRow(label) {
             TextField(label, value: value, format: .number.grouping(.never))
-                .labelsHidden()
-                .frame(width: 70)
-                .multilineTextAlignment(.trailing)
         }
     }
 
@@ -428,6 +431,43 @@ struct NotificationSettings: View {
     }
 }
 
+/// A settings row whose field is only a few characters wide: a port, and nothing
+/// else so far.
+///
+/// A row of its own rather than a `.frame(width:)` on the field, because that is not
+/// the same thing. A grouped form lays a field out as its label on the left and the
+/// field on the right, and it gives up that layout for a field with a width of its
+/// own: the label moves to a line above and the narrow field sits under it, left
+/// aligned, out of line with every other field in the section. This keeps the row and
+/// narrows only what is inside it.
+///
+/// Shared by `SettingsView` and `RemoteConnectionRow`, which is why it is a type at
+/// file scope rather than a method on either.
+private struct NarrowFieldRow<Field: View>: View {
+    /// How wide a field this narrow is. One number, so the four of them cannot drift
+    /// apart by a few points each.
+    static var width: Double { 80 }
+
+    let label: String
+    @ViewBuilder let field: () -> Field
+
+    init(_ label: String, @ViewBuilder field: @escaping () -> Field) {
+        self.label = label
+        self.field = field
+    }
+
+    var body: some View {
+        HStack {
+            Text(label)
+            Spacer()
+            field()
+                .labelsHidden()
+                .frame(width: Self.width)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
 /// One row in the "Agents" section: a summary line with edit and delete buttons,
 /// or (while editing) an inline form for name, command and default arguments.
 ///
@@ -540,8 +580,7 @@ private struct RemoteConnectionRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 TextField("Name", text: $name)
                 TextField("Host", text: $host)
-                TextField("Port", text: $port)
-                    .frame(width: 80)
+                NarrowFieldRow("Port") { TextField("Port", text: $port) }
                 SecureField("Token", text: $token)
                 HStack {
                     Button("Cancel") { cancelEditing() }
