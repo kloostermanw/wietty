@@ -272,15 +272,23 @@ struct ContentView: View {
          .init(system: "plus", help: "Add project folder", action: add)]
     }
 
+    /// The Local header, and whether the section under it is collapsed. Titled only
+    /// while there is a remote section to tell it apart from; see `LocalSectionHeader`.
+    private var localHeader: LocalSectionHeader {
+        .resolve(hasRemoteConnections: !remoteConnections.connections.isEmpty,
+                 storedCollapsed: sections.isCollapsed("local"))
+    }
+
     @ViewBuilder
     private var localSection: some View {
+        let header = localHeader
         SidebarSectionHeaderView(
-            title: "Local",
-            collapsed: sections.isCollapsed("local"),
+            title: header.title,
+            collapsed: header.collapsed,
             onToggle: { sections.setCollapsed("local", !sections.isCollapsed("local")) },
             buttons: localSectionButtons
         )
-        if !sections.isCollapsed("local") {
+        if !header.collapsed {
             ForEach(store.projects) { project in
                 WorkspaceCardView(
                     project: project,

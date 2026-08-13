@@ -14,7 +14,7 @@ divider is to the bar's left and the sidebar keeps the full height.
 
 ```
 ┌─ Wietty ────────────────────────────────────────────────────────────────────┐
-│ ▾ Local            ( ⟳ )  ( + )  │ Wietty                                 ⚙ │
+│                    ( ⟳ )  ( + )  │ Wietty                                 ⚙ │
 │                                  ├──────────────────────────────────────────┤
 │ ▾ Wietty  origin/develop ↑1 ↓0   │ > implement the parser                   │
 │   │  > Terminal 1                │ ⏺ Reading files…                         │
@@ -34,7 +34,10 @@ anything of its own. See `NavBarView.md`, which also covers why its height is pa
 the window's minimum.
 
 The Local header offers refreshing git status and adding a folder, and nothing
-else. See `ContentView.localSectionButtons(refresh:add:)`.
+else. See `ContentView.localSectionButtons(refresh:add:)`. It carries no title
+above, because this window has no remote connection: the word Local and its
+chevron only appear once there is a remote section to tell it apart from. See
+"The sidebar" below.
 
 ## What the pane shows
 
@@ -229,7 +232,8 @@ its own `@ObservedObject`. That is required, not stylistic: the store is a neste
 `ObservableObject` inside `RemoteWorkspacesController`, so a view observing only
 the controller never redraws when a snapshot arrives on the socket.
 Each section starts with a `SidebarSectionHeaderView` and, unless collapsed
-(`sections: SectionCollapseState`, keyed `"local"` / `"remote-<connection id>"`),
+(`sections: SectionCollapseState`, keyed `"local"` / `"remote-<connection id>"`,
+and for the Local section resolved by `LocalSectionHeader`),
 lists one `WorkspaceCardView` per project with a `Divider` between cards. Only
 the Local section has the trailing drop zone and drag-to-reorder support; a
 Remote section instead shows a state line ("Connecting…", "Unreachable.
@@ -238,9 +242,21 @@ whenever that connection isn't `.connected`. When a remote action (open,
 restart, or close) is rejected by the server, that section also shows a small
 red caption from `store.lastActionError`, so the failure is visible.
 
+The Local header's title is the one thing that comes and goes. It exists to tell
+this Mac's workspaces apart from a connection's, so with no connection configured
+there is no second section, the word and its chevron say nothing, and the row
+keeps only its buttons (which are reachable nowhere else). Losing the chevron
+loses the only way to expand the section, so a collapse stored under `"local"` is
+ignored while the title is hidden rather than obeyed, and honoured again as soon
+as a connection puts the chevron back. `LocalSectionHeader.resolve` decides both
+halves and `LocalSectionHeaderTests` asserts them, because a stored collapse with
+nothing on screen to undo it would hide every workspace. The drawing below has two
+connections, so it shows the titled form; the window at the top of this file has
+none, so it shows the other one.
+
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ ▾ Local                                       ( ⊞ )  ( ⟳ )  ( + )  │  SidebarSectionHeaderView
+│ ▾ Local                                              ( ⟳ )  ( + )  │  SidebarSectionHeaderView
 ├───────────────────────────────────────────────────────────────────┤
 │ ▾ laravel-test                       origin/develop           ↑1 ↓0 │  WorkspaceCardView
 │                                      origin/feature/issue-15   ↑1 ↓0 │
@@ -272,7 +288,8 @@ Legend:
   unrelated plumbing (`store.attention`) and shows with or without notification
   permission. See `../notifications.md`.
 - `SidebarSectionHeaderView`: one per section, title, chevron, and trailing
-  icon buttons. Local: refresh git status, add a project folder.
+  icon buttons. A nil title draws the buttons alone, which is the Local header
+  with no connection configured. Local: refresh git status, add a project folder.
   Remote: reconnect (`store.stop(); store.start()`), remove connection
   (`remoteConnections.remove(id:)` then `remoteWorkspaces.sync()`).
   See `SidebarSectionHeaderView`.
@@ -303,7 +320,8 @@ Legend:
 - Collapse state (both the section chevron and each remote card's own chevron)
   is `@State` in `ContentView`, with the remote card set passed into each
   `RemoteSectionView` as a `@Binding`; section collapse persists via
-  `SectionCollapseState` (`UserDefaults`), per-card collapse for remote
+  `SectionCollapseState` (`UserDefaults`) and is overruled for the Local
+  section while its header has no chevron, per-card collapse for remote
   projects is in-memory only for this window's lifetime (local project cards
   persist their collapse through `ProjectStore.toggleCollapsed`).
 
