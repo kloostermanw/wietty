@@ -1002,6 +1002,22 @@ final class ProjectStore {
         }
     }
 
+    /// The window's entry point to the same restart, reporting rather than throwing.
+    ///
+    /// `restart(sessionId:)` throws because the MCP server and the remote server turn
+    /// its error into a response for whoever asked. A click has nobody to answer, so
+    /// it reports into `lastError` and the alert shows it, which is what
+    /// `openTerminal`, `activate` and `closeTerminal` already do for the same reason.
+    /// Swallowing it instead left a restart that could not open its replacement
+    /// looking like a restart that worked.
+    func restartTerminal(sessionId: String) async {
+        do {
+            _ = try await restart(sessionId: sessionId)
+        } catch {
+            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
     /// True when a workspace's CI checks have pending/running entries.
     private func ciPending(_ projectId: UUID) -> Bool {
         (gitInfo[projectId]?.checks?.pending ?? 0) > 0
@@ -1144,7 +1160,7 @@ final class ProjectStore {
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.runDueChecks(now: Date())
-                let tick = await self?.checkIntervals.fast ?? 15
+                let tick = self?.checkIntervals.fast ?? 15
                 try? await Task.sleep(nanoseconds: UInt64(tick) * 1_000_000_000)
             }
         }
