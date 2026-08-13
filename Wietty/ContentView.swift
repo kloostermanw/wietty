@@ -452,7 +452,7 @@ struct ContentView: View {
     private func restartTerminal(_ ref: TerminalRef, in project: Project) {
         Task {
             isBusy = true
-            try? await store.restart(sessionId: ref.sessionId)
+            await store.restartTerminal(sessionId: ref.sessionId)
             isBusy = false
         }
     }
@@ -566,9 +566,10 @@ struct ContentView: View {
             guard let found = store.session(withRefId: refId) else { return }
             activate(found.ref, in: found.project)
         case .remote(let session):
-            guard let remoteStore = remoteWorkspaces.stores[session.connectionId] else { return }
-            let label = remoteStore.workspaces.flatMap(\.sessions)
-                .first { $0.sessionId == session.sessionId }?.label
+            // The same rule as the local case, on the connection rather than the row:
+            // a notification outlives the connection it came from, and one that has
+            // been removed has no session left to show.
+            guard remoteWorkspaces.stores[session.connectionId] != nil else { return }
             showRemote(session)
         }
     }

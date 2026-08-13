@@ -401,9 +401,13 @@ import WiettyShared
         // The control, so the two above cannot be passing because every selector
         // answers. This is the third optional method of the same protocol, which is
         // deliberately not implemented: there is no in app settings screen to open.
+        //
+        // `NSSelectorFromString` rather than `Selector("…")`, which warns precisely
+        // because nothing declares this selector. That is the assertion, so the
+        // spelling that does not treat it as a mistake is the right one.
         #expect(class_getInstanceMethod(
             SystemNotificationSink.self,
-            Selector("userNotificationCenter:openSettingsForNotification:")) == nil)
+            NSSelectorFromString("userNotificationCenter:openSettingsForNotification:")) == nil)
     }
 }
 

@@ -336,6 +336,38 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(fake.sendCalls.last! == ("sess-B", "claude\n"))
     }
 
+    /// A restart the sidebar asked for reports its failure the way every other row
+    /// action does, through the alert. `restart(sessionId:)` throws instead, because
+    /// the MCP server and the remote server turn that error into a response for the
+    /// caller that asked; a click has no caller to answer, so the window's own entry
+    /// point is the one that reports.
+    @Test func aFailedRestartFromTheSidebarSetsLastError() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+
+        fake.errorToThrow = .failed("boom")
+        await store.restartTerminal(sessionId: "sess-A")
+
+        #expect(store.lastError == "boom")
+        // The row survives a restart that could not open the replacement, so there
+        // is still something to click once whatever broke is fixed.
+        #expect(store.projects[0].terminals.count == 1)
+    }
+
+    /// The unknown session is the case a stale click produces: the row's terminal is
+    /// gone from under it. It has to reach the alert too, rather than being swallowed
+    /// as "nothing to restart".
+    @Test func restartingAnUnknownSessionFromTheSidebarSetsLastError() async {
+        let store = ProjectStore(defaults: makeDefaults(), service: FakeTerminalService())
+
+        await store.restartTerminal(sessionId: "sess-gone")
+
+        #expect(store.lastError == StoreError.unknownSession.errorDescription)
+    }
+
     @Test func activateDeadTerminalReopensPlainShell() async {
         let fake = FakeTerminalService()
         fake.handles = [
