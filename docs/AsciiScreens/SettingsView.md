@@ -6,7 +6,8 @@ so the intended structure stays readable without running the app.
 The view is a segmented tab control above a grouped `Form`, and the tab decides
 what the form holds. Five tabs (`SettingsTab`), in this order: "General" (the
 badge toggle and the three interval steppers), "Notifications" (the permission
-state, a test notification, and the sound), "Agents" (empty for now), "Remote"
+state, a test notification, and the sound), "Agents" (the agents a workspace's
+menu can start), "Remote"
 (the LAN toggle, the remote terminal port, the URL and QR, and the list of other
 Wietty instances this one connects to), and "MCP"
 (the MCP server port). The panel opens on "General" (`SettingsTab.default`),
@@ -132,10 +133,10 @@ makes. See
 
 ## Agents
 
-Draws a `ContentUnavailableView` from `SettingsTab.placeholder` instead of a form,
-outside the `Form` rather than as a section inside one. It is the last tab that
-exists ahead of its settings; Notifications was the other one until it was filled
-in, which is what the reserved space was for.
+The list a workspace's "Add Agent" submenus offer. It was the last tab that existed
+ahead of its settings (Notifications was the other one), and filling it is what
+deleted its placeholder, along with the placeholder machinery itself: every tab now
+holds settings of its own.
 
 ```
 ┌─ pane ───────────────────────────────────────────┐
@@ -143,14 +144,38 @@ in, which is what the reserved space was for.
 │ │ General │ Notifi… │ Agents │ Remote │  MCP  │   │
 │ └─────────┴─────────┴────────┴────────┴───────┘   │
 │ ────────────────────────────────────────────────  │
-│                                                    │
-│                     ✦                              │
-│            No agent settings yet                   │
-│      Settings for the agents a workspace          │
-│          starts will appear here.                  │
-│                                                    │
+│  Agents                                           │
+│    Claude                              (✎) (🗑)   │
+│    claude                                         │
+│    Codex                               (✎) (🗑)   │
+│    codex --model o3                               │
+│    [ Name____________ ]                            │
+│    [ Command_________ ]                            │
+│    [ Default Arguments ]                           │
+│    [ Add Agent ]                                   │
+│    Each agent is one entry in a workspace's        │
+│    "Add Agent" menu. Starting one opens a          │
+│    terminal in that workspace and types the        │
+│    command, followed by its arguments. "Add        │
+│    Agent with args" asks for other arguments       │
+│    first, starting from the ones here.             │
 └──────────────────────────────────────────────────┘
 ```
+
+One row per `store.agents` (`AgentRow`), each showing the agent's name and, under
+it in secondary text, the line starting it types (`AgentDefinition.launchCommand`)
+rather than the command and the arguments as two separate facts. Editing (✎) swaps
+the row for an inline Name / Command / Default Arguments form with Cancel and Save;
+Save is disabled until both a name and a command are present
+(`AgentDefinition.isValid`). The form below the list adds one, and "Add Agent" is
+disabled by the same rule.
+
+The list is a preference like the ports and the bell sound: held on `ProjectStore`,
+persisted under `wietty.agents`, and seeded with Claude on a fresh install so the
+workspace menu is not empty before anyone has been here. Seeding happens only when
+nothing has ever been stored, never on an empty list, so deleting the last agent
+sticks across a relaunch. With the list empty the section says so, and each "Add
+Agent" submenu holds one disabled line pointing back here.
 
 ## Remote
 
@@ -216,10 +241,10 @@ Legend:
   `SettingsView`'s `@State private var tab`. The selection is view state, not a
   preference: it is not persisted, and it is back to `SettingsTab.default` the
   next time the panel is opened.
-- `SettingsTab` is a pure type so that which tabs the panel offers, in what order,
-  and which of them are still empty are asserted in CI (`SettingsTabTests`) rather
-  than only checkable by opening the panel. It is the same reason
-  `NavBarView.trailingButtons` is a static function.
+- `SettingsTab` is a pure type so that which tabs the panel offers and in what
+  order are asserted in CI (`SettingsTabTests`) rather than only checkable by
+  opening the panel. It is the same reason `NavBarView.trailingButtons` is a static
+  function.
 - Only the selected tab's subtree is built, so a render test that does not name a
   tab covers one fifth of the panel. `SettingsPaneTests.everyTabRenders` renders
   all five, and `SettingsView`'s `init` takes a `tab:` for that.

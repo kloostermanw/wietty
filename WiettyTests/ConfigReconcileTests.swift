@@ -15,6 +15,32 @@ import Foundation
         #expect(config.terminals == ["Terminal 1"])
     }
 
+    /// An agent row's `type` is what it runs, so a workspace that syncs its file can
+    /// write a row for something other than Claude down. Emitting `claude` for every
+    /// agent row rewrote a Codex row as a Claude row on the next apply.
+    @Test func anAgentRowsTypeIsTheLineItRuns() {
+        let rows = [
+            TerminalRef(label: "Codex 1", sessionId: "s1", kind: .claude, slot: "codex1",
+                        command: "codex --model o3"),
+            TerminalRef(label: "Claude 1", sessionId: "s2", kind: .claude, slot: "claude1"),
+        ]
+        let config = ConfigReconcile.config(from: rows, name: nil)
+        #expect(config.agents.map(\.type) == ["codex --model o3", "claude"])
+    }
+
+    /// And back: a row built from the file runs the `type` it was written with. A
+    /// plain `claude` stays a row with no line of its own, which is what every file
+    /// written before this said and what a hand written file says.
+    @Test func aRowFromTheFileRunsTheTypeItWasWrittenWith() {
+        let config = WorkspaceConfig(
+            name: nil,
+            agents: [.init(slot: "codex1", type: "codex --model o3"),
+                     .init(slot: "claude1", type: "claude")],
+            terminals: [])
+        let result = ConfigReconcile.apply(config, to: [])
+        #expect(result.terminals.map(\.command) == ["codex --model o3", nil])
+    }
+
     @Test func buildsConfigWithTests() {
         let rows = [TerminalRef(label: "Terminal 1", sessionId: "s1", kind: .terminal, slot: "Terminal 1")]
         let tests = ["phpstan": TestConfig(command: "phpstan analyse")]

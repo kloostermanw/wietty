@@ -83,14 +83,57 @@ Legend:
 - `(local)`: a row tracked locally but absent from `wietty.json`, kept alive
   after an external removal (`TerminalRowView`, `isLocalOnly`).
 
-- The workspace header's context menu offers "Terminal" (`onOpenTerminal`),
-  "Claude" (`onOpenClaude`), "Rename workspace…" (`onRenameWorkspace`), "Enable
-  config sync" (`onEnableSync`, only while sync is off), and "Remove"
-  (`onRemoveProject`). "Remove" drops the workspace and its rows the way the row
+## The workspace header's context menu
+
+Right clicking the header opens this. The items come from `WorkspaceMenu.items`,
+a pure type, so which of them a card offers and in what order is asserted in CI
+(`WorkspaceMenuTests`) rather than only checkable by right clicking one. The card
+supplies the actions, which is the half that needs a card.
+
+```
+┌────────────────────────┐
+│ Add Terminal           │┌────────────────────────────┐
+│ Add Agent            > ││ Claude                     │
+│ Add Agent with args  > ││ Codex                      │
+│ Add workspace...       │└────────────────────────────┘
+│ ────────────────────── │  one entry per configured agent,
+│ Edit workspace...      │  from Settings › Agents
+│ Rename workspace...    │
+│ Enable config sync     │  (only while sync is off)
+│ Remove                 │
+└────────────────────────┘
+```
+
+- Everything above the separator adds something; everything below it acts on the
+  workspace itself. "Remove" sitting among the "add" entries is how a click meant
+  for one lands on the other.
+- "Add Terminal" (`onOpenTerminal`) opens a plain terminal row.
+- "Add Agent" (`onAddAgent`) starts one of the agents configured in Settings ›
+  Agents, with that agent's default arguments. "Add Agent with args"
+  (`onAddAgentWithArgs`) is the same list, and asks what to run it with first; the
+  dialog is described under "Overlays and alerts" in `ContentView.md`. Both
+  submenus are the same list (`agents`), so an agent added in Settings appears
+  under both. With no agents configured, each submenu holds one disabled line
+  pointing at Settings (`WorkspaceMenu.noAgents`), because a submenu with nothing
+  in it reads as a menu that failed to build.
+- "Add workspace…" (`onAddWorkspace`) is the `+` in the Local header, offered here
+  too because a right click on a card is where a user already is when they want one
+  more.
+- "Edit workspace…" (`onEditWorkspace`) puts this workspace's own page in the pane,
+  the way the gear puts the app's settings there. See `WorkspaceSettingsView.md`.
+- "Rename workspace…" (`onRenameWorkspace`) opens the rename dialog, described
+  under "Overlays and alerts" in `ContentView.md`.
+- "Enable config sync" (`onEnableSync`) appears only while sync is off, since sync
+  can only be turned on.
+- "Remove" (`onRemoveProject`) drops the workspace and its rows the way the row
   menu's "Remove" drops one, so it closes their terminals too.
-- "Rename workspace…" is absent whenever `onRenameWorkspace` is nil, which is every
-  remote card: that name belongs to the Mac serving it. The rename itself is local
-  and is described under "Overlays and alerts" in `ContentView.md`.
+
+A remote card offers two items and no separator: "Add Terminal" and "Claude"
+(`onOpenClaude`). Those are what the LAN remote protocol carries. The agent list is
+this Mac's preference and means nothing on the Mac serving that workspace, and the
+workspace itself is not this app's to edit, rename or remove: "Edit workspace…" and
+"Rename workspace…" are absent whenever their actions are nil, which is every
+remote card.
 
 The change indicator and the enable action only appear for workspaces that have,
 or can have, a `wietty.json`. "Enable config sync" lives in the header's

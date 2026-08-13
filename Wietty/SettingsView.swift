@@ -22,6 +22,10 @@ struct SettingsView: View {
     @State private var newHost = ""
     @State private var newPort = "7434"
     @State private var newToken = ""
+    // The same, for the agent being added on the Agents tab.
+    @State private var newAgentName = ""
+    @State private var newAgentCommand = ""
+    @State private var newAgentArguments = ""
 
     /// - Parameter tab: which tab is up. Defaults to the one the panel opens on;
     ///   only the tests pass anything else, because only one tab's subtree is built
@@ -73,7 +77,7 @@ struct SettingsView: View {
         case .notifications:
             form { NotificationSettings(store: store, bells: bells) }
         case .agents:
-            placeholder
+            form { agentsSection }
         case .remote:
             form {
                 remoteAccessSection
@@ -92,12 +96,30 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    @ViewBuilder private var placeholder: some View {
-        if let placeholder = tab.placeholder {
-            ContentUnavailableView(placeholder.title,
-                                   systemImage: placeholder.systemImage,
-                                   description: Text(placeholder.message))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+    @ViewBuilder private var agentsSection: some View {
+        Section("Agents") {
+            if store.agents.isEmpty {
+                Text("No agents. The two \"Add Agent\" entries in a workspace's menu "
+                     + "have nothing to offer until there is one here.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(store.agents) { agent in
+                AgentRow(agent: agent,
+                         onUpdate: { store.updateAgent($0) },
+                         onDelete: { store.removeAgent(id: agent.id) })
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("Name", text: $newAgentName)
+                TextField("Command", text: $newAgentCommand)
+                TextField("Default Arguments", text: $newAgentArguments)
+                Button("Add Agent", action: addAgent)
+                    .disabled(!newAgent.isValid)
+            }
+            Text("Each agent is one entry in a workspace's \"Add Agent\" menu. Starting "
+                 + "one opens a terminal in that workspace and types the command, "
+                 + "followed by its arguments. \"Add Agent with args\" asks for other "
+                 + "arguments first, starting from the ones here.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -191,6 +213,21 @@ struct SettingsView: View {
             && !newHost.trimmingCharacters(in: .whitespaces).isEmpty
             && Int(newPort) != nil
             && !newToken.isEmpty
+    }
+
+    /// What the fields under the list currently describe. Built rather than stored,
+    /// so "is this addable" and "what gets added" cannot disagree.
+    private var newAgent: AgentDefinition {
+        AgentDefinition(name: newAgentName, command: newAgentCommand,
+                        defaultArguments: newAgentArguments)
+    }
+
+    private func addAgent() {
+        guard newAgent.isValid else { return }
+        store.addAgent(newAgent)
+        newAgentName = ""
+        newAgentCommand = ""
+        newAgentArguments = ""
     }
 
     private func addConnection() {
@@ -388,6 +425,90 @@ struct NotificationSettings: View {
         case .denied: return .red
         case .notAsked, nil: return .secondary
         }
+    }
+}
+
+/// One row in the "Agents" section: a summary line with edit and delete buttons,
+/// or (while editing) an inline form for name, command and default arguments.
+///
+/// Internal rather than private, and its `init` takes the editing state, for the
+/// same reason `NotificationSettings.init` takes a permission: the editing half is
+/// never on screen on the way into the tab, so a render of the tab alone would cover
+/// the reading half and look like it covered both.
+struct AgentRow: View {
+    let agent: AgentDefinition
+    let onUpdate: (AgentDefinition) -> Void
+    let onDelete: () -> Void
+
+    @State private var isEditing: Bool
+    @State private var name: String
+    @State private var command: String
+    @State private var arguments: String
+
+    init(agent: AgentDefinition, isEditing: Bool = false,
+         onUpdate: @escaping (AgentDefinition) -> Void, onDelete: @escaping () -> Void) {
+        self.agent = agent
+        self.onUpdate = onUpdate
+        self.onDelete = onDelete
+        _isEditing = State(initialValue: isEditing)
+        _name = State(initialValue: agent.name)
+        _command = State(initialValue: agent.command)
+        _arguments = State(initialValue: agent.defaultArguments)
+    }
+
+    var body: some View {
+        if isEditing {
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("Name", text: $name)
+                TextField("Command", text: $command)
+                TextField("Default Arguments", text: $arguments)
+                HStack {
+                    Button("Cancel") { cancelEditing() }
+                    Spacer()
+                    Button("Save") { save() }.disabled(!edited.isValid)
+                }
+            }
+        } else {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(agent.displayName)
+                    // What starting it types, rather than the command and the
+                    // arguments as two facts: the line is what actually runs.
+                    Text(agent.launchCommand())
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: { isEditing = true }) {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .help("Edit agent")
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove agent")
+            }
+        }
+    }
+
+    /// The agent the fields currently describe, keeping the id: an edit replaces the
+    /// entry it started from rather than adding a second one.
+    private var edited: AgentDefinition {
+        AgentDefinition(id: agent.id, name: name, command: command, defaultArguments: arguments)
+    }
+
+    private func cancelEditing() {
+        name = agent.name
+        command = agent.command
+        arguments = agent.defaultArguments
+        isEditing = false
+    }
+
+    private func save() {
+        guard edited.isValid else { return }
+        onUpdate(edited)
+        isEditing = false
     }
 }
 

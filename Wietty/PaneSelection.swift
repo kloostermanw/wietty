@@ -37,6 +37,11 @@ enum PaneOverride: Equatable {
     case remote(RemoteSessionRef)
     case log(ProcessLogRef)
     case settings
+    /// One workspace's own page, by workspace id. Reached from "Edit workspace…" in
+    /// the card's menu, and covering the terminal for the same reason `settings`
+    /// does: it is a page rather than a window, so it goes where every other page
+    /// goes.
+    case workspaceSettings(UUID)
 }
 
 /// What the main window's pane is showing, and therefore which sidebar row is
@@ -64,6 +69,8 @@ enum PaneSelection: Equatable {
     /// The app's own settings. The one thing here that belongs to no workspace, so
     /// it marks no row in the sidebar and the bar above the pane names it directly.
     case settings
+    /// One workspace's own page, by workspace id.
+    case workspaceSettings(UUID)
 
     /// - Parameter local: `GhosttyService.selected`, mirrored into SwiftUI state.
     /// - Parameter override: whatever a sidebar row put in front of it, if any.
@@ -72,6 +79,7 @@ enum PaneSelection: Equatable {
         case let .remote(session): return .remote(session)
         case let .log(process): return .processLog(process)
         case .settings: return .settings
+        case let .workspaceSettings(project): return .workspaceSettings(project)
         case nil: break
         }
         if let local { return .local(local) }

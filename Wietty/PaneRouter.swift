@@ -71,4 +71,19 @@ final class PaneRouter {
             override = nil
         }
     }
+
+    /// A workspace removed while its page was on screen takes the page with it, for
+    /// the same reason a removed connection takes its session: the card and its rows
+    /// went with the workspace, so the page would be a dead end with nothing left in
+    /// the sidebar to click out of it.
+    ///
+    /// Only that page, deliberately. A process log belongs to a workspace too and
+    /// stays: it is text this app already holds, so it is still readable after the
+    /// workspace is gone. And the app's own settings panel belongs to no workspace at
+    /// all, so removing one must not close it under the cursor of whoever is using it.
+    func workspacesChanged(to ids: [UUID]) {
+        if case let .workspaceSettings(project) = override, !ids.contains(project) {
+            override = nil
+        }
+    }
 }
