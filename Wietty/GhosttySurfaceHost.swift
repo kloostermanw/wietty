@@ -343,14 +343,22 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
         case GHOSTTY_ACTION_RING_BELL:
             event = .bell
         case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
-            // A body is what there is to show, so a notification without one is
-            // dropped here rather than becoming an empty banner. A missing title is
-            // kept: `OSC 9;text` sets only the body, and libghostty passes the title
-            // as an empty C string in that case.
+            // A body is what there is to show, so a notification without one does not
+            // become a banner. It becomes a bell instead of nothing: something did
+            // happen on this terminal, and returning here dropped the event before
+            // the store saw it, so the row lost its attention mark too. A program that
+            // signalled got no banner, no mark in the sidebar, and no trace.
+            //
+            // Empty counts as absent. libghostty passes a non-null empty C string for
+            // an `OSC 9;` carrying no payload, so checking only for null let a
+            // textless banner through. A missing title is kept: `OSC 9;text` sets only
+            // the body, and libghostty passes an empty title in that case.
             let payload = action.action.desktop_notification
-            guard let body = payload.body else { return false }
-            event = .notification(title: payload.title.map { String(cString: $0) } ?? "",
-                                  body: String(cString: body))
+            let body = payload.body.map { String(cString: $0) } ?? ""
+            event = body.isEmpty
+                ? .bell
+                : .notification(title: payload.title.map { String(cString: $0) } ?? "",
+                                body: body)
         case GHOSTTY_ACTION_CELL_SIZE:
             // The font metrics changed, so the grid has to be derived again even
             // though the view did not move.
