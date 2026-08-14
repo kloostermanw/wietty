@@ -10,6 +10,15 @@ import Foundation
     private let connectionB = UUID()
     private let workspace = UUID()
 
+    /// The stored shape, pinned rather than only described. This string is a
+    /// `UserDefaults` key: change its prefix, its separator or the order of the two
+    /// ids and every card anyone ever expanded is forgotten on the next launch, with
+    /// nothing else in the app to notice it happened.
+    @Test func keyHasTheStoredShape() {
+        #expect(RemoteSectionView.cardKey(connectionId: connectionA, workspaceId: workspace)
+                == "remote-card-\(connectionA.uuidString)-\(workspace.uuidString)")
+    }
+
     @Test func keyIsScopedToConnectionAndWorkspace() {
         let a = RemoteSectionView.cardKey(connectionId: connectionA, workspaceId: workspace)
         let b = RemoteSectionView.cardKey(connectionId: connectionB, workspaceId: workspace)

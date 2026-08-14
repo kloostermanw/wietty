@@ -313,8 +313,11 @@ Legend:
   session for the row when it has none, and then goes through `showRemote` to
   `router.show(.remote(RemoteSessionRef(connectionId: sessionId:)))` with the
   session id that call answered, never with the one the row already carried (a
-  revived row gets a new one). A failed activation shows nothing and leaves the
-  reason in the section's red caption. See "What the pane shows" above.
+  revived row gets a new one). A failed activation attaches nothing and leaves
+  the reason in the section's red caption, except for the one reply that leaves
+  that caption empty (a success status naming no session), which
+  `remoteActivationFailureMessage` turns into the same alert a local failure
+  raises, so a tap is never simply ignored. See "What the pane shows" above.
   `RemoteSectionView` is also given `isSelected`, so a remote row is marked
   exactly like a local one.
   Tapping a local terminal row (`onActivate`) calls `activate(ref, in: project)`,
@@ -344,9 +347,12 @@ Legend:
 
 ## Overlays and alerts
 
-`ContentView` is disabled and shows a small `ProgressView` while `isBusy` (a
-terminal or agent session is being opened, activated, or closed). It also hosts
-four alerts:
+The sidebar is disabled and shows a small `ProgressView` while `isBusy` (a
+terminal or agent session is being opened, activated, or closed). The modifiers
+sit on the sidebar rather than on the window, so the pane beside it is left
+alone. A remote tap holds `isBusy` longest, since it waits for the serving
+instance to answer, up to the 15 second cap on that request. `ContentView` also
+hosts four alerts:
 
 ```
 ┌──────────────────────────────┐        ┌──────────────────────────────┐

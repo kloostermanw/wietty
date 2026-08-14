@@ -550,22 +550,54 @@ struct ContentView: View {
     /// described. Attaching to that is what put `[session ended]` in the pane with no
     /// way back to a working terminal.
     ///
-    /// Awaited before the pane switches, unlike the local path, which switches first:
-    /// a local activation cannot change which session the row means, and this one can,
-    /// so switching early would attach to the dead session and then swap it out from
-    /// under whoever was already reading it.
+    /// Awaited before the pane switches, unlike the local path, which switches first.
+    /// Not because a local revival cannot renumber a row, it can and does: the
+    /// difference is that the local switch never names a session. It only clears the
+    /// pane's override (`PaneRouter.localTerminalActivated`) and lets the pane follow
+    /// whatever the service ends up selecting, so a new session id is already
+    /// accounted for by the time it matters. This path has to hand `showRemote` an
+    /// id, and the only id worth handing it is the one this call is about to answer
+    /// with.
     private func openRemoteTerminal(_ remoteStore: RemoteWorkspaceStore, _ ref: TerminalRef) {
         Task {
             isBusy = true
             let sessionId = await remoteStore.activate(refId: ref.id)
             isBusy = false
-            // Nil means the activation failed, and `remoteStore.lastActionError` says
-            // so under the connection's section. Nothing is attached: a pane showing a
-            // session that was never opened is the failure this exists to prevent.
+            if let message = Self.remoteActivationFailureMessage(
+                sessionId: sessionId, lastActionError: remoteStore.lastActionError) {
+                store.lastError = message
+            }
+            // Nil means the activation failed, and it has been said somewhere by now:
+            // `remoteStore.lastActionError` under the connection's section, or the
+            // alert the line above raises when the reply left that empty. Nothing is
+            // attached either way: a pane showing a session that was never opened is
+            // the failure this exists to prevent.
             guard let sessionId else { return }
             showRemote(RemoteSessionRef(connectionId: remoteStore.connection.id,
                                         sessionId: sessionId))
         }
+    }
+
+    /// What to say about an activation that answered no session id, or nil when
+    /// there is nothing to say: a reply that named a session, or a failure the
+    /// connection's own red caption already carries.
+    ///
+    /// The case left over is why the reply is not simply a `guard let`.
+    /// `RemoteWorkspaceStore.activate` clears `lastActionError` on any 2xx and then
+    /// answers nil for a body it could not read or that named an empty session, so a
+    /// serving instance that says 200 and names nothing would leave a click with no
+    /// pane, no caption and nothing written anywhere. That is this route's own dead
+    /// click, one layer further out, and the alert is the only channel a viewer
+    /// cannot miss.
+    ///
+    /// A static function taking both halves rather than reading the store, so which
+    /// replies are reported is asserted in CI rather than only reachable by pointing
+    /// this Mac at a mismatched one.
+    static func remoteActivationFailureMessage(sessionId: String?,
+                                               lastActionError: String?) -> String? {
+        guard sessionId == nil, lastActionError == nil else { return nil }
+        return "The remote answered without naming a session to show. "
+            + "It may be running an older version of Wietty."
     }
 
     /// Shows a remote session in the main window's pane, the same one the local

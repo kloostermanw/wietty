@@ -223,11 +223,19 @@ for the reply also keeps a dead session off the screen entirely, instead of
 showing one and swapping it a moment later. The request is capped at 15 seconds,
 well below `URLSession`'s default, because a tap shows nothing until it answers.
 
-The serving side of that is `ProjectStore.activate`, the same call a click on a
-local row makes, so a remote tap reopens a dead row and re-runs a stopped
-agent's line exactly the way the Mac beside it does. It also focuses the session
-in the serving Mac's own pane, which is the accepted price of having one
+The serving side of that is `ProjectStore.activateThrowing`, the same work a
+click on a local row does, so a remote tap reopens a dead row and re-runs a
+stopped agent's line exactly the way the Mac beside it does. It also focuses the
+session in the serving Mac's own pane, which is the accepted price of having one
 implementation of activation rather than two.
+
+A tap that answers no session id is reported rather than dropped. Usually the
+reason is already in the section's red caption, since a non success status
+writes `lastActionError` like any other action. The case that leaves that empty
+is a serving instance answering a success status with a body naming no session,
+which no current version does and a mismatched or intercepted one can: the
+controlling instance raises its own alert for it, because a click that quietly
+does nothing is the failure this whole route exists to remove.
 
 Note that a row's `run_state` cannot be used to decide any of this. It reports
 the row's foreground job, not whether a session exists, and it answers "running"
@@ -273,8 +281,13 @@ The server (`RemoteServer.swift`) exposes, all token gated:
   session, opening one when it has none, and answers with the row's terminal
   JSON. Keyed by the row's id rather than by a session id, unlike its two
   neighbours below, because the rows that need it are exactly the rows whose
-  session id addresses nothing. `404` if no row has that id, `500` if the
-  session could not be opened.
+  session id addresses nothing. `400` if `ref_id` is not a UUID, which no
+  snapshot could have named. `404` if no row has that id, meaning the caller's
+  snapshot is older than this instance's workspace list. `500` if the activation
+  itself failed, or left the row with no session to attach to. The two `500`
+  bodies carry the reason as `{"error": "..."}`, worded for a person and safe to
+  show; a client that reads only the status is unaffected. The reason is also
+  logged on the serving instance under the `remote` category.
 - `POST /api/sessions/{sid}/restart`: restarts the tracked session with that
   session id.
 - `POST /api/sessions/{sid}/close`: closes the tracked session with that
