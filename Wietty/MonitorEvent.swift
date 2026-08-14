@@ -36,8 +36,11 @@ enum MonitorEvent: Equatable, Sendable {
             return .bell(sessionId: sessionId)
         case "notification":
             // A missing title is a notification with no title, because that is what
-            // `OSC 9;text` is. A missing body is nothing to show, so it is not one.
-            guard let body = object["body"] as? String else { return nil }
+            // `OSC 9;text` is. A body that is missing or empty leaves nothing to put
+            // in a banner, so it is a bell: something happened here, with no words to
+            // go with it. Dropping the line instead lost the attention mark as well.
+            let body = object["body"] as? String ?? ""
+            guard !body.isEmpty else { return .bell(sessionId: sessionId) }
             return .notification(sessionId: sessionId,
                                  title: object["title"] as? String ?? "",
                                  body: body)

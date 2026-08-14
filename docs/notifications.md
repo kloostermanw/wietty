@@ -15,9 +15,12 @@ interrupting for, and every place the two answers differ.
 Nothing here detects either. Both arrive from libghostty's own action callback in
 `GhosttySurfaceHost`: `GHOSTTY_ACTION_RING_BELL` becomes
 `MonitorEvent.bell(sessionId:)` and `GHOSTTY_ACTION_DESKTOP_NOTIFICATION` becomes
-`MonitorEvent.notification(sessionId:title:body:)`. A notification with no body is
-dropped there, because a banner with nothing in it says less than no banner; one
-with no title is kept, because `OSC 9;text` supplies only a body.
+`MonitorEvent.notification(sessionId:title:body:)`. A notification with no body
+becomes a bell there, because a banner with nothing in it says less than no banner,
+but something did happen on that terminal and the row should still be marked for it.
+An empty body counts as no body: libghostty passes an empty string for an `OSC 9;`
+carrying no payload. One with no title is kept, because `OSC 9;text` supplies only a
+body.
 
 One thing that decides whether the action arrives at all is not this app's: libghostty
 gates `OSC 9` and `OSC 777` behind its own `desktop-notifications` setting, and

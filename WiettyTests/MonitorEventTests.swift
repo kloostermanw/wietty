@@ -23,11 +23,20 @@ import Foundation
     }
 
     /// A missing title is a notification, not a malformed line: `OSC 9;text` has no
-    /// title to give. A missing body is what makes one worthless, so that is nil.
+    /// title to give.
     @Test func decodesNotificationWithoutATitle() {
         #expect(MonitorEvent.decode(line: #"{"type":"notification","session_id":"s5","body":"Done"}"#)
                 == .notification(sessionId: "s5", title: "", body: "Done"))
-        #expect(MonitorEvent.decode(line: #"{"type":"notification","session_id":"s5","title":"t"}"#) == nil)
+    }
+
+    /// With no body there is nothing to put in a banner, but something still happened
+    /// on that terminal, so it is a bell. Returning nil dropped the event before the
+    /// store saw it and took the row's attention mark with it.
+    @Test func decodesABodylessNotificationAsABell() {
+        #expect(MonitorEvent.decode(line: #"{"type":"notification","session_id":"s5","title":"t"}"#)
+                == .bell(sessionId: "s5"))
+        #expect(MonitorEvent.decode(line: #"{"type":"notification","session_id":"s5","body":""}"#)
+                == .bell(sessionId: "s5"))
     }
 
     @Test func decodesJob() {
