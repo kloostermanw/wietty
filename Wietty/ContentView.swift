@@ -28,7 +28,6 @@ struct ContentView: View {
     @State private var agentArgumentsTarget: (project: Project, agent: AgentDefinition)?
     @State private var agentArgumentsText = ""
     @State private var sections = SectionCollapseState()
-    @State private var remoteCardCollapsed: Set<UUID> = []
     /// The local terminal the pane shows, mirrored from `GhosttyService` so a
     /// selection it makes redraws the pane. Nil on the other two substrates, where
     /// nothing reads it.
@@ -283,8 +282,7 @@ struct ContentView: View {
                             isSelected: {
                                 paneSelection.selects(remoteSession: $0.sessionId,
                                                       on: connection.id)
-                            },
-                            collapsedCards: $remoteCardCollapsed
+                            }
                         )
                     }
                 }
@@ -543,9 +541,31 @@ struct ContentView: View {
         router.show(.log(ProcessLogRef(projectId: project.id, name: test.name, isTest: true)))
     }
 
+    /// Clicking a remote row does what clicking a local one does: the serving Mac
+    /// opens a session for the row when it has none, and only then does the pane
+    /// attach to it.
+    ///
+    /// The session id comes from the reply rather than from `ref`, because a revived
+    /// row gets a *new* one and `ref` still carries the dead id the last snapshot
+    /// described. Attaching to that is what put `[session ended]` in the pane with no
+    /// way back to a working terminal.
+    ///
+    /// Awaited before the pane switches, unlike the local path, which switches first:
+    /// a local activation cannot change which session the row means, and this one can,
+    /// so switching early would attach to the dead session and then swap it out from
+    /// under whoever was already reading it.
     private func openRemoteTerminal(_ remoteStore: RemoteWorkspaceStore, _ ref: TerminalRef) {
-        showRemote(RemoteSessionRef(connectionId: remoteStore.connection.id,
-                                    sessionId: ref.sessionId))
+        Task {
+            isBusy = true
+            let sessionId = await remoteStore.activate(refId: ref.id)
+            isBusy = false
+            // Nil means the activation failed, and `remoteStore.lastActionError` says
+            // so under the connection's section. Nothing is attached: a pane showing a
+            // session that was never opened is the failure this exists to prevent.
+            guard let sessionId else { return }
+            showRemote(RemoteSessionRef(connectionId: remoteStore.connection.id,
+                                        sessionId: sessionId))
+        }
     }
 
     /// Shows a remote session in the main window's pane, the same one the local

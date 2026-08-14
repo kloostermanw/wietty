@@ -3,7 +3,7 @@ import Testing
 
 /// Covers `RemoteServer.isAuthorized`, the pure predicate at the heart of the
 /// LAN control server's auth boundary (guards 7 HTTP routes + 2 WebSocket
-/// upgrades in RemoteServer.swift).
+/// upgrades in RemoteServer.swift; the three static asset routes are open).
 @Suite struct RemoteAuthTests {
     @Test func correctTokenAccepted() {
         #expect(RemoteServer.isAuthorized(token: "abc", expected: "abc") == true)
