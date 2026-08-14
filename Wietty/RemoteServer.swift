@@ -76,6 +76,10 @@ final class RemoteServer {
             guard Self.tokenOK(request, expected: expected) else { return Response(status: .unauthorized) }
             return await Self.openSession(store: store, workspaceId: ctx.parameters.get("id"), kind: .claude)
         }
+        router.post("api/terminals/:tid/activate") { request, ctx -> Response in
+            guard Self.tokenOK(request, expected: expected) else { return Response(status: .unauthorized) }
+            return await Self.activateTerminal(store: store, refId: ctx.parameters.get("tid"))
+        }
         router.post("api/sessions/:sid/restart") { request, ctx -> Response in
             guard Self.tokenOK(request, expected: expected) else { return Response(status: .unauthorized) }
             return await Self.restartSession(store: store, sessionId: ctx.parameters.get("sid"))
@@ -226,6 +230,48 @@ final class RemoteServer {
         } catch {
             return Response(status: .internalServerError)
         }
+    }
+
+    /// Gives the row with this id a live session, opening one when it has none, and
+    /// returns its terminal JSON carrying the session id to attach to. `.notFound` if
+    /// no row has that id, `.internalServerError` if it still has no session after.
+    @MainActor
+    private static func activateTerminal(store: ProjectStore, refId: String?) async -> Response {
+        guard let json = await activatedTerminalJSON(store: store, refId: refId) else {
+            // Which of the two it is, from the outside: a bad id is the viewer's
+            // snapshot being older than this Mac's workspace list, and a row that
+            // could not be opened is this Mac failing. `session(withRefId:)` answered
+            // before the open was attempted, so the second read is what tells them
+            // apart.
+            let known = refId.flatMap(UUID.init(uuidString:)).flatMap(store.session(withRefId:)) != nil
+            return Response(status: known ? .internalServerError : .notFound)
+        }
+        return Self.jsonResponse(json.encodedString())
+    }
+
+    /// The activation itself, split from its `Response` so it can be tested without a
+    /// socket: nil is "no such row, or the row still has no session", and the caller
+    /// turns that into a status.
+    ///
+    /// `ProjectStore.activate` is what does the work, deliberately, rather than
+    /// anything narrower: it is the same call a click on a local row makes, so a
+    /// remote click reopens a dead row and re-runs a stopped agent's line exactly the
+    /// way the Mac beside it does. That includes focusing the session in the serving
+    /// Mac's own pane, which is the price of one implementation rather than two.
+    @MainActor
+    static func activatedTerminalJSON(store: ProjectStore, refId: String?) async -> JSONValue? {
+        guard let refId, let id = UUID(uuidString: refId),
+              let found = store.session(withRefId: id) else { return nil }
+        do {
+            try await store.activateThrowing(found.ref, in: found.project)
+        } catch {
+            return nil
+        }
+        // Re-read: activating a row with no live session gives it a new session id,
+        // and that new id is the whole reason a viewer waits for this reply.
+        guard let refreshed = store.session(withRefId: id),
+              !refreshed.ref.sessionId.isEmpty else { return nil }
+        return Self.terminalJSON(refreshed.ref, in: refreshed.project, store: store)
     }
 
     /// Restarts the tracked session with the given session id and returns its

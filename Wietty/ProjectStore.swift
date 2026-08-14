@@ -686,7 +686,20 @@ final class ProjectStore {
         emitConfig(for: projects[np].id)
     }
 
+    /// The window's entry point to activation, reporting rather than throwing.
+    ///
+    /// The same split `restart`/`restartTerminal` has, for the same reason: a click has
+    /// nobody to answer, so it reports into `lastError` and the alert shows it, while
+    /// the remote server turns the throw into a status for the viewer that asked.
     func activate(_ ref: TerminalRef, in project: Project) async {
+        do {
+            try await activateThrowing(ref, in: project)
+        } catch {
+            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    func activateThrowing(_ ref: TerminalRef, in project: Project) async throws {
         guard let prePIndex = projects.firstIndex(where: { $0.id == project.id }),
               let preTIndex = projects[prePIndex].terminals.firstIndex(where: { $0.id == ref.id }) else { return }
         let sessionId = projects[prePIndex].terminals[preTIndex].sessionId
@@ -739,7 +752,7 @@ final class ProjectStore {
                 save()
             }
         } catch {
-            lastError = (error as? TerminalError)?.errorDescription ?? error.localizedDescription
+            throw StoreError.terminal((error as? TerminalError)?.errorDescription ?? error.localizedDescription)
         }
     }
 

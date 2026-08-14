@@ -16,9 +16,19 @@ struct RemoteSectionView: View {
     /// Whether a row is the terminal the main window's pane is showing. Answered by
     /// `ContentView`, which is where the pane's selection lives.
     let isSelected: (TerminalRef) -> Bool
-    @Binding var collapsedCards: Set<UUID>
 
     private var key: String { "remote-\(store.connection.id.uuidString)" }
+
+    /// Where one workspace card's collapse is stored.
+    ///
+    /// Both ids, because a workspace id is only unique on the Mac that owns it: two
+    /// connections can serve a workspace carrying the same id (the same folder cloned
+    /// onto a second Mac, or a restored backup), and collapsing one card must not
+    /// collapse the other's. A static function rather than a computed property so the
+    /// key shape is asserted in CI rather than only observable by relaunching the app.
+    static func cardKey(connectionId: UUID, workspaceId: UUID) -> String {
+        "remote-card-\(connectionId.uuidString)-\(workspaceId.uuidString)"
+    }
 
     var body: some View {
         SidebarSectionHeaderView(
@@ -63,7 +73,7 @@ struct RemoteSectionView: View {
     private func card(_ project: Project, decoded: DecodedRemoteWorkspaces) -> some View {
         WorkspaceCardView(
             project: project,
-            collapsed: collapsedCards.contains(project.id),
+            collapsed: isCardCollapsed(project.id),
             gitInfo: decoded.gitInfo[project.id],
             runState: { decoded.runStates[$0.id] ?? .exited },
             needsAttention: { decoded.attention.contains($0.id) },
@@ -95,12 +105,21 @@ struct RemoteSectionView: View {
         )
     }
 
+    /// A card nobody has toggled starts collapsed, unlike a section header and
+    /// unlike a local card: a connection can serve a dozen workspaces, and drawing
+    /// them all open pushes the Local section off the top of the sidebar.
+    private func isCardCollapsed(_ workspaceId: UUID) -> Bool {
+        sections.isCollapsed(Self.cardKey(connectionId: store.connection.id,
+                                          workspaceId: workspaceId),
+                             default: true)
+    }
+
+    /// The collapse is a preference of the Mac doing the viewing, stored here and
+    /// never sent upstream: the serving Mac has its own idea of which of its cards
+    /// are open, and one viewer must not rearrange another's sidebar.
     private func toggleCollapsed(_ id: UUID) {
-        if collapsedCards.contains(id) {
-            collapsedCards.remove(id)
-        } else {
-            collapsedCards.insert(id)
-        }
+        sections.setCollapsed(Self.cardKey(connectionId: store.connection.id, workspaceId: id),
+                              !isCardCollapsed(id))
     }
 
     static func stateText(_ state: RemoteConnectionState) -> String {

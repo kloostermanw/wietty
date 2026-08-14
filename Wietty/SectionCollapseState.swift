@@ -17,7 +17,14 @@ final class SectionCollapseState {
         self.map = defaults.dictionary(forKey: key) as? [String: Bool] ?? [:]
     }
 
-    func isCollapsed(_ k: String) -> Bool { map[k] ?? false }
+    /// Whether `k` is collapsed, answering `fallback` for a key nobody has
+    /// toggled yet.
+    ///
+    /// Section headers want the stored default (a section starts open), and a
+    /// remote workspace card wants the opposite (a connection serving a dozen
+    /// workspaces must not fill the sidebar the moment it connects), so the
+    /// starting side is the caller's to pick rather than a property of the map.
+    func isCollapsed(_ k: String, default fallback: Bool = false) -> Bool { map[k] ?? fallback }
 
     func setCollapsed(_ k: String, _ value: Bool) {
         map[k] = value

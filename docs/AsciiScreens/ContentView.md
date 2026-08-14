@@ -309,9 +309,12 @@ Legend:
   have no remote equivalent (rename, remove terminal, remove project, enable
   sync, apply config, process controls) are wired to no-ops. Tapping a remote
   terminal row (`onActivate`) calls `openRemoteTerminal(remoteStore, ref)`, which
-  goes through `showRemote` to `router.show(.remote(RemoteSessionRef(connectionId:
-  sessionId:)))` and so shows the session in this window's pane. See "What the pane
-  shows" above.
+  awaits `RemoteWorkspaceStore.activate(refId:)` so the serving Mac opens a
+  session for the row when it has none, and then goes through `showRemote` to
+  `router.show(.remote(RemoteSessionRef(connectionId: sessionId:)))` with the
+  session id that call answered, never with the one the row already carried (a
+  revived row gets a new one). A failed activation shows nothing and leaves the
+  reason in the section's red caption. See "What the pane shows" above.
   `RemoteSectionView` is also given `isSelected`, so a remote row is marked
   exactly like a local one.
   Tapping a local terminal row (`onActivate`) calls `activate(ref, in: project)`,
@@ -327,12 +330,17 @@ Legend:
   `SidebarWidth.minimum`, the floor a divider drag stops at, since the outer
   explicit width never goes below it.
 - Collapse state (both the section chevron and each remote card's own chevron)
-  is `@State` in `ContentView`, with the remote card set passed into each
-  `RemoteSectionView` as a `@Binding`; section collapse persists via
-  `SectionCollapseState` (`UserDefaults`) and is overruled for the Local
-  section while its header has no chevron, per-card collapse for remote
-  projects is in-memory only for this window's lifetime (local project cards
-  persist their collapse through `ProjectStore.toggleCollapsed`).
+  lives in one `SectionCollapseState`, held as `@State` in `ContentView` and
+  backed by `UserDefaults`, so both survive a relaunch. A section is stored under
+  `"local"` or `"remote-<connectionId>"` and is overruled for the Local section
+  while its header has no chevron. A remote card is stored under
+  `RemoteSectionView.cardKey(connectionId:workspaceId:)`, both ids because a
+  workspace id is only unique on the Mac that owns it. A remote card nobody has
+  toggled starts **collapsed**, unlike a section and unlike a local card, so a
+  connection serving a dozen workspaces does not fill the sidebar the moment it
+  connects. The collapse is the viewing Mac's own preference and is never sent
+  upstream. Local project cards persist their collapse through
+  `ProjectStore.toggleCollapsed` instead.
 
 ## Overlays and alerts
 
