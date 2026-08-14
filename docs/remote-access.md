@@ -45,7 +45,7 @@ port.
 ### Architecture
 
 Terminals and Claude sessions are pseudo-terminals Wietty spawned itself and
-libghostty renders; see `documentation/terminal.md`. **The wire format has not
+libghostty renders; see `docs/terminal.md`. **The wire format has not
 changed** across the substrates this app used to ship: the browser client, the
 JSON/WebSocket shapes, and `WS /attach`/`WS /control` are the same, so an existing
 browser tab or iPadOS client needs no update. A session
@@ -114,7 +114,7 @@ knowing on the client side:
 - **The paint comes from the last recorded screen rather than the instant of
   attach**, bounded at 300 ms (`GhosttyService.snapshotDebounce`) and driven by
   the terminal's own output, with the app-wide job poll as a backstop. See
-  `documentation/terminal.md` for why the hub cannot read the surface itself.
+  `docs/terminal.md` for why the hub cannot read the surface itself.
 - **The end signal has one source.** The terminal is a PTY in this process, so
   `GhosttyService` reports its end and `PaneStreamHub.endViewers(ofSession:)`
   delivers the `ended` message. Both ways a terminal ends reach it: the child
@@ -261,7 +261,7 @@ does for a local terminal whose command exited.
 
 A session that rings the bell on a connected Mac also posts a notification here,
 built by diffing the `needs_attention` flag across successive snapshots, since
-the protocol has no bell message of its own. `documentation/notifications.md`
+the protocol has no bell message of its own. `docs/notifications.md`
 covers that diff and the two rules that keep a reconnect from re-announcing every
 waiting agent.
 

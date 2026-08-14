@@ -89,8 +89,7 @@ the whole window can get.
 │    Seconds between checks for each tier. Which     │
 │    check runs at which tier depends on context     │
 │    (collapsed vs expanded workspace, pending CI,   │
-│    attention). See documentation/periodic          │
-│    checks.md.                                      │
+│    attention). See docs/periodic-checks.md.        │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -253,7 +252,7 @@ Agent" submenu holds one disabled line pointing back here.
 │    ⚠ MCP server did not start: <reason>           │
 │    The loopback TCP port the MCP server listens    │
 │    on. It restarts on the new port as soon as      │
-│    you change it. See documentation/mcp.md.        │
+│    you change it. See docs/mcp.md.                 │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -354,5 +353,5 @@ scheduler's next tick, no restart needed.
   `remoteWorkspaces.sync()`, which starts or stops the corresponding
   `RemoteWorkspaceStore` in `ContentView`'s sidebar.
 
-See documentation/remote-access.md for the full feature description and the
+See docs/remote-access.md for the full feature description and the
 security caveat.

@@ -139,7 +139,7 @@ struct SettingsView: View {
                 Label("MCP server did not start: \(error)", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.red)
             }
-            Text("The loopback TCP port the MCP server listens on. It restarts on the new port as soon as you change it. See documentation/mcp.md.")
+            Text("The loopback TCP port the MCP server listens on. It restarts on the new port as soon as you change it. See docs/mcp.md.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -211,7 +211,7 @@ struct SettingsView: View {
             intervalStepper("Fast", value: $store.checkIntervals.fast, range: CheckIntervals.fastRange)
             intervalStepper("Normal", value: $store.checkIntervals.normal, range: CheckIntervals.normalRange)
             intervalStepper("Slow", value: $store.checkIntervals.slow, range: CheckIntervals.slowRange)
-            Text("Seconds between checks for each tier. Which check runs at which tier depends on context (collapsed vs expanded workspace, pending CI, attention). See documentation/periodic-checks.md.")
+            Text("Seconds between checks for each tier. Which check runs at which tier depends on context (collapsed vs expanded workspace, pending CI, attention). See docs/periodic-checks.md.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

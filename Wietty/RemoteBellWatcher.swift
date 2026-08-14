@@ -23,7 +23,7 @@ struct RemoteBellDiff: Equatable {
 ///
 /// A local bell arrives as an event, so it happens once by construction. A remote
 /// one does not: the protocol pushes the complete workspace list on every change
-/// (see `documentation/remote-access.md`), so "a bell rang" is only visible as a
+/// (see `docs/remote-access.md`), so "a bell rang" is only visible as a
 /// `needs_attention` flag that was off in the previous snapshot and is on in this
 /// one. This keeps the previous answer per connection so that difference can be
 /// taken.
