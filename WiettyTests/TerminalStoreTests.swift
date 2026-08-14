@@ -35,6 +35,11 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
     /// opening does not. `errorToThrow` fails every call, which cannot model a
     /// restart that got as far as opening its replacement.
     var closeErrorToThrow: TerminalError?
+    /// What `open` alone refuses with, for the paths that have to get past
+    /// `focus` first. `errorToThrow` fails every call, which cannot model a row
+    /// whose session is gone and whose replacement then fails to open: the
+    /// activation would end at the `focus` it never got an answer to.
+    var openErrorToThrow: TerminalError?
     /// Awaited inside `open`, after the call is recorded and before the handle
     /// is produced, so a test can run other main actor work while an open is in
     /// flight. `TerminalService` is nonisolated, so the real `open` leaves the
@@ -45,7 +50,7 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
     private var openIndex = 0
 
     func open(folder: URL, existingWindowId: String?, command: String?, badge: String?) async throws -> TerminalHandle {
-        if let error = errorToThrow { throw error }
+        if let error = errorToThrow ?? openErrorToThrow { throw error }
         openCalls.append((folder, existingWindowId, command, badge))
         discardAndOpenOrder.append("open")
         await openGate?()

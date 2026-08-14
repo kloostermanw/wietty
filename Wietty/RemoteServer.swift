@@ -4,6 +4,17 @@ import HummingbirdWebSocket
 import HTTPTypes
 import Logging
 import NIOCore
+import os
+
+/// Logging for the LAN server.
+///
+/// A viewer is told the status and, for a failure, the reason; neither reaches the
+/// person sitting at the Mac that actually refused. This is that Mac's own copy,
+/// and `os.Logger` explicitly because Hummingbird's `Logging` module spells its own
+/// type the same way.
+enum RemoteLog {
+    static let server = os.Logger(subsystem: "eu.kloosterman.wietty", category: "remote")
+}
 
 /// LAN-facing HTTP + WebSocket server. Serves the web client, a token-gated
 /// session list, and a token-gated per-session terminal socket bridged to a
@@ -209,8 +220,12 @@ final class RemoteServer {
                         body: ResponseBody(byteBuffer: ByteBuffer(data: data)))
     }
 
-    private nonisolated static func jsonResponse(_ json: String) -> Response {
-        Response(status: .ok,
+    /// A JSON body under any status, not only `.ok`: a failed activation answers
+    /// with the reason it failed, which is worth reading with the status that
+    /// carries it.
+    private nonisolated static func jsonResponse(_ json: String,
+                                                 status: HTTPResponse.Status = .ok) -> Response {
+        Response(status: status,
                 headers: [.contentType: "application/json"],
                 body: ResponseBody(byteBuffer: ByteBuffer(string: json)))
     }
@@ -232,46 +247,94 @@ final class RemoteServer {
         }
     }
 
-    /// Gives the row with this id a live session, opening one when it has none, and
-    /// returns its terminal JSON carrying the session id to attach to. `.notFound` if
-    /// no row has that id, `.internalServerError` if it still has no session after.
-    @MainActor
-    private static func activateTerminal(store: ProjectStore, refId: String?) async -> Response {
-        guard let json = await activatedTerminalJSON(store: store, refId: refId) else {
-            // Which of the two it is, from the outside: a bad id is the viewer's
-            // snapshot being older than this Mac's workspace list, and a row that
-            // could not be opened is this Mac failing. `session(withRefId:)` answered
-            // before the open was attempted, so the second read is what tells them
-            // apart.
-            let known = refId.flatMap(UUID.init(uuidString:)).flatMap(store.session(withRefId:)) != nil
-            return Response(status: known ? .internalServerError : .notFound)
+    /// What activating a row came to, and what the viewer is told about it.
+    ///
+    /// One value, decided where the failure happened. The shape this replaces
+    /// answered a bare nil for every failure and then read the store a second time
+    /// to choose a status from it, which could not tell a store that refused from a
+    /// row removed while its shell was opening: that one was answered as "no such
+    /// row", telling a viewer its snapshot was stale for a failure that was this
+    /// Mac's. It also left the store's reason nowhere.
+    enum ActivateOutcome: Equatable {
+        /// No id, or one that is not a UUID. No snapshot this Mac ever sent could
+        /// have named it, so the asking is wrong rather than out of date.
+        case badRequest
+        /// No row has that id: the viewer's snapshot is older than this Mac's
+        /// workspace list.
+        case notFound
+        /// The store refused, carrying the reason it already worded for a person.
+        case failed(String)
+        /// The store reported success and the row still has no session to attach
+        /// to. Answering with the row would send the viewer straight back to the
+        /// dead pane this route exists to prevent.
+        case noSession
+        case ok(JSONValue)
+
+        var status: HTTPResponse.Status {
+            switch self {
+            case .badRequest: .badRequest
+            case .notFound: .notFound
+            case .failed, .noSession: .internalServerError
+            case .ok: .ok
+            }
         }
-        return Self.jsonResponse(json.encodedString())
+
+        /// The JSON to answer with, or nil for the statuses that say all they have
+        /// to say. A failure carries its reason, so a viewer can show more than a
+        /// number without anyone walking over to this Mac to read its log; a client
+        /// that reads only the status is unaffected.
+        var body: JSONValue? {
+            switch self {
+            case .badRequest, .notFound: nil
+            case let .failed(reason): .object(["error": .string(reason)])
+            case .noSession: .object(["error": .string("The row was activated but has no session.")])
+            case let .ok(json): json
+            }
+        }
     }
 
-    /// The activation itself, split from its `Response` so it can be tested without a
-    /// socket: nil is "no such row, or the row still has no session", and the caller
-    /// turns that into a status.
-    ///
-    /// `ProjectStore.activate` is what does the work, deliberately, rather than
-    /// anything narrower: it is the same call a click on a local row makes, so a
-    /// remote click reopens a dead row and re-runs a stopped agent's line exactly the
-    /// way the Mac beside it does. That includes focusing the session in the serving
-    /// Mac's own pane, which is the price of one implementation rather than two.
+    /// Gives the row with this id a live session, opening one when it has none, and
+    /// answers with its terminal JSON carrying the session id to attach to.
     @MainActor
-    static func activatedTerminalJSON(store: ProjectStore, refId: String?) async -> JSONValue? {
-        guard let refId, let id = UUID(uuidString: refId),
-              let found = store.session(withRefId: id) else { return nil }
+    private static func activateTerminal(store: ProjectStore, refId: String?) async -> Response {
+        let outcome = await activateOutcome(store: store, refId: refId)
+        guard let body = outcome.body else { return Response(status: outcome.status) }
+        return Self.jsonResponse(body.encodedString(), status: outcome.status)
+    }
+
+    /// The activation itself, split from its `Response` so it can be tested without
+    /// a socket.
+    ///
+    /// `ProjectStore.activateThrowing` is what does the work, deliberately, rather
+    /// than anything narrower: it is the same call a click on a local row makes, so
+    /// a remote click reopens a dead row and re-runs a stopped agent's line exactly
+    /// the way the Mac beside it does. That includes focusing the session in the
+    /// serving Mac's own pane, which is the price of one implementation rather than
+    /// two.
+    @MainActor
+    static func activateOutcome(store: ProjectStore, refId: String?) async -> ActivateOutcome {
+        guard let refId, let id = UUID(uuidString: refId) else { return .badRequest }
+        guard let found = store.session(withRefId: id) else { return .notFound }
         do {
             try await store.activateThrowing(found.ref, in: found.project)
         } catch {
-            return nil
+            let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            // The viewer is told this too. It is logged here as well because this is
+            // the Mac the terminal is on, and a revival that fails has already
+            // discarded the row's old screen: there is nothing left on either end to
+            // read the reason off afterwards.
+            RemoteLog.server.error("""
+                activating \(id.uuidString, privacy: .public) failed: \(reason, privacy: .public)
+                """)
+            return .failed(reason)
         }
         // Re-read: activating a row with no live session gives it a new session id,
-        // and that new id is the whole reason a viewer waits for this reply.
-        guard let refreshed = store.session(withRefId: id),
-              !refreshed.ref.sessionId.isEmpty else { return nil }
-        return Self.terminalJSON(refreshed.ref, in: refreshed.project, store: store)
+        // and that new id is the whole reason a viewer waits for this reply. A row
+        // that has gone missing by now really is missing, which is the one case where
+        // answering "no such row" after the work is the truth.
+        guard let refreshed = store.session(withRefId: id) else { return .notFound }
+        guard !refreshed.ref.sessionId.isEmpty else { return .noSession }
+        return .ok(Self.terminalJSON(refreshed.ref, in: refreshed.project, store: store))
     }
 
     /// Restarts the tracked session with the given session id and returns its

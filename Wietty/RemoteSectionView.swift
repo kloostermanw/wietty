@@ -24,8 +24,13 @@ struct RemoteSectionView: View {
     /// Both ids, because a workspace id is only unique on the Mac that owns it: two
     /// connections can serve a workspace carrying the same id (the same folder cloned
     /// onto a second Mac, or a restored backup), and collapsing one card must not
-    /// collapse the other's. A static function rather than a computed property so the
-    /// key shape is asserted in CI rather than only observable by relaunching the app.
+    /// collapse the other's.
+    ///
+    /// The string itself is a `UserDefaults` compatibility surface, and
+    /// `RemoteCardCollapseTests.keyHasTheStoredShape` pins it for that reason:
+    /// changing the prefix, the separator or the order of the two ids forgets every
+    /// card anyone has expanded, on the next launch, with nothing in the app to
+    /// notice. Static so a test can ask for a key without building the view.
     static func cardKey(connectionId: UUID, workspaceId: UUID) -> String {
         "remote-card-\(connectionId.uuidString)-\(workspaceId.uuidString)"
     }
