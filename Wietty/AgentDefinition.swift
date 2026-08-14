@@ -25,6 +25,21 @@ struct AgentDefinition: Identifiable, Codable, Equatable {
         self.defaultArguments = defaultArguments
     }
 
+    /// Tolerant on purpose, the way `TerminalRef`'s is: this is stored data, and it
+    /// outlives the shape it was written in. A synthesized decoder makes every field
+    /// required, so one field added in a later release would make every entry
+    /// unreadable, and the list a user built disappears on upgrade.
+    ///
+    /// An entry missing a name or a command is still readable, and `isValid` is what
+    /// keeps it out of the menu.
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        command = try c.decodeIfPresent(String.self, forKey: .command) ?? ""
+        defaultArguments = try c.decodeIfPresent(String.self, forKey: .defaultArguments) ?? ""
+    }
+
     /// The app's own hardcoded agent, written down. A fresh install has to offer
     /// what the workspace menu offered before this list existed.
     static let claude = AgentDefinition(name: "Claude", command: "claude")
@@ -49,6 +64,18 @@ struct AgentDefinition: Identifiable, Codable, Equatable {
     /// The name as the menu and a row's label show it. Trimmed for the same reason
     /// the command is: it is typed into a text field.
     var displayName: String { name.trimmed }
+}
+
+/// One stored entry, or nothing when it cannot be read.
+///
+/// Wraps the element so a list decodes entry by entry: one unreadable entry costs
+/// that entry rather than every agent the user configured.
+struct FailableAgentDefinition: Decodable {
+    let agent: AgentDefinition?
+
+    init(from decoder: any Decoder) throws {
+        agent = try? AgentDefinition(from: decoder)
+    }
 }
 
 private extension String {
