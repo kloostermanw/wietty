@@ -63,14 +63,15 @@ final class BellNotifier {
 
     /// What one request came back with: the permission, and the reason there is
     /// none when the centre refused to ask at all.
+    ///
+    /// Returned to the caller rather than held on the notifier, so a reason only
+    /// ever describes the request that produced it. A stored one outlives the state
+    /// it was true of, and the settings tab then reports a refusal against a
+    /// permission that has since been granted.
     private struct Answer {
         let granted: Bool
         let failure: String?
     }
-    /// Why the last request never reached the user, when it did not. Held rather
-    /// than returned because the bell path throws it away and the settings tab,
-    /// which asks a moment later, is the caller that has somewhere to put it.
-    private var lastRequestFailure: String?
 
     init(sink: NotificationSink) {
         self.sink = sink
@@ -82,7 +83,7 @@ final class BellNotifier {
     }
 
     func post(_ notification: BellNotification) async {
-        guard await authorized() else { return }
+        guard await authorized().granted else { return }
         try? await sink.add(notification)
     }
 
@@ -115,8 +116,11 @@ final class BellNotifier {
     /// the state afterwards is the state before ("not asked yet") and a tab that
     /// reported only that has nothing to show for the press.
     func requestPermission() async -> PermissionRequest {
-        _ = await authorized()
-        if let reason = lastRequestFailure { return .failed(reason: reason) }
+        // This press's own answer. A refusal from an earlier request says nothing
+        // about whether asking now would work, and reporting one the press did not
+        // produce is how a permission the user has since granted gets drawn as a
+        // refusal, under a tab already saying "Allowed".
+        if let reason = await authorized().failure { return .failed(reason: reason) }
         return .decided(await permission())
     }
 
@@ -171,24 +175,28 @@ final class BellNotifier {
         sink.removeDelivered(identifiers: targets.map(\.notificationIdentifier))
     }
 
-    private func authorized() async -> Bool {
-        if let granted { return granted }
-        if let request { return await request.value.granted }
+    private func authorized() async -> Answer {
+        if let granted { return Answer(granted: granted, failure: nil) }
+        if let request { return await request.value }
         let task = Task { () -> Answer in
             do {
                 return Answer(granted: try await sink.requestAuthorization(), failure: nil)
             } catch {
-                // No permission, and a reason worth keeping. `granted` is false for
-                // the bell path either way, which is what its silence needs.
+                // No permission, and a reason worth reporting. False for the bell
+                // path either way, which is what its silence needs.
                 return Answer(granted: false, failure: error.localizedDescription)
             }
         }
         request = task
         let result = await task.value
-        lastRequestFailure = result.failure
-        granted = result.granted
+        // A refusal is not a decision, so it is not cached: `granted` stays nil and
+        // the next bell asks again. Caching it would mean one request macOS turned
+        // down early, before the app was signed or while the centre was still coming
+        // up, silences every notification until the app is restarted, with the only
+        // repair being a settings tab the user has no reason to open.
+        if result.failure == nil { granted = result.granted }
         request = nil
-        return result.granted
+        return result
     }
 }
 

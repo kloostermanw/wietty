@@ -344,6 +344,39 @@ import WiettyShared
         #expect(await notifier.permission() == .granted)
         await notifier.post(notification())
         #expect(sink.added.count == 1)
+        // And the tab agrees with itself: a reason held over from the refused request
+        // would have this button report a refusal directly under a green "Allowed".
+        #expect(await notifier.requestPermission() == .decided(.granted))
+    }
+
+    /// The order that used to break it: a bell rings before anyone opens Settings, the
+    /// centre turns that request down, and the permission is granted afterwards. The
+    /// Test button asks again rather than replaying the refusal, so it posts.
+    @Test func aTestNotificationIsPostedAfterAnEarlierRefusalWasResolved() async {
+        let sink = FakeSink()
+        sink.requestFailure = SinkRefusal()
+        let notifier = BellNotifier(sink: sink)
+        await notifier.post(notification())
+        #expect(sink.added.isEmpty)
+
+        sink.requestFailure = nil
+        #expect(await notifier.sendTest(sound: .systemDefault) == .posted)
+        #expect(sink.added.count == 1)
+    }
+
+    /// A refusal is not an answer, so it is not cached: the next bell asks again.
+    /// Caching it silenced every notification for the rest of the session.
+    @Test func aBellAfterARefusedRequestAsksAgain() async {
+        let sink = FakeSink()
+        sink.requestFailure = SinkRefusal()
+        let notifier = BellNotifier(sink: sink)
+        await notifier.post(notification())
+        #expect(sink.authorizationRequests == 1)
+
+        sink.requestFailure = nil
+        await notifier.post(notification())
+        #expect(sink.authorizationRequests == 2)
+        #expect(sink.added.count == 1)
     }
 
     @Test func aTestNotificationIsPostedWithTheChosenSound() async {
