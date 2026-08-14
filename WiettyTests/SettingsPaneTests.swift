@@ -171,6 +171,16 @@ import WiettyShared
         }
     }
 
+    /// The preview button's failure is drawn, rather than leaving a button that makes
+    /// no sound and says nothing. `play()` is what decides it, and the caller used to
+    /// discard the answer.
+    @Test func aSoundThatCannotBePlayedReportsItself() {
+        // Nothing is installed under this name, so `NSSound(named:)` finds no file.
+        #expect(BellSound.named("NoSuchSoundAnywhere").play() == false)
+        #expect(BellSound.silent.play() == false)
+        #expect(BellSound.systemDefault.play() == true)
+    }
+
     /// A sound the picker does not offer still has to select, or a macOS release that
     /// drops a sound leaves the control blank rather than saying which sound is gone.
     @Test func theSoundPickerRendersASoundItDoesNotOffer() {

@@ -87,7 +87,16 @@ enum BellSound: Equatable, Hashable, Identifiable {
 
     /// The sound to hang on a notification.
     ///
-    /// `UNNotificationSound(named:)` takes the file name including its extension.
+    /// `UNNotificationSound(named:)` takes the file name including its extension, and
+    /// does not resolve it the way `play()` below does: it looks in the app bundle and
+    /// the container's `Library/Sounds`, while `NSSound(named:)` searches
+    /// `/System/Library/Sounds` as well. A name it cannot resolve is not an error
+    /// either, because the initialiser cannot fail and `add` does not validate the
+    /// sound: the banner is posted with the default sound and nothing reports it.
+    ///
+    /// So the two buttons in the Notifications tab check different things on purpose,
+    /// and only one of them checks this: "Send test notification" posts a real banner
+    /// through this path, and the "Test" beside the picker is a preview of the file.
     var notificationSound: UNNotificationSound? {
         switch self {
         case .silent: return nil
@@ -99,9 +108,13 @@ enum BellSound: Equatable, Hashable, Identifiable {
     /// Plays it now, for the Test button beside the picker.
     ///
     /// Returns false when there was nothing to play or the file could not be
-    /// loaded, so the button can say so rather than looking broken. `.systemDefault`
-    /// goes through `NSSound.beep`, because the system alert sound is a preference
-    /// of the user's rather than a file this app can name.
+    /// loaded, and the caller has to draw that: a button that fails silently is
+    /// indistinguishable from a sound that is not there. `.systemDefault` goes
+    /// through `NSSound.beep`, because the system alert sound is a preference of the
+    /// user's rather than a file this app can name.
+    ///
+    /// A preview of the file, not a check of the banner. See `notificationSound` for
+    /// why the two resolve a name differently.
     @discardableResult
     func play() -> Bool {
         switch self {

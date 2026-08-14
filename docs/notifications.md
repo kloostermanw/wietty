@@ -245,6 +245,20 @@ still being exposed to Objective C, which nothing else would catch).
 
 Actually posting, granting permission, and what a tap does to the window need a
 running app and a person, and a remote bell needs a second Mac. Two things in
-particular are worth a manual pass: that `UNNotificationSound(named:)` really
-resolves a `/System/Library/Sounds` name (the Test button is the check), and that a
-real `printf '\033]9;Waiting for input\a'` in a pane produces the banner.
+particular are worth a manual pass: that a real
+`printf '\033]9;Waiting for input\a'` in a pane produces the banner, and that a
+named sound is actually audible on that banner.
+
+The second one is not settled, and the tab cannot settle it. `NSSound(named:)`
+searches `/System/Library/Sounds`, which is where the picker's list comes from.
+`UNNotificationSound(named:)` does not: it resolves a name against the app bundle
+and the container's `Library/Sounds`. It is also non failable, and `add` does not
+validate the sound, so a name it cannot resolve costs nothing visible. The banner
+arrives with the default sound and every check in the app still reports success.
+
+So the two buttons check different paths deliberately. "Test" beside the picker
+previews the file through `NSSound`. "Send test notification" is the one that goes
+through `UNNotificationSound`, and it is the one to listen to: press it with a named
+sound chosen and compare what you hear against the preview. If they differ, the
+named sounds need installing where `UNNotificationSound` looks rather than being
+offered from `/System/Library/Sounds`.
