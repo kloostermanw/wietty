@@ -41,6 +41,30 @@ import Foundation
         #expect(result.terminals.map(\.command) == ["codex --model o3", nil])
     }
 
+    /// A row that is not running takes its line from the file, so a `type` edited on
+    /// disk reaches the row it names rather than being kept out by what it ran before.
+    @Test func anIdleRowTakesTheLineTheFileGivesIt() {
+        let idle = TerminalRef(label: "codex1", sessionId: "", kind: .claude, slot: "codex1",
+                               command: "codex")
+        let config = WorkspaceConfig(
+            name: nil, agents: [.init(slot: "codex1", type: "codex --model o3")], terminals: [])
+        let result = ConfigReconcile.apply(config, to: [idle])
+        #expect(result.terminals.map(\.command) == ["codex --model o3"])
+    }
+
+    /// But a running row keeps what it was started with. A file older than
+    /// configurable agents says `claude` for every agent row, and applying that to a
+    /// live Codex row wiped its line, leaving a row still labelled "Codex 1" that
+    /// typed `claude` into Codex on the next restart.
+    @Test func aRunningRowKeepsItsLineWhenTheFileDisagrees() {
+        let running = TerminalRef(label: "Codex 1", sessionId: "live-1", kind: .claude,
+                                  slot: "codex1", command: "codex --model o3")
+        let config = WorkspaceConfig(
+            name: nil, agents: [.init(slot: "codex1", type: "claude")], terminals: [])
+        let result = ConfigReconcile.apply(config, to: [running])
+        #expect(result.terminals.map(\.command) == ["codex --model o3"])
+    }
+
     @Test func buildsConfigWithTests() {
         let rows = [TerminalRef(label: "Terminal 1", sessionId: "s1", kind: .terminal, slot: "Terminal 1")]
         let tests = ["phpstan": TestConfig(command: "phpstan analyse")]
