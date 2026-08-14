@@ -53,7 +53,15 @@ enum ConfigReconcile {
                 // The file decides what the row runs, the same way it decides which
                 // rows there are: an agent's `type` edited on disk has to reach the
                 // row it names rather than being kept out by what that row ran before.
-                existing.command = command
+                //
+                // Not while the row is running, though. What a live session was
+                // started with is a fact about that session rather than a preference,
+                // and the two are indistinguishable from the file alone: a file older
+                // than configurable agents says `claude` for every row, so a running
+                // Codex row matched against one would have its line wiped and then
+                // type `claude` into Codex at the next restart. A row that is not
+                // running has nothing to contradict, so the file wins there.
+                if !hasSession(existing) { existing.command = command }
                 return existing
             }
             return TerminalRef(label: slot, sessionId: "", kind: kind, slot: slot, command: command)

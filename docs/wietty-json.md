@@ -125,6 +125,14 @@ runs, so a workspace that syncs its file keeps a Codex row a Codex row. A `type`
 `claude` means the row carries no line of its own and runs `claude`, which is what
 a hand written file means by it too.
 
+Editing a `type` changes what the row runs from its next start, and only while the
+row is idle. A row with a session open keeps the line it was started with, because
+a file older than configurable agents says `claude` for every agent row and
+applying that to a running Codex row would leave it typing `claude` into Codex.
+Close the row (or restart it after the edit) to pick up a new `type`. The row's
+label is not re-derived either, so a row named after the agent that opened it keeps
+that name.
+
 ### `terminals`
 
 An ordered list of terminal rows. Each entry is a plain string, the row's label:
