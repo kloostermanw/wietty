@@ -490,11 +490,11 @@ final class ProjectStore {
     }
 
     func openTerminal(for project: Project) async {
-        await openSession(for: project, command: nil, kind: .terminal)
+        await openSession(for: project, kind: .terminal)
     }
 
     func openClaude(for project: Project) async {
-        await openSession(for: project, command: "claude", kind: .claude)
+        await openSession(for: project, kind: .claude)
     }
 
     /// Opens a row for one of the configured agents.
@@ -506,7 +506,7 @@ final class ProjectStore {
     /// - Parameter arguments: what "Add Agent with args" collected, or nil for a
     ///   plain "Add Agent", which uses the agent's defaults.
     func openAgent(_ agent: AgentDefinition, arguments: String? = nil, for project: Project) async {
-        await openSession(for: project, command: nil, kind: .claude,
+        await openSession(for: project, kind: .claude,
                           agent: (name: agent.displayName,
                                   line: agent.launchCommand(arguments: arguments)))
     }
@@ -560,10 +560,10 @@ final class ProjectStore {
         }
     }
 
-    private func openSession(for project: Project, command: String?, kind: TerminalKind,
+    private func openSession(for project: Project, kind: TerminalKind,
                              agent: (name: String, line: String)? = nil) async {
         do {
-            _ = try await openSessionThrowing(for: project, command: command, kind: kind, agent: agent)
+            _ = try await openSessionThrowing(for: project, kind: kind, agent: agent)
         } catch {
             lastError = (error as? TerminalError)?.errorDescription
                 ?? (error as? StoreError)?.errorDescription
@@ -579,7 +579,7 @@ final class ProjectStore {
     ///   from one: its name, which the label is built from, and the line it types.
     ///   Nil for a plain terminal and for the hardcoded Claude row.
     @discardableResult
-    func openSessionThrowing(for project: Project, command: String?, kind: TerminalKind,
+    func openSessionThrowing(for project: Project, kind: TerminalKind,
                              agent: (name: String, line: String)? = nil) async throws -> TerminalRef {
         guard let preIndex = projects.firstIndex(where: { $0.id == project.id }) else {
             throw StoreError.unknownProject

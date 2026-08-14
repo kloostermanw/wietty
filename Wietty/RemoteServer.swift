@@ -219,9 +219,8 @@ final class RemoteServer {
         guard let workspaceId, let project = store.projects.first(where: { $0.id.uuidString == workspaceId }) else {
             return Response(status: .notFound)
         }
-        let command: String? = kind == .claude ? "claude" : nil
         do {
-            let ref = try await store.openSessionThrowing(for: project, command: command, kind: kind)
+            let ref = try await store.openSessionThrowing(for: project, kind: kind)
             let refreshed = store.projects.first { $0.id == project.id } ?? project
             return Self.jsonResponse(Self.terminalJSON(ref, in: refreshed, store: store).encodedString())
         } catch {

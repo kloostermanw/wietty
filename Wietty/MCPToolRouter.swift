@@ -127,8 +127,7 @@ final class MCPToolRouter {
             }
             kind = parsed
         }
-        let command: String? = kind == .claude ? "claude" : nil
-        let ref = try await store.openSessionThrowing(for: project, command: command, kind: kind)
+        let ref = try await store.openSessionThrowing(for: project, kind: kind)
         return terminalJSON(ref, in: currentProject(project.id) ?? project)
     }
 
