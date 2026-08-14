@@ -42,6 +42,7 @@ which belongs to none.
 | A process log | that log's own workspace, `genotool` |
 | A session on another Mac | the connection first, `Office Mac / web-app` |
 | Settings | `Settings` |
+| A workspace's own page | that workspace and what the page is, `genotool settings` |
 | Nothing selected | empty |
 
 The connection comes first for a remote session because two Macs routinely have a
@@ -85,10 +86,12 @@ without SwiftUI in `NavBarTitleTests`. The two steps can be wrong in different w
 - `NavBarTitle.text(for:)` turns that into the line, which is where the
   `connection / workspace` shape lives.
 `NavBarTitle.line(for:projects:remote:)` is what the view calls. It composes those
-two and answers `Settings` directly, since settings belongs to no workspace, so there
-is nothing for the lookup to find and an empty bar over the panel would be a worse
-answer than naming it. Composition rather than a third step: the only logic of its own
-is that early return.
+two, and answers two selections before them. `Settings` is answered outright, since
+the panel belongs to no workspace, so there is nothing for the lookup to find and an
+empty bar over it would be a worse answer than naming it. A workspace's own page
+still uses the lookup, because it does belong to a workspace, but composes the line
+itself (`<workspace> settings`) so the page does not read as one of that workspace's
+terminals, and stays nil when the workspace is gone.
 
 Nil is a real answer at every branch and never a crash: a session id can outlive
 the row that carried it, a workspace can be removed while its log is on screen, and
