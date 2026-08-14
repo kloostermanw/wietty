@@ -42,6 +42,40 @@ import Foundation
         #expect(store(defaults).agents.isEmpty)
     }
 
+    /// The upgrade case: a release that adds a field leaves every stored entry
+    /// missing it. Decoding the list as a unit made that read as "nothing was ever
+    /// stored", so the seed came back over the agents the user had configured.
+    @Test func anEntryMissingAFieldStillLoads() {
+        let defaults = freshDefaults()
+        let json = """
+        [{"id":"\(UUID().uuidString)","name":"Codex","command":"codex"}]
+        """
+        defaults.set(Data(json.utf8), forKey: "wietty.agents")
+        #expect(store(defaults).agents.map(\.name) == ["Codex"])
+        #expect(store(defaults).agents[0].defaultArguments == "")
+    }
+
+    /// One unreadable entry costs that entry, not the whole list. An entry with no
+    /// command could not start anything, so it is dropped rather than drawn as a menu
+    /// item that does nothing.
+    @Test func oneBadEntryDoesNotCostTheOthers() {
+        let defaults = freshDefaults()
+        let json = """
+        [{"name":"Codex","command":"codex"},{"name":"Broken"},"nonsense"]
+        """
+        defaults.set(Data(json.utf8), forKey: "wietty.agents")
+        #expect(store(defaults).agents.map(\.name) == ["Codex"])
+    }
+
+    /// An unreadable list is stored data, so it is not the seed either: putting
+    /// Claude back would hand over an agent the user did not ask for, and the next
+    /// edit writes it over whatever was there.
+    @Test func anUnreadableListIsNotReseeded() {
+        let defaults = freshDefaults()
+        defaults.set(Data("not json at all".utf8), forKey: "wietty.agents")
+        #expect(store(defaults).agents.isEmpty)
+    }
+
     @Test func updatingAnAgentReplacesTheOneWithThatId() {
         let store = store(freshDefaults())
         var claude = store.agents[0]

@@ -247,8 +247,14 @@ final class ProjectStore {
     var agents: [AgentDefinition] {
         didSet {
             guard agents != oldValue else { return }
-            guard let data = try? JSONEncoder().encode(agents) else { return }
-            defaults.set(data, forKey: agentsKey)
+            do {
+                defaults.set(try JSONEncoder().encode(agents), forKey: agentsKey)
+            } catch {
+                // Reported rather than dropped: silence leaves the list on screen and
+                // the list on disk disagreeing, with the agent the user just added
+                // present in the menu now and gone at the next launch.
+                lastError = "Could not save the agent list: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -273,13 +279,16 @@ final class ProjectStore {
     ///
     /// The distinction matters: seeding on an empty list rather than on an absent
     /// key would put Claude back on the launch after the last entry was deleted,
-    /// which reads as a delete that did not work.
+    /// which reads as a delete that did not work. An unreadable list is stored data
+    /// too, so it is not the seed either: reseeding there hands back an agent the
+    /// user did not ask for and the next edit writes it over what was stored.
+    ///
+    /// Entry by entry, so one bad entry costs that entry rather than the list, and
+    /// only entries that could actually start something are kept.
     private static func loadAgents(_ defaults: UserDefaults, key: String) -> [AgentDefinition] {
-        guard let data = defaults.data(forKey: key),
-              let stored = try? JSONDecoder().decode([AgentDefinition].self, from: data) else {
-            return [.claude]
-        }
-        return stored
+        guard let data = defaults.data(forKey: key) else { return [.claude] }
+        let stored = (try? JSONDecoder().decode([FailableAgentDefinition].self, from: data)) ?? []
+        return stored.compactMap(\.agent).filter(\.isValid)
     }
 
     /// The shared secret required on every remote request and socket.
