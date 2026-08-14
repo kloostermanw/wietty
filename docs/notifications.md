@@ -207,10 +207,8 @@ path meant nothing said so. A correctly signed build reports
 `Identifier=eu.kloosterman.wietty`, an Info.plist entry count, and sealed
 resources, and `scripts/make-dmg.sh` now refuses to package anything else.
 
-An earlier version of this document blamed the directory the app was run from
-("a scratch directory is refused outright, whatever its signature"). That was
-wrong on both halves: the signature is exactly what it was, and where the bundle
-sits is not what the centre objects to.
+Where the bundle sits is not what the centre objects to, and running from a scratch
+directory is not what makes the difference. Only the signature is.
 
 The Test button and the permission button both report this rather than swallowing
 it, which is what makes it findable at all.

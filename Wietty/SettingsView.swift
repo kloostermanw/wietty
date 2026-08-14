@@ -378,7 +378,7 @@ struct NotificationSettings: View {
                 Label("Not posted: \(reason)", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.red)
             case nil:
-                Text("Posts one notification, so the whole path can be checked without waiting for a terminal to ring. It reports what happened either way: macOS refuses an app bundle run from a scratch directory outright.")
+                Text("Posts one notification, so the whole path can be checked without waiting for a terminal to ring. It reports what happened either way: macOS refuses to ask on behalf of an app bundle that is not properly signed, without showing anyone a prompt.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

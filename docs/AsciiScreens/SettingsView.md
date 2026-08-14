@@ -291,9 +291,9 @@ Legend:
   denial, since only one of the two is a switch in System Settings.
 - `[ Send test notification ]`: `BellNotifier.sendTest(sound:)`, which posts
   `BellNotification.test()` with the sound currently selected below. It reports
-  what happened either way: `UNUserNotificationCenter` refuses an app bundle run
-  from a scratch directory outright, and a Test button that fails silently answers
-  the opposite question from the one it was pressed to answer. The test notification's
+  what happened either way: `UNUserNotificationCenter` refuses to ask on behalf of a
+  bundle it does not consider properly signed, and a Test button that fails silently
+  answers the opposite question from the one it was pressed to answer. The test notification's
   target matches no row, so tapping it reopens the window and activates nothing.
 - `Sound`: a `Picker` over `NotificationSettings.soundChoices` bound to
   `$store.bellSound`: `BellSound.offered` ("None", "Default" for the system alert

@@ -238,7 +238,7 @@ import WiettyShared
     }
 
     /// A centre that refuses the request is silent on the bell path, the same way a
-    /// denial is. This is what an unsigned bundle in a scratch directory does.
+    /// denial is. This is what a bundle macOS does not consider properly signed gets.
     @Test func aRefusedPostIsSwallowedOnTheBellPath() async {
         let sink = FakeSink()
         sink.addFailure = SinkRefusal()
@@ -387,9 +387,10 @@ import WiettyShared
         #expect(sink.added.first?.sound == .named("Submarine"))
     }
 
-    /// The whole point of the button: `UNUserNotificationCenter` refuses a bundle run
-    /// from a scratch directory outright, and a Test button that fails silently
-    /// answers the opposite question from the one it was pressed to answer.
+    /// The whole point of the button: `UNUserNotificationCenter` refuses to ask on
+    /// behalf of a bundle it does not consider properly signed, and a Test button that
+    /// fails silently answers the opposite question from the one it was pressed to
+    /// answer.
     @Test func aRefusedTestNotificationSaysWhy() async {
         let sink = FakeSink()
         sink.addFailure = SinkRefusal()
