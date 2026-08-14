@@ -409,6 +409,14 @@ libghostty or the bundled helper failing to start. There is nothing to fall back
 to, so that message is all the user gets and it has to say what they can do about
 it.
 
+Alongside the four alerts, `ContentView` hosts one sheet: `ConfigApprovalView`, on
+`store.pendingConfigApproval`. It asks whether the shell lines in a workspace's
+`wietty.json` may run, and it can also appear on launch, since `load()` reconciles
+every workspace that has a file. A sheet rather than an alert because the commands
+are the whole question and an alert gives a list of shell lines no room. Its binding
+treats any dismissal as declining, so there is no way to run the file by accident.
+See `ConfigApprovalView.md`.
+
 The `.task` also calls `store.clearDeadSessions()`, before the monitor starts. It
 never sets `store.lastError`: a PTY the app spawned cannot survive the app
 quitting, so a `gt:` session id is dead on every single launch, and a notice for

@@ -36,6 +36,8 @@ private func makeTempFolder(named name: String) -> URL {
         )
         _ = try ConfigFile.write(onDisk, in: folder)
         store.addProject(url: folder)
+        // The file carries shell lines, so nothing in it runs until it is agreed to.
+        store.approvePendingConfig()
         store.reconcileWithFile(try #require(store.projects.first).id)
 
         let project = try #require(store.projects.first)
@@ -60,6 +62,8 @@ private func makeTempFolder(named name: String) -> URL {
         )
         _ = try ConfigFile.write(onDisk, in: folder)
         store.addProject(url: folder)
+        // The file carries shell lines, so nothing in it runs until it is agreed to.
+        store.approvePendingConfig()
         store.reconcileWithFile(try #require(store.projects.first).id)
 
         let project = try #require(store.projects.first)
@@ -85,6 +89,8 @@ private func makeTempFolder(named name: String) -> URL {
         )
         _ = try ConfigFile.write(onDisk, in: folder)
         store.addProject(url: folder)
+        // The file carries shell lines, so nothing in it runs until it is agreed to.
+        store.approvePendingConfig()
         store.reconcileWithFile(try #require(store.projects.first).id)
 
         let project = try #require(store.projects.first)
@@ -280,6 +286,9 @@ private func makeTempFolder(named name: String) -> URL {
         )
         let dir = try makeWorkspace(["npm": ProcessConfig(command: "npm run dev", autoStart: true)])
         store.addProject(url: dir)
+        // `auto_start` is the case the approval exists for: the supervisor runs this
+        // the moment the config is applied, with nothing to click.
+        store.approvePendingConfig()
         let project = try #require(store.projects.first)
         store.applyConfigChanges(for: project)
         #expect(supervisor.process(projectId: project.id, name: "npm") != nil)

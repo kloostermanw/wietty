@@ -86,6 +86,26 @@ final class ProjectStore {
     /// the "config changed" affordance on the card.
     private(set) var configChangedOnDisk: Set<UUID> = []
 
+    /// The shell lines from each workspace's config file the user has agreed to run.
+    ///
+    /// Kept per workspace rather than globally, because agreeing to a line in a
+    /// folder you trust is not agreeing to it everywhere. Lines rather than a hash of
+    /// the file, so removing a row or renaming the workspace does not ask again: only
+    /// a line nobody has seen can run something new. See `ConfigTrust`.
+    private(set) var approvedCommands: [UUID: Set<String>] = [:] {
+        didSet {
+            guard approvedCommands != oldValue else { return }
+            let storable = approvedCommands.reduce(into: [String: [String]]()) {
+                $0[$1.key.uuidString] = Array($1.value)
+            }
+            defaults.set(storable, forKey: approvedCommandsKey)
+        }
+    }
+
+    /// The file waiting to be agreed to, and what it wants to run. Nil when there is
+    /// nothing to ask. Shown by `ContentView`.
+    var pendingConfigApproval: ConfigApprovalRequest?
+
     private var watchers: [UUID: ConfigWatcher] = [:]
 
     /// One `.git` watcher per workspace, giving snappy local git feedback
@@ -117,6 +137,7 @@ final class ProjectStore {
     private let remotePortKey = "wietty.remotePort"
     private let sidebarWidthKey = "wietty.sidebarWidth"
     private let agentsKey = "wietty.agents"
+    private let approvedCommandsKey = "wietty.approvedCommands"
 
     /// Guards `clearDeadSessions()` against running twice in one process.
     ///
@@ -385,6 +406,13 @@ final class ProjectStore {
             : max(storedSidebarWidth, SidebarWidth.minimum)
         self.remoteToken = RemoteAccessToken(defaults: defaults)
         self.agents = Self.loadAgents(defaults, key: agentsKey)
+        // Before `load()`, which reconciles every workspace that has a file and needs
+        // to know what has already been agreed to.
+        let storedApprovals = defaults.dictionary(forKey: approvedCommandsKey) as? [String: [String]] ?? [:]
+        self.approvedCommands = storedApprovals.reduce(into: [UUID: Set<String>]()) {
+            guard let id = UUID(uuidString: $1.key) else { return }
+            $0[id] = Set($1.value)
+        }
         load()
     }
 
@@ -1290,6 +1318,10 @@ final class ProjectStore {
             tests: projects[index].configTests,
             shellInit: projects[index].configShellInit
         )
+        // Written from what this workspace is already running, so there is nothing
+        // here the user has not already asked for. Approving it here is what keeps
+        // turning sync on from immediately asking about the user's own rows.
+        approve(ConfigTrust.commands(in: config), for: project.id)
         do {
             lastConfigData[project.id] = try ConfigFile.write(config, in: projects[index].url)
             startWatching(projects[index])
@@ -1343,6 +1375,18 @@ final class ProjectStore {
             return false
         }
         guard let config else { return false }
+        // Nothing from an unapproved file reaches the store: not the rows, not the
+        // process definitions, and above all not an `auto_start` the supervisor would
+        // run on the spot. Laying the rows out and waiting for a click would not be
+        // enough, because a row's whole content is the line it types.
+        if case .needed(let commands) = ConfigTrust.approval(
+            for: config, approved: approvedCommands[projectId] ?? []
+        ) {
+            pendingConfigApproval = ConfigApprovalRequest(
+                projectId: projectId, workspaceName: projects[index].name, commands: commands
+            )
+            return false
+        }
         let result = ConfigReconcile.apply(config, to: projects[index].terminals)
         projects[index].terminals = result.terminals
         projects[index].configName = config.name
@@ -1414,6 +1458,29 @@ final class ProjectStore {
         if reconcileWithFile(project.id) {
             configChangedOnDisk.remove(project.id)
         }
+    }
+
+    /// Records lines as agreed to for one workspace.
+    func approve(_ commands: [String], for projectId: UUID) {
+        guard !commands.isEmpty else { return }
+        approvedCommands[projectId, default: []].formUnion(commands)
+    }
+
+    /// The user agreed to what the pending file wants to run, so it is applied now.
+    func approvePendingConfig() {
+        guard let request = pendingConfigApproval else { return }
+        pendingConfigApproval = nil
+        approve(request.commands, for: request.projectId)
+        if reconcileWithFile(request.projectId) {
+            configChangedOnDisk.remove(request.projectId)
+        }
+    }
+
+    /// The user did not. Nothing is applied and nothing is recorded, so the question
+    /// is asked again the next time the file is reached for, rather than the folder
+    /// becoming one this app quietly ignores.
+    func declinePendingConfig() {
+        pendingConfigApproval = nil
     }
 
     private func load() {
