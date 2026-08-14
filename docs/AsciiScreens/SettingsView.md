@@ -144,7 +144,12 @@ makes. See
 │    Sound          [ Default   ▾ ]   [ Test ]      │
 │    Played by every notification a terminal posts. │
 │    "Default" is the alert sound chosen in System  │
-│    Settings › Sound.                              │
+│    Settings › Sound. "Test" plays it here; "Send  │
+│    test notification" above is what checks that a │
+│    banner carries it.                             │
+│    (instead, when the preview had nothing to play:)│
+│    ⚠ That sound could not be loaded. macOS may   │
+│    no longer install it.                          │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -290,13 +295,16 @@ Legend:
   from a scratch directory outright, and a Test button that fails silently answers
   the opposite question from the one it was pressed to answer. The test notification's
   target matches no row, so tapping it reopens the window and activates nothing.
-- `Sound`: a `Picker` over `BellSound.offered` bound to `$store.bellSound`:
-  "None", "Default" (the system alert sound), then every sound in
-  `/System/Library/Sounds` by name. Persisted under `wietty.bellSound` and applied
-  to the next notification. A stored sound that is no longer installed is appended
-  to the list, so the control names what is missing rather than showing a blank
-  selection. `[ Test ]` plays the selection now (`BellSound.play()`), and is
-  disabled for "None", which has nothing to play.
+- `Sound`: a `Picker` over `NotificationSettings.soundChoices` bound to
+  `$store.bellSound`: `BellSound.offered` ("None", "Default" for the system alert
+  sound, then every sound in `/System/Library/Sounds` by name), plus the stored sound
+  when it is no longer installed, so the control names what is missing rather than
+  showing a blank selection. Persisted under `wietty.bellSound` and applied to the
+  next notification. `[ Test ]` plays the selection now (`BellSound.play()`), is
+  disabled for "None", which has nothing to play, and draws a red caption when the
+  file could not be loaded. It previews the file through `NSSound`; `[ Send test
+  notification ]` above is the one that checks a banner carries the sound, because
+  `UNNotificationSound` resolves a name differently. See `docs/notifications.md`.
 - `NotificationSettings` is a view of its own because it is the only tab with state
   of its own (the permission it read, the verdict on the last test), and its `init`
   takes both for the same reason `SettingsView.init` takes a `tab:`: they decide

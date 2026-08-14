@@ -292,13 +292,19 @@ struct NotificationSettings: View {
     /// without showing anyone a prompt, and the state afterwards is the state
     /// before, so without this the button is indistinguishable from a dead one.
     @State private var requestFailure: String?
+    /// True when the sound preview beside the picker had nothing to play. A sound
+    /// macOS no longer installs is otherwise a button that does nothing, which reads
+    /// as broken rather than as a sound that is gone.
+    @State private var soundPreviewFailed = false
 
     /// - Parameters:
-    ///   - permission: what the tab starts out believing, and
-    ///   - testResult: what it starts out reporting. Both default to the real state,
-    ///     which is "nothing known yet" until the `task` below answers; only the
-    ///     tests pass anything else, because these two decide four of the branches
-    ///     drawn here and a render test that could not set them would cover one.
+    ///   - permission: what the tab starts out believing,
+    ///   - testResult: what it starts out reporting, and
+    ///   - requestFailure: why the last permission request achieved nothing. All
+    ///     three default to the real state, which is "nothing known yet" until the
+    ///     `task` below answers; only the tests pass anything else, because these
+    ///     decide five of the branches drawn here and a render test that could not
+    ///     set them would cover one.
     init(store: ProjectStore, bells: BellNotifier,
          permission: NotificationPermission? = nil,
          testResult: BellNotifier.TestResult? = nil,
@@ -384,12 +390,20 @@ struct NotificationSettings: View {
                         Text(sound.title).tag(sound)
                     }
                 }
-                Button("Test") { store.bellSound.play() }
+                Button("Test") { soundPreviewFailed = !store.bellSound.play() }
                     .disabled(store.bellSound == .silent)
             }
-            Text("Played by every notification a terminal posts. \"Default\" is the alert sound chosen in System Settings › Sound.")
-                .font(.caption).foregroundStyle(.secondary)
+            if soundPreviewFailed {
+                Label("That sound could not be loaded. macOS may no longer install it.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red)
+            } else {
+                Text("Played by every notification a terminal posts. \"Default\" is the alert sound chosen in System Settings › Sound. \"Test\" plays it here; \"Send test notification\" above is what checks that a banner carries it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
+        // A new selection has not failed yet, so the warning about the old one goes.
+        .onChange(of: store.bellSound) { soundPreviewFailed = false }
         // Read on the way in rather than once per app launch: permission can be
         // granted or revoked in System Settings while Wietty runs, and this tab is
         // the one place that would then be wrong about it.
