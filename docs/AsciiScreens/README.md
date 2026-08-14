@@ -158,7 +158,7 @@ rows above point at a parent.
 
 ## Keeping this in sync
 
-`../../CLAUDE.md` requires the `documentation/` folder to track the code it
+`../../CLAUDE.md` requires the `docs/` folder to track the code it
 describes, so editing a view means updating its matching file in the same
 change, and adding a new view worth documenting means adding a file and a row to
 the inventory above.

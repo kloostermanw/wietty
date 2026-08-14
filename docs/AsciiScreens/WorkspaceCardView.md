@@ -69,7 +69,7 @@ Legend:
 
   A click on a row whose terminal has stopped reopens it. The service answers that
   itself, because its record of a dead terminal survives so the last screen stays
-  readable; see `documentation/terminal.md`.
+  readable; see `docs/terminal.md`.
   Terminal buttons are wired here to `onActivate` (play), `onCloseTerminal`
   (stop), and `onRestartTerminal` (refresh). See `ProcessRowView.md` and
   `TerminalRowView.md`.

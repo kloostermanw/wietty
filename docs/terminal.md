@@ -2,7 +2,7 @@
 
 A terminal or Claude session is a pseudo-terminal Wietty spawned and owns, rendered by a
 libghostty surface in the pane of the app's own window. Nothing has to be installed for it: not
-iTerm2, not tmux, not even Ghostty.app. `documentation/remote-access.md` covers how a terminal's
+iTerm2, not tmux, not even Ghostty.app. `docs/remote-access.md` covers how a terminal's
 bytes reach a browser or another Mac.
 
 **Terminals do not survive quitting Wietty.** A PTY is this process's child, so it dies with the
@@ -34,7 +34,7 @@ bundled helper could not start, so the failure is one actionable message rather 
 call site.
 
 The pane in the main window (`RightTerminalView`, drawn in
-`documentation/AsciiScreens/ContentView.md`) is not only for local terminals: a remote session tapped
+`docs/AsciiScreens/ContentView.md`) is not only for local terminals: a remote session tapped
 in the sidebar is shown in the same pane, by SwiftTerm rather than libghostty, and
 so is a process's log.
 
@@ -188,7 +188,7 @@ nothing that can belong to something else. Two things are worth stating:
 
 - **The job name is polled.** libghostty pushes the title and the bell through its action callback but
   reports nothing about a terminal's foreground command, so it has to be asked for. The poll is
-  `JobPoll`, an app-wide check (see `documentation/periodic-checks.md`), and it is cheap: one
+  `JobPoll`, an app-wide check (see `docs/periodic-checks.md`), and it is cheap: one
   `tcgetpgrp` on the master plus one `proc_name` per live terminal, with no fork. `ProjectStore` is
   handed it as a closure, `GhosttyStack.pollJobs`, because the answer needs a live `GhosttyService`
   and the store is built before one exists.
@@ -266,7 +266,7 @@ app's userdata only to `wakeup_cb`.
 ## Serving a remote viewer
 
 The producer is `TerminalRelay` writing into `PaneStreamHub.write`, so the bytes on the wire are the
-child's own. `documentation/remote-access.md` is the protocol reference. Two things are worth stating here.
+child's own. `docs/remote-access.md` is the protocol reference. Two things are worth stating here.
 
 **The first paint is monochrome and its cursor is approximate.** `ghostty_surface_read_text` is the
 only read back libghostty offers and `ghostty_text_s` carries no attributes, so a snapshot is plain
@@ -502,7 +502,7 @@ a socket that then stays silent forever.
   that terminfo entry is installed, and in practice that means Ghostty.app is present. Otherwise it is
   `xterm-256color`. Since needing no other terminal installed is this substrate's whole point, the
   fallback is the common case. Either way a remote client may receive sequences it does not implement,
-  because the bytes are the child's own; see `documentation/remote-access.md`.
+  because the bytes are the child's own; see `docs/remote-access.md`.
 - **The workspace badge setting does nothing here.** libghostty has no title setter of any kind, so the
   badge travels as the surface's initial title and reaches only the host's own record and the view's
   accessibility label. It is still passed rather than dropped, so that the day the C API grows a setter

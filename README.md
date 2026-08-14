@@ -10,7 +10,7 @@ Terminals run inside Wietty. Each one is a pseudo terminal the app owns, rendere
 which needs nothing installed: no iTerm2, no tmux, not even Ghostty.app. They do not survive quitting
 the app, so every row's session is cleared on launch and reopens on the next click. If you have a
 Ghostty configuration file, its font, theme, cursor, and keybindings are used here too. See
-`documentation/terminal.md`.
+`docs/terminal.md`.
 
 ## Bell notifications
 
@@ -30,7 +30,7 @@ and visiting a row takes its notification back. A message a program sent is post
 because it is deliberate and the second one says something the first did not. Nothing is posted
 about a terminal already on screen in front of you. Settings → Notifications shows whether macOS
 allows any of this, posts a test notification, and picks the sound.
-See `documentation/notifications.md`.
+See `docs/notifications.md`.
 
 ## Build
 
@@ -196,7 +196,7 @@ process and test (and to a process's `stop` and `status` commands); a process or
 `shell_init`, which is appended after the workspace wide lines rather than replacing them. Terminal
 and agent sessions are unaffected, since they run your real interactive shell.
 
-See `documentation/wietty-json.md` for the full field reference.
+See `docs/wietty-json.md` for the full field reference.
 
 There is no dedicated PATH field. Prefer `shell_init` for PATH setup, since it runs after the login
 shell has built PATH (including `path_helper`) and can extend it. Setting PATH through `env` is the
