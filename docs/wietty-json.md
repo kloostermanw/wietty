@@ -91,11 +91,15 @@ A minimal file:
 
 ## Top level keys
 
+`agents` and `terminals` have no default: a file missing either is rejected with the
+alert shown above, rather than read as a workspace with none. The rest may be left
+out.
+
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `name` | string | folder name | Display name for the workspace card. A name typed into "Rename workspace…" is stored locally and wins over this one. |
-| `agents` | array | `[]` | Claude agent sessions to lay out, in order. |
-| `terminals` | array | `[]` | Terminal sessions to open, in order. |
+| `agents` | array | required | Agent sessions to lay out, in order. |
+| `terminals` | array | required | Terminal sessions to open, in order. |
 | `processes` | object | `{}` | Supervised processes, keyed by name. |
 | `tests` | object | `{}` | Test-processes, keyed by name (run-to-completion checks). |
 | `shell_init` | array | `[]` | Shell lines run before every process and test command. |

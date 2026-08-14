@@ -308,9 +308,10 @@ Legend:
   `RemoteProjectAdapter.decoded(_:)`; actions that
   have no remote equivalent (rename, remove terminal, remove project, enable
   sync, apply config, process controls) are wired to no-ops. Tapping a remote
-  terminal row (`onActivate`) calls `openRemoteTerminal(remoteStore, ref)`,
-  which sets `remoteSelection` to `(remoteStore.connection.id, ref.sessionId)` and
-  so shows the session in this window's pane. See "What the pane shows" above.
+  terminal row (`onActivate`) calls `openRemoteTerminal(remoteStore, ref)`, which
+  goes through `showRemote` to `router.show(.remote(RemoteSessionRef(connectionId:
+  sessionId:)))` and so shows the session in this window's pane. See "What the pane
+  shows" above.
   `RemoteSectionView` is also given `isSelected`, so a remote row is marked
   exactly like a local one.
   Tapping a local terminal row (`onActivate`) calls `activate(ref, in: project)`,

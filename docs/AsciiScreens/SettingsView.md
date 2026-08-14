@@ -111,14 +111,14 @@ makes. See
 │    Permission                        ✓ Allowed    │
 │    (only while nobody has been asked:)            │
 │    [ Allow notifications… ]                       │
-│    (only after a denial:)                         │
-│    Turn Wietty's notifications back on in System  │
-│    Settings › Notifications. macOS asks only      │
-│    once, so this app cannot ask again.            │
 │    (only after macOS refused to even ask:)        │
 │    ⚠ macOS turned the request down: <reason>     │
 │    No prompt was shown, so this is not something  │
 │    you answered. …                                │
+│    (only after a denial:)                         │
+│    Turn Wietty's notifications back on in System  │
+│    Settings › Notifications. macOS asks only      │
+│    once, so this app cannot ask again.            │
 │    A terminal notifies you in two ways: the bell  │
 │    character, which every shell rings, and the    │
 │    OSC 9 and OSC 777 escape sequences, which a    │
