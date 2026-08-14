@@ -204,6 +204,19 @@ struct ContentView: View {
         ) {
             Button("OK", role: .cancel) { store.lastError = nil }
         }
+        // A sheet rather than an alert: the commands are the whole question, an alert
+        // gives a list of shell lines no room, and this is the one prompt where
+        // reading before pressing is the point.
+        .sheet(item: Binding(
+            get: { store.pendingConfigApproval },
+            set: { if $0 == nil { store.declinePendingConfig() } }
+        )) { request in
+            ConfigApprovalView(
+                request: request,
+                onRun: { store.approvePendingConfig() },
+                onCancel: { store.declinePendingConfig() }
+            )
+        }
     }
 
     /// What the pane shows and which row is marked, from the two pieces of state that

@@ -10,6 +10,30 @@ For how processes actually behave once declared (kinds, status dots, the log
 window, environment and PATH), see the "Processes" section of the top level
 `README.md`.
 
+## The file runs commands, so it is agreed to first
+
+Most of this file is shell lines Wietty will run in the workspace's folder, as you:
+an agent's `type` is typed into that row's shell, a process or test `command` is run
+by the supervisor, `shell_init` runs before each of those, and a process with
+`auto_start` needs no click at all.
+
+A file the user wrote is not the only kind there is. A `wietty.json` arrives with a
+clone, and nothing in the file says which kind it is, so the first time a workspace's
+file asks to run a line nobody has agreed to, Wietty shows it and asks. Nothing from
+the file is applied until then: not the rows, not the process definitions, and above
+all not an `auto_start`. Declining leaves the workspace in the sidebar with its file
+unapplied, and asks again next time rather than marking the folder refused for good.
+
+The answer is remembered per workspace as the set of lines agreed to, so removing a
+row, renaming the workspace or reordering entries never asks again, and a line nobody
+has seen always does, including one added to a file approved long ago. Turning sync
+on from the app writes the file from what the workspace is already running, so it
+agrees to those lines on your behalf. The default agent `type` is not a line the file
+chose, so it is never asked about.
+
+See `AsciiScreens/ConfigApprovalView.md` for the prompt and `ConfigTrust` for the
+rule.
+
 ## Location and naming
 
 The file lives at the root of the workspace folder:

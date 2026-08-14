@@ -150,6 +150,7 @@ Every view type, and where its layout is documented.
 | `RemoteTerminalView` | `RemoteTerminalView.swift` | `ContentView.md`, under "What the pane shows" |
 | `SettingsView`, `AgentRow`, `RemoteConnectionRow` | `SettingsView.swift` | `SettingsView.md`. Drawn in the pane, and reached through `PaneRouter.swift` and `SettingsCommand` (in `WiettyApp.swift`), neither of which is a view |
 | `WorkspaceSettingsView` | `WorkspaceSettingsView.swift` | `WorkspaceSettingsView.md`. Drawn in the same pane, reached from a card's "Edit workspace…" |
+| `ConfigApprovalView` | `ConfigApprovalView.swift` | `ConfigApprovalView.md`. A sheet over the main window, shown when a workspace's `wietty.json` asks to run a line nobody has agreed to. What counts as one is `ConfigTrust.swift`, which is not a view |
 | `UpdateAlertModifier` | `UpdateAlertModifier.swift` | `UpdateAlertModifier.md` |
 
 A view whose layout is already drawn inside a parent's file is documented there
