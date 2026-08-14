@@ -1080,10 +1080,21 @@ final class ProjectStore {
         let existingWindowId = settleWorkspaceId(at: p)
         let badge = showWorkspaceBadge ? projects[p].name : nil
         do {
-            try? await service.close(sessionId: sessionId)
+            // Propagated, not swallowed. A restart that could not stop the old
+            // session has not restarted anything, and carrying on repoints the row at
+            // the replacement, so the previous agent keeps running with its pty and
+            // its write access to the folder and nothing left referencing it.
+            try await service.close(sessionId: sessionId)
             let handle = try await openShell(folder: folder, existingWindowId: existingWindowId,
                                               badge: badge, kind: kind, command: command)
-            guard let (np, nt) = indexOfSession(sessionId) else { throw StoreError.unknownSession }
+            guard let (np, nt) = indexOfSession(sessionId) else {
+                // The row went away while the replacement was opening, so nothing will
+                // ever point at the shell just opened. Closed here rather than left
+                // running where no one can reach it. Best effort: the throw below is
+                // the more useful thing to report.
+                try? await service.close(sessionId: handle.sessionId)
+                throw StoreError.unknownSession
+            }
             let oldId = projects[np].terminals[nt].id
             recordWorkspaceId(handle.windowId, at: np, openedWith: existingWindowId)
             projects[np].terminals[nt].sessionId = handle.sessionId
