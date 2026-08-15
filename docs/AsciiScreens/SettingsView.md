@@ -216,9 +216,10 @@ Save is disabled until both a name and a command are present
 disabled by the same rule.
 
 The list is a preference like the ports and the bell sound: held on `ProjectStore`,
-persisted under `wietty.agents`, and seeded with Claude on a fresh install so the
-workspace menu is not empty before anyone has been here. Seeding happens only when
-nothing has ever been stored, never on an empty list, so deleting the last agent
+persisted to `~/.config/wietty/config` as `agent.0.name`/`.command`/`.args` (see
+settings-storage.md), and seeded with Claude on a fresh install so the workspace menu
+is not empty before anyone has been here. Seeding happens only when migrating an
+install that never stored a list, never on an empty file, so deleting the last agent
 sticks across a relaunch. With the list empty the section says so, and each "Add
 Agent" submenu holds one disabled line pointing back here.
 
@@ -346,8 +347,8 @@ Legend:
   `$store.bellSound`: `BellSound.offered` ("None", "Default" for the system alert
   sound, then every sound in `/System/Library/Sounds` by name), plus the stored sound
   when it is no longer installed, so the control names what is missing rather than
-  showing a blank selection. Persisted under `wietty.bellSound` and applied to the
-  next notification. `[ Test ]` plays the selection now (`BellSound.play()`), is
+  showing a blank selection. Persisted to `~/.config/wietty/config` under
+  `bell-sound` (see settings-storage.md) and applied to the next notification. `[ Test ]` plays the selection now (`BellSound.play()`), is
   disabled for "None", which has nothing to play, and draws a red caption when the
   file could not be loaded. It previews the file through `NSSound`; `[ Send test
   notification ]` above is the one that checks a banner carries the sound, because

@@ -95,10 +95,7 @@ final class ProjectStore {
     private(set) var approvedCommands: [UUID: Set<String>] = [:] {
         didSet {
             guard approvedCommands != oldValue else { return }
-            let storable = approvedCommands.reduce(into: [String: [String]]()) {
-                $0[$1.key.uuidString] = Array($1.value)
-            }
-            defaults.set(storable, forKey: approvedCommandsKey)
+            persistSettings()
         }
     }
 
@@ -124,10 +121,13 @@ final class ProjectStore {
     }
 
     private let defaults: UserDefaults
+    private let configFile: WiettyConfigFile
     private let service: TerminalService
     private let gitProvider: GitInfoProviding
     let processes: ProcessSupervisor
     let testSupervisor: TestSupervisor
+    // The old `UserDefaults` keys, read once during migration and then removed. Their
+    // values now live in `~/.config/wietty/config`; see `SettingsKeys`.
     private let storageKey = "wietty.projects.bookmarks"
     private let badgeKey = "wietty.showWorkspaceBadge"
     private let bellSoundKey = "wietty.bellSound"
@@ -138,6 +138,14 @@ final class ProjectStore {
     private let sidebarWidthKey = "wietty.sidebarWidth"
     private let agentsKey = "wietty.agents"
     private let approvedCommandsKey = "wietty.approvedCommands"
+
+    /// Every old `UserDefaults` key this store migrated out of, cleared once the
+    /// config file has been seeded so nothing reads them again. The remote token key
+    /// is deliberately absent: it is a secret and stays in `UserDefaults`.
+    private var migratedDefaultsKeys: [String] {
+        [storageKey, badgeKey, bellSoundKey, intervalsKey, remoteEnabledKey,
+         mcpPortKey, remotePortKey, sidebarWidthKey, agentsKey, approvedCommandsKey]
+    }
 
     /// Guards `clearDeadSessions()` against running twice in one process.
     ///
@@ -183,7 +191,7 @@ final class ProjectStore {
     var showWorkspaceBadge: Bool {
         didSet {
             guard showWorkspaceBadge != oldValue else { return }
-            defaults.set(showWorkspaceBadge, forKey: badgeKey)
+            persistSettings()
         }
     }
 
@@ -192,7 +200,7 @@ final class ProjectStore {
     var bellSound: BellSound {
         didSet {
             guard bellSound != oldValue else { return }
-            defaults.set(bellSound.stored, forKey: bellSoundKey)
+            persistSettings()
         }
     }
 
@@ -203,7 +211,7 @@ final class ProjectStore {
             let clamped = checkIntervals.clamped()
             if clamped != checkIntervals { checkIntervals = clamped; return } // re-enter with clamped value
             guard checkIntervals != oldValue else { return }
-            defaults.set([checkIntervals.fast, checkIntervals.normal, checkIntervals.slow], forKey: intervalsKey)
+            persistSettings()
         }
     }
 
@@ -212,7 +220,7 @@ final class ProjectStore {
     var remoteEnabled: Bool {
         didSet {
             guard remoteEnabled != oldValue else { return }
-            defaults.set(remoteEnabled, forKey: remoteEnabledKey)
+            persistSettings()
         }
     }
 
@@ -223,7 +231,7 @@ final class ProjectStore {
             let clamped = Self.clampPort(mcpPort)
             if clamped != mcpPort { mcpPort = clamped; return }
             guard mcpPort != oldValue else { return }
-            defaults.set(mcpPort, forKey: mcpPortKey)
+            persistSettings()
         }
     }
 
@@ -234,7 +242,7 @@ final class ProjectStore {
             let clamped = Self.clampPort(remotePort)
             if clamped != remotePort { remotePort = clamped; return }
             guard remotePort != oldValue else { return }
-            defaults.set(remotePort, forKey: remotePortKey)
+            persistSettings()
         }
     }
 
@@ -256,7 +264,7 @@ final class ProjectStore {
             let floored = max(sidebarWidth, SidebarWidth.minimum)
             if floored != sidebarWidth { sidebarWidth = floored; return }
             guard sidebarWidth != oldValue else { return }
-            defaults.set(sidebarWidth, forKey: sidebarWidthKey)
+            persistSettings()
         }
     }
 
@@ -268,14 +276,10 @@ final class ProjectStore {
     var agents: [AgentDefinition] {
         didSet {
             guard agents != oldValue else { return }
-            do {
-                defaults.set(try JSONEncoder().encode(agents), forKey: agentsKey)
-            } catch {
-                // Reported rather than dropped: silence leaves the list on screen and
-                // the list on disk disagreeing, with the agent the user just added
-                // present in the menu now and gone at the next launch.
-                lastError = "Could not save the agent list: \(error.localizedDescription)"
-            }
+            // Reported rather than dropped on failure (see `persistSettings`): silence
+            // leaves the list on screen and the list on disk disagreeing, with the
+            // agent the user just added present in the menu now and gone next launch.
+            persistSettings()
         }
     }
 
@@ -327,7 +331,10 @@ final class ProjectStore {
         min(max(port, portRange.lowerBound), portRange.upperBound)
     }
 
-    private struct StoredProject: Codable {
+    /// The old workspace record, kept only to decode what earlier builds wrote to
+    /// `UserDefaults` so it can be migrated into the config file. Nothing encodes it
+    /// anymore; it is `Decodable`, not `Codable`.
+    private struct StoredProject: Decodable {
         var id: UUID
         var bookmark: Data
         var terminals: [TerminalRef]
@@ -336,18 +343,6 @@ final class ProjectStore {
         var displayName: String?
         var windowId: String?
         var collapsed: Bool
-
-        init(id: UUID, bookmark: Data, terminals: [TerminalRef], terminalSeq: Int, claudeSeq: Int,
-             displayName: String?, windowId: String?, collapsed: Bool) {
-            self.id = id
-            self.bookmark = bookmark
-            self.terminals = terminals
-            self.terminalSeq = terminalSeq
-            self.claudeSeq = claudeSeq
-            self.displayName = displayName
-            self.windowId = windowId
-            self.collapsed = collapsed
-        }
 
         private enum CodingKeys: String, CodingKey {
             case id, bookmark, terminals, terminalSeq, claudeSeq, displayName, windowId, collapsed
@@ -370,8 +365,33 @@ final class ProjectStore {
         }
     }
 
+    /// Where the user-facing settings live now, keyed to `defaults` so isolation
+    /// carries over. Production hands the standard defaults and gets the real file at
+    /// `~/.config/wietty/config`; a test that isolates its defaults gets a config file
+    /// isolated the same way, so two stores built with one defaults share one file
+    /// (settings-round-trip tests rely on that), and two built with different defaults
+    /// do not.
+    ///
+    /// The isolation directory is stamped into `defaults` on first use, not derived
+    /// from the instance's address: a freed `UserDefaults` can be reallocated at the
+    /// same address, so an address-derived path would let one test read the file
+    /// another test left behind. A stored id is unique per suite and stable for as
+    /// long as that suite exists.
+    private static func defaultConfig(for defaults: UserDefaults) -> WiettyConfigFile {
+        guard defaults !== UserDefaults.standard else { return WiettyConfigFile() }
+        let markerKey = "wietty.isolatedConfigDir"
+        let id = defaults.string(forKey: markerKey) ?? {
+            let fresh = UUID().uuidString
+            defaults.set(fresh, forKey: markerKey)
+            return fresh
+        }()
+        return WiettyConfigFile(url: FileManager.default.temporaryDirectory
+            .appendingPathComponent("wietty-settings-\(id)/config"))
+    }
+
     init(
         defaults: UserDefaults = .standard,
+        config: WiettyConfigFile? = nil,
         service: TerminalService,
         jobEvents: @escaping @MainActor () -> [MonitorEvent] = { [] },
         gitProvider: GitInfoProviding = GitInfoService(),
@@ -379,41 +399,124 @@ final class ProjectStore {
         testSupervisor: TestSupervisor = TestSupervisor()
     ) {
         self.defaults = defaults
+        self.configFile = config ?? Self.defaultConfig(for: defaults)
         self.service = service
         self.jobEvents = jobEvents
         self.gitProvider = gitProvider
         self.processes = processSupervisor
         self.testSupervisor = testSupervisor
-        self.showWorkspaceBadge = defaults.bool(forKey: badgeKey)
-        // No stored value reads as "", which `BellSound` maps to the system default:
-        // the sound this app played before there was a setting.
-        self.bellSound = BellSound(stored: defaults.string(forKey: bellSoundKey) ?? "")
-        if let arr = defaults.array(forKey: intervalsKey) as? [Int], arr.count == 3 {
-            self.checkIntervals = CheckIntervals(fast: arr[0], normal: arr[1], slow: arr[2]).clamped()
-        } else {
-            self.checkIntervals = .default
-        }
-        self.remoteEnabled = defaults.bool(forKey: remoteEnabledKey)
-        let storedMCPPort = defaults.integer(forKey: mcpPortKey)
-        self.mcpPort = storedMCPPort == 0 ? MCPServerHost.defaultPort : Self.clampPort(storedMCPPort)
-        let storedRemotePort = defaults.integer(forKey: remotePortKey)
-        self.remotePort = storedRemotePort == 0 ? RemoteServer.defaultPort : Self.clampPort(storedRemotePort)
-        // `double(forKey:)` answers 0 for an absent key, which is also an
-        // impossible width, so the two cases collapse into the same fallback.
-        let storedSidebarWidth = defaults.double(forKey: sidebarWidthKey)
-        self.sidebarWidth = storedSidebarWidth == 0
-            ? SidebarWidth.default
-            : max(storedSidebarWidth, SidebarWidth.minimum)
+        // The secret stays in `UserDefaults`; the config file never holds it.
         self.remoteToken = RemoteAccessToken(defaults: defaults)
-        self.agents = Self.loadAgents(defaults, key: agentsKey)
-        // Before `load()`, which reconciles every workspace that has a file and needs
-        // to know what has already been agreed to.
-        let storedApprovals = defaults.dictionary(forKey: approvedCommandsKey) as? [String: [String]] ?? [:]
-        self.approvedCommands = storedApprovals.reduce(into: [UUID: Set<String>]()) {
-            guard let id = UUID(uuidString: $1.key) else { return }
-            $0[id] = Set($1.value)
+
+        // The file is the source of truth once it exists. Its absence means the first
+        // launch since settings moved here (or a fresh install, or the user deleted
+        // it), and only then are the old `UserDefaults` keys read, to migrate them.
+        let fileExisted = FileManager.default.fileExists(atPath: configFile.url.path)
+        let cfg = configFile.read()
+
+        if fileExisted {
+            self.showWorkspaceBadge = cfg[SettingsKeys.showWorkspaceBadge] == "true"
+            self.bellSound = BellSound(stored: cfg[SettingsKeys.bellSound] ?? "")
+            self.checkIntervals = Self.intervals(from: cfg)
+            self.remoteEnabled = cfg[SettingsKeys.remoteEnabled] == "true"
+            self.mcpPort = Self.port(cfg[SettingsKeys.mcpPort], default: MCPServerHost.defaultPort)
+            self.remotePort = Self.port(cfg[SettingsKeys.remotePort], default: RemoteServer.defaultPort)
+            self.sidebarWidth = Self.width(cfg[SettingsKeys.sidebarWidth])
+            self.agents = Self.agents(from: cfg)
+            self.approvedCommands = Self.approvals(from: cfg)
+        } else {
+            self.showWorkspaceBadge = defaults.bool(forKey: badgeKey)
+            // No stored value reads as "", which `BellSound` maps to the system
+            // default: the sound this app played before there was a setting.
+            self.bellSound = BellSound(stored: defaults.string(forKey: bellSoundKey) ?? "")
+            if let arr = defaults.array(forKey: intervalsKey) as? [Int], arr.count == 3 {
+                self.checkIntervals = CheckIntervals(fast: arr[0], normal: arr[1], slow: arr[2]).clamped()
+            } else {
+                self.checkIntervals = .default
+            }
+            self.remoteEnabled = defaults.bool(forKey: remoteEnabledKey)
+            let storedMCPPort = defaults.integer(forKey: mcpPortKey)
+            self.mcpPort = storedMCPPort == 0 ? MCPServerHost.defaultPort : Self.clampPort(storedMCPPort)
+            let storedRemotePort = defaults.integer(forKey: remotePortKey)
+            self.remotePort = storedRemotePort == 0 ? RemoteServer.defaultPort : Self.clampPort(storedRemotePort)
+            // `double(forKey:)` answers 0 for an absent key, which is also an
+            // impossible width, so the two cases collapse into the same fallback.
+            let storedSidebarWidth = defaults.double(forKey: sidebarWidthKey)
+            self.sidebarWidth = storedSidebarWidth == 0
+                ? SidebarWidth.default
+                : max(storedSidebarWidth, SidebarWidth.minimum)
+            self.agents = Self.loadAgents(defaults, key: agentsKey)
+            let storedApprovals = defaults.dictionary(forKey: approvedCommandsKey) as? [String: [String]] ?? [:]
+            self.approvedCommands = storedApprovals.reduce(into: [UUID: Set<String>]()) {
+                guard let id = UUID(uuidString: $1.key) else { return }
+                $0[id] = Set($1.value)
+            }
         }
-        load()
+
+        // Loads workspaces (from the file, or by migrating the old bookmarks) and
+        // reconciles every one that has a `wietty.json`, which needs the approvals
+        // read just above.
+        load(cfg: cfg, migrating: !fileExisted)
+
+        // Seed the file from the migrated values on the first launch, then drop the
+        // old keys so nothing reads them again. Done after `load()` so the seed write
+        // includes the workspaces it just migrated.
+        if !fileExisted {
+            persistSettings()
+            for key in migratedDefaultsKeys { defaults.removeObject(forKey: key) }
+        }
+    }
+
+    // MARK: - Reading settings from the config file
+
+    private static func intervals(from cfg: [String: String]) -> CheckIntervals {
+        guard let f = cfg[SettingsKeys.checkIntervalFast].flatMap(Int.init),
+              let n = cfg[SettingsKeys.checkIntervalNormal].flatMap(Int.init),
+              let s = cfg[SettingsKeys.checkIntervalSlow].flatMap(Int.init) else { return .default }
+        return CheckIntervals(fast: f, normal: n, slow: s).clamped()
+    }
+
+    private static func port(_ value: String?, default fallback: Int) -> Int {
+        guard let value, let port = Int(value), port != 0 else { return fallback }
+        return clampPort(port)
+    }
+
+    private static func width(_ value: String?) -> Double {
+        guard let value, let width = Double(value), width != 0 else { return SidebarWidth.default }
+        return max(width, SidebarWidth.minimum)
+    }
+
+    /// The `agent.N.*` entries, in index order, keeping only the ones that could
+    /// actually start something (`isValid`). No seed here: a file that exists is a
+    /// full snapshot, so no agents means the list is empty on purpose. Seeding only
+    /// happens when migrating, via `loadAgents`.
+    private static func agents(from cfg: [String: String]) -> [AgentDefinition] {
+        var result: [AgentDefinition] = []
+        var index = 0
+        while let name = cfg["\(SettingsKeys.agentPrefix)\(index).name"] {
+            let agent = AgentDefinition(
+                name: name,
+                command: cfg["\(SettingsKeys.agentPrefix)\(index).command"] ?? "",
+                defaultArguments: cfg["\(SettingsKeys.agentPrefix)\(index).args"] ?? ""
+            )
+            if agent.isValid { result.append(agent) }
+            index += 1
+        }
+        return result
+    }
+
+    /// The `approved.<uuid>.N` entries, grouped back by workspace id. The key after
+    /// the prefix is `<uuid>.<n>`, and a uuid has no dots, so the last dot splits the
+    /// index off.
+    private static func approvals(from cfg: [String: String]) -> [UUID: Set<String>] {
+        var result: [UUID: Set<String>] = [:]
+        for (key, value) in cfg where key.hasPrefix(SettingsKeys.approvedPrefix) {
+            let rest = key.dropFirst(SettingsKeys.approvedPrefix.count)
+            guard let dot = rest.lastIndex(of: "."),
+                  let id = UUID(uuidString: String(rest[..<dot])) else { continue }
+            result[id, default: []].insert(value)
+        }
+        return result
     }
 
     /// Registers a new subscriber for the coalesced workspace change signal. The
@@ -1496,29 +1599,9 @@ final class ProjectStore {
         pendingConfigApproval = nil
     }
 
-    private func load() {
-        guard let dataArray = defaults.array(forKey: storageKey) as? [Data] else { return }
-        let decoder = JSONDecoder()
-        var loaded: [Project] = []
-        for data in dataArray {
-            guard let record = try? decoder.decode(StoredProject.self, from: data) else { continue }
-            var isStale = false
-            guard let url = try? URL(
-                resolvingBookmarkData: record.bookmark, options: [],
-                relativeTo: nil, bookmarkDataIsStale: &isStale
-            ) else { continue }
-            loaded.append(Project(
-                id: record.id,
-                url: url.standardizedFileURL,
-                terminals: record.terminals,
-                displayName: record.displayName,
-                windowId: record.windowId,
-                terminalSeq: record.terminalSeq,
-                claudeSeq: record.claudeSeq,
-                collapsed: record.collapsed
-            ))
-        }
-        projects = loaded
+    private func load(cfg: [String: String], migrating: Bool) {
+        projects = migrating ? Self.migrateWorkspaces(from: defaults, key: storageKey)
+                             : Self.workspaces(from: cfg)
         for project in projects {
             if ConfigFile.exists(in: project.url) {
                 reconcileWithFile(project.id)
@@ -1528,24 +1611,130 @@ final class ProjectStore {
         }
     }
 
-    private func save() {
-        let encoder = JSONEncoder()
-        let dataArray: [Data] = projects.compactMap { project in
-            guard let bookmark = try? project.url.bookmarkData(
-                options: [], includingResourceValuesForKeys: nil, relativeTo: nil
-            ) else { return nil }
-            let record = StoredProject(
-                id: project.id,
-                bookmark: bookmark,
-                terminals: project.terminals,
-                terminalSeq: project.terminalSeq,
-                claudeSeq: project.claudeSeq,
-                displayName: project.displayName,
-                windowId: project.windowId,
-                collapsed: project.collapsed
-            )
-            return try? encoder.encode(record)
+    /// Workspaces as this build wrote them: plain folder paths, no security-scoped
+    /// bookmark.
+    private static func workspaces(from cfg: [String: String]) -> [Project] {
+        var loaded: [Project] = []
+        var index = 0
+        while let path = cfg["\(SettingsKeys.workspacePrefix)\(index).path"] {
+            let base = "\(SettingsKeys.workspacePrefix)\(index)"
+            var terminals: [TerminalRef] = []
+            var t = 0
+            while let label = cfg["\(base).terminal.\(t).label"] {
+                let tk = "\(base).terminal.\(t)"
+                terminals.append(TerminalRef(
+                    id: cfg["\(tk).id"].flatMap { UUID(uuidString: $0) } ?? UUID(),
+                    label: label,
+                    sessionId: cfg["\(tk).session-id"] ?? "",
+                    kind: TerminalKind(rawValue: cfg["\(tk).kind"] ?? "") ?? .terminal,
+                    slot: cfg["\(tk).slot"] ?? label,
+                    command: cfg["\(tk).command"]
+                ))
+                t += 1
+            }
+            loaded.append(Project(
+                id: cfg["\(base).id"].flatMap { UUID(uuidString: $0) } ?? UUID(),
+                url: URL(fileURLWithPath: path).standardizedFileURL,
+                terminals: terminals,
+                displayName: cfg["\(base).name"],
+                windowId: cfg["\(base).window-id"],
+                terminalSeq: cfg["\(base).terminal-seq"].flatMap(Int.init) ?? 0,
+                claudeSeq: cfg["\(base).claude-seq"].flatMap(Int.init) ?? 0,
+                collapsed: cfg["\(base).collapsed"] == "true"
+            ))
+            index += 1
         }
-        defaults.set(dataArray, forKey: storageKey)
+        return loaded
     }
+
+    /// The old `[Data]` of security-scoped bookmarks, resolved to paths once so the
+    /// next write is plain text. A bookmark that no longer resolves is dropped, the
+    /// same as the previous loader did.
+    private static func migrateWorkspaces(from defaults: UserDefaults, key: String) -> [Project] {
+        guard let dataArray = defaults.array(forKey: key) as? [Data] else { return [] }
+        let decoder = JSONDecoder()
+        return dataArray.compactMap { data -> Project? in
+            guard let record = try? decoder.decode(StoredProject.self, from: data) else { return nil }
+            var isStale = false
+            guard let url = try? URL(resolvingBookmarkData: record.bookmark, options: [],
+                                     relativeTo: nil, bookmarkDataIsStale: &isStale) else { return nil }
+            return Project(
+                id: record.id, url: url.standardizedFileURL, terminals: record.terminals,
+                displayName: record.displayName, windowId: record.windowId,
+                terminalSeq: record.terminalSeq, claudeSeq: record.claudeSeq,
+                collapsed: record.collapsed
+            )
+        }
+    }
+
+    /// The single write for every user-facing setting: scalars, agents, approvals, and
+    /// workspaces, all rebuilt from the store's current state. Called from each
+    /// setting's `didSet` and from `save()`, so the file always mirrors what the app
+    /// holds. The secret is not here.
+    ///
+    /// Reported on failure rather than dropped: silence would leave the file and the
+    /// screen disagreeing, with the change the user just made gone at the next launch.
+    private func persistSettings() {
+        var pairs: [(key: String, value: String)] = [
+            (SettingsKeys.showWorkspaceBadge, showWorkspaceBadge ? "true" : "false"),
+            (SettingsKeys.bellSound, bellSound.stored),
+            (SettingsKeys.checkIntervalFast, String(checkIntervals.fast)),
+            (SettingsKeys.checkIntervalNormal, String(checkIntervals.normal)),
+            (SettingsKeys.checkIntervalSlow, String(checkIntervals.slow)),
+            (SettingsKeys.sidebarWidth, String(sidebarWidth)),
+            (SettingsKeys.remoteEnabled, remoteEnabled ? "true" : "false"),
+            (SettingsKeys.remotePort, String(remotePort)),
+            (SettingsKeys.mcpPort, String(mcpPort)),
+        ]
+        for (i, agent) in agents.enumerated() {
+            pairs.append(("\(SettingsKeys.agentPrefix)\(i).name", agent.name))
+            pairs.append(("\(SettingsKeys.agentPrefix)\(i).command", agent.command))
+            pairs.append(("\(SettingsKeys.agentPrefix)\(i).args", agent.defaultArguments))
+        }
+        // Sorted so the file is stable: an unordered set would reshuffle the lines on
+        // every write and read as a change to anyone diffing the file.
+        for (id, commands) in approvedCommands.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+            for (i, command) in commands.sorted().enumerated() {
+                pairs.append(("\(SettingsKeys.approvedPrefix)\(id.uuidString).\(i)", command))
+            }
+        }
+        for (i, project) in projects.enumerated() {
+            pairs.append(contentsOf: Self.workspacePairs(project, index: i))
+        }
+        do {
+            try configFile.write(pairs, managedKeys: SettingsKeys.scalars,
+                                 managedPrefixes: SettingsKeys.prefixes)
+        } catch {
+            lastError = "Could not save settings: \(error.localizedDescription)"
+        }
+    }
+
+    private static func workspacePairs(_ project: Project, index: Int) -> [(key: String, value: String)] {
+        let base = "\(SettingsKeys.workspacePrefix)\(index)"
+        var pairs: [(key: String, value: String)] = [
+            ("\(base).path", project.url.standardizedFileURL.path),
+            ("\(base).id", project.id.uuidString),
+            ("\(base).collapsed", project.collapsed ? "true" : "false"),
+            ("\(base).terminal-seq", String(project.terminalSeq)),
+            ("\(base).claude-seq", String(project.claudeSeq)),
+        ]
+        if let name = project.displayName { pairs.append(("\(base).name", name)) }
+        if let windowId = project.windowId { pairs.append(("\(base).window-id", windowId)) }
+        for (t, ref) in project.terminals.enumerated() {
+            let tk = "\(base).terminal.\(t)"
+            pairs.append(("\(tk).id", ref.id.uuidString))
+            pairs.append(("\(tk).label", ref.label))
+            pairs.append(("\(tk).kind", ref.kind.rawValue))
+            pairs.append(("\(tk).slot", ref.slot))
+            // The app mostly mints ghostty-prefixed ids that `clearDeadSessions` wipes
+            // on the next launch, so this is usually empty by the time it is read back.
+            // It is still persisted: the clearing reads it to know what to clear, and a
+            // non-prefixed id from another substrate is meant to survive.
+            if !ref.sessionId.isEmpty { pairs.append(("\(tk).session-id", ref.sessionId)) }
+            if let command = ref.command { pairs.append(("\(tk).command", command)) }
+        }
+        return pairs
+    }
+
+    private func save() { persistSettings() }
 }
