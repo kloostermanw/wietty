@@ -386,14 +386,8 @@ struct NotificationSettings: View {
             }
             Text("Turned off, a program asking for a notification is answered by nothing: no banner, no 🔔, and no error either. It is libghostty that enforces this, before any of the settings above are consulted, so it is the first thing to check when notifications are not arriving.")
                 .font(.caption).foregroundStyle(.secondary)
-            if desktopNotifications.hasOverride {
-                HStack {
-                    Button("Use my Ghostty config") { desktopNotifications.clearOverride() }
-                    Spacer()
-                }
-                Text("Wietty writes this to \(desktopNotifications.fileURL.path), which it loads after your own Ghostty config so what is set here wins. Ghostty.app is not affected either way. Clearing it hands the decision back to your config.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            Text("This writes desktop-notifications to \(desktopNotifications.fileURL.path), which Wietty loads after your own Ghostty config so what is set here wins. Ghostty.app is not affected either way. Until you touch it your Ghostty config decides, and deleting that file goes back to that.")
+                .font(.caption).foregroundStyle(.secondary)
         }
 
         Section("Test notification") {

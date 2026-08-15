@@ -35,18 +35,6 @@ import Foundation
         #expect(FileManager.default.fileExists(atPath: file.url.path))
     }
 
-    /// Clearing goes back to saying nothing, rather than to saying true. Those are
-    /// different: the point of clearing is to hand the decision back to the user's
-    /// own config, which may well say false.
-    @Test func clearingRemovesTheLineRatherThanSettingItTrue() throws {
-        let file = file()
-        try file.setDesktopNotifications(false)
-        try file.setDesktopNotifications(nil)
-        #expect(file.desktopNotifications == nil)
-        let text = try String(contentsOf: file.url, encoding: .utf8)
-        #expect(!text.contains("desktop-notifications"))
-    }
-
     /// Anything the user put in the file themselves survives, because they can and
     /// will edit it: it is in their `~/.config` and Wietty's own header invites them
     /// to look at it.
@@ -66,17 +54,68 @@ import Foundation
         #expect(file.desktopNotifications == false)
     }
 
-    /// Toggling repeatedly must not grow the file. A rewrite that appended without
-    /// removing would leave several lines for one key, and a blank line per pass.
-    @Test func repeatedTogglesLeaveOneLineAndNoBlankRun() throws {
+    /// Toggling repeatedly must not grow the file, and the whole file is asserted
+    /// rather than searched.
+    ///
+    /// The version that shipped grew a copy of its own header on every write, and
+    /// the test guarding it counted occurrences of the key and looked for a blank
+    /// run. Both passed: the duplicated lines were comments, which are not the key,
+    /// and each copy added exactly one line pair, which is not a blank run. Nine
+    /// toggles produced a 1287 byte file of nothing but headers. Comparing the
+    /// entire contents is the only assertion that could not have been satisfied by
+    /// a file full of junk.
+    @Test func repeatedTogglesLeaveTheFileExactlyAsOneToggleWouldHave() throws {
         let file = file()
-        for value in [true, false, true, false, true] {
+        try file.setDesktopNotifications(true)
+        let afterOne = try String(contentsOf: file.url, encoding: .utf8)
+
+        for value in [false, true, false, true, false, true, false, true] {
             try file.setDesktopNotifications(value)
         }
+
+        #expect(try String(contentsOf: file.url, encoding: .utf8) == afterOne)
+        #expect(afterOne.components(separatedBy: "\n").filter { $0.hasPrefix("#") }.count == 1)
+        #expect(afterOne.hasSuffix("desktop-notifications = true\n"))
+    }
+
+    /// A file left behind by the version that duplicated its header is repaired by
+    /// the next write rather than being inherited. Anybody who ran that build has
+    /// one, and it would otherwise keep every copy forever.
+    @Test func aFileFullOfDuplicatedHeadersIsCleanedUp() throws {
+        let file = file()
+        try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        let legacyHeader = """
+        # Written by Wietty. Loaded after ~/.config/ghostty/config, so what is set here
+        # wins for Wietty's terminals and does not affect Ghostty.app.
+
+        """
+        try String(repeating: legacyHeader, count: 9)
+            .write(to: file.url, atomically: true, encoding: .utf8)
+
+        try file.setDesktopNotifications(true)
+
         let text = try String(contentsOf: file.url, encoding: .utf8)
-        #expect(text.components(separatedBy: "desktop-notifications").count - 1 == 1)
-        #expect(!text.contains("\n\n\n"))
+        #expect(!text.contains("# Written by Wietty."))
+        #expect(text.components(separatedBy: "\n").filter { $0.hasPrefix("#") }.count == 1)
         #expect(file.desktopNotifications == true)
+    }
+
+    /// A note an earlier version left behind when the setting was removed is
+    /// stripped like any other line this type wrote, so a file carrying one does not
+    /// keep it forever.
+    @Test func aLegacyNoOverrideNoteIsCleanedUp() throws {
+        let file = file()
+        try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try "# Managed by Wietty. …\n# No override set: Wietty is using your Ghostty config.\n"
+            .write(to: file.url, atomically: true, encoding: .utf8)
+
+        try file.setDesktopNotifications(false)
+
+        let text = try String(contentsOf: file.url, encoding: .utf8)
+        #expect(!text.contains("No override set"))
+        #expect(text.components(separatedBy: "\n").filter { $0.hasPrefix("#") }.count == 1)
     }
 
     /// A key set twice by hand resolves the way libghostty resolves it, which is
@@ -123,21 +162,16 @@ import Foundation
         #expect(setting.writeFailure == nil)
     }
 
-    @Test func changingItWritesTheFile() throws {
+    /// Both directions, because the toggle is the only way the file is written now:
+    /// there is no separate control for going back, so turning it back on has to be
+    /// a write of its own rather than a removal.
+    @Test func changingItWritesTheFileInBothDirections() throws {
         let file = GhosttyOverrideFile.temporary()
         let setting = DesktopNotificationSetting(host: FakeSurfaceHost(), file: file)
         setting.setEnabled(false)
         #expect(file.desktopNotifications == false)
-        #expect(setting.hasOverride)
-    }
-
-    @Test func clearingTheOverrideLeavesNothingBehind() throws {
-        let file = GhosttyOverrideFile.temporary()
-        let setting = DesktopNotificationSetting(host: FakeSurfaceHost(), file: file)
-        setting.setEnabled(false)
-        setting.clearOverride()
-        #expect(!setting.hasOverride)
-        #expect(file.desktopNotifications == nil)
+        setting.setEnabled(true)
+        #expect(file.desktopNotifications == true)
     }
 
     /// A write that fails must not be followed by a reload. Reloading would hand
@@ -165,7 +199,6 @@ import Foundation
         host.desktopNotifications = (effective: false, userConfig: false)
         let setting = DesktopNotificationSetting(host: host, file: .temporary())
         #expect(!setting.isEnabled)
-        #expect(!setting.hasOverride)
     }
 
     /// When Wietty's file wins over the user's own config, the tab says so. A switch

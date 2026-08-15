@@ -55,10 +55,6 @@ final class DesktopNotificationSetting {
     /// What the user's own Ghostty config asks for, shown only when it differs.
     private(set) var userConfigValue = true
 
-    /// True when Wietty's file holds the key at all. Offering "use my Ghostty config"
-    /// for a file with no override in it would be a button with nothing to do.
-    private(set) var hasOverride = false
-
     /// Re-reads libghostty and the file. Called on the way into the Settings tab as
     /// well as after a write, because both config files are ordinary files the user
     /// can edit while the window is open, and the tab is drawn from what this holds.
@@ -67,23 +63,13 @@ final class DesktopNotificationSetting {
         isEnabled = resolved.effective
         userConfigValue = resolved.userConfig
         overridesUserConfig = resolved.effective != resolved.userConfig
-        hasOverride = file.desktopNotifications != nil
     }
 
     var fileURL: URL { file.url }
 
     func setEnabled(_ on: Bool) {
-        write { try file.setDesktopNotifications(on) }
-    }
-
-    /// Drops Wietty's line and lets the user's own config decide again.
-    func clearOverride() {
-        write { try file.setDesktopNotifications(nil) }
-    }
-
-    private func write(_ change: () throws -> Void) {
         do {
-            try change()
+            try file.setDesktopNotifications(on)
             writeFailure = nil
             // Only after a successful write: reloading first would hand libghostty
             // the file as it was and report the old value as the new one.

@@ -39,9 +39,15 @@ a program asking for a notification is answered by nothing at all, and the Setti
 window said as much about it as the terminal did. `DesktopNotificationSetting` writes
 `~/.config/wietty/ghostty.cfg` and `GhosttySurfaceHost` loads that file after the
 user's own config, so the toggle wins without Wietty ever editing a file Ghostty.app
-reads. libghostty has no setter, so handing it another file is the only way to change
-a value at all; the tab reads the resolved value back through `ghostty_config_get`
-rather than reading its own file, and says so when the two configs disagree. Changing
+reads. The file does not exist until the toggle is first used, which is what makes
+deferring to the user's own config the default rather than something to ask for.
+There is no control for going back to it, because there is nothing to go back from
+that deleting the file does not undo.
+
+It is a file because libghostty has no setter: handing it another file is the only
+way to change a value at all. That also decides how the tab reads. The resolved value
+comes back through `ghostty_config_get` rather than from the file, so the switch shows
+what the terminal is running on, and says so when the two configs disagree. Changing
 it calls `ghostty_app_update_config` and `ghostty_surface_update_config`, so terminals
 that are already open take the new value.
 

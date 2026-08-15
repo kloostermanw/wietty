@@ -44,13 +44,17 @@ struct GhosttyOverrideFile {
         }
     }
 
-    /// Writes the setting, or removes it when `on` is nil so libghostty goes back to
-    /// resolving it from the user's own config.
+    /// Writes the setting.
     ///
     /// Creates the file and its directory when they are absent, which is the usual
     /// case: nothing else in Wietty writes to `~/.config`.
-    func setDesktopNotifications(_ on: Bool?) throws {
-        try set(Self.desktopNotificationsKey, to: on.map { $0 ? "true" : "false" })
+    ///
+    /// There is deliberately no way to unset it from here. Deferring to the user's
+    /// own Ghostty config is the state this file's absence already means, so the way
+    /// back to it is to delete the file, and a control for reaching a default is a
+    /// control for something the user gets by not touching anything.
+    func setDesktopNotifications(_ on: Bool) throws {
+        try set(Self.desktopNotificationsKey, to: on ? "true" : "false")
     }
 
     private static let desktopNotificationsKey = "desktop-notifications"
@@ -71,34 +75,51 @@ struct GhosttyOverrideFile {
             .value
     }
 
-    private func set(_ key: String, to value: String?) throws {
+    private func set(_ key: String, to value: String) throws {
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         var lines = existing.isEmpty
             ? [] : existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        // A trailing newline splits into a final empty element. Dropping it here and
-        // adding one back on write keeps a toggle from growing a blank line each time.
-        if lines.last == "" { lines.removeLast() }
 
+        // The lines this type wrote last time go first, before anything else is
+        // looked at. They are comments, and a comment is otherwise preserved, so
+        // without this the header is prepended again on every write and the file
+        // grows a copy of itself per toggle. That is not hypothetical: it is what
+        // shipped, and nine toggles left nine headers and no setting.
+        lines.removeAll { Self.isManaged($0) }
         lines.removeAll { Self.pair(in: $0)?.key == key }
-        if let value { lines.append("\(key) = \(value)") }
+        // Blank lines at either end are this type's own doing once its comments are
+        // gone, and would otherwise accumulate for the same reason the header did.
+        while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { lines.removeFirst() }
+        while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { lines.removeLast() }
 
-        // An emptied file is left in place rather than deleted. libghostty reads a
-        // missing file as no diagnostics and no values, so both mean the same thing
-        // to it, and a file the user can still find explains itself better than one
-        // that vanished.
+        lines.append("\(key) = \(value)")
+
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
-        let text = lines.isEmpty ? Self.header : (Self.header + lines.joined(separator: "\n") + "\n")
+        let text = ([Self.header] + lines).joined(separator: "\n") + "\n"
         try text.write(to: url, atomically: true, encoding: .utf8)
     }
 
     /// Says whose file this is, because it appears in a directory the user owns and
-    /// nothing else would explain where it came from.
-    private static let header = """
-    # Written by Wietty. Loaded after ~/.config/ghostty/config, so what is set here
-    # wins for Wietty's terminals and does not affect Ghostty.app.
+    /// nothing else would explain where it came from. One line, so that a bug that
+    /// repeats it is one line of noise rather than a paragraph of it.
+    private static let header =
+        "# Managed by Wietty. Loaded after ~/.config/ghostty/config, so what is set here wins for Wietty's terminals. Ghostty.app is not affected."
 
-    """
+    /// A comment this type wrote itself, which is removed before every write so it
+    /// can be written again exactly once.
+    ///
+    /// The legacy prefixes are lines earlier versions wrote: a header split across
+    /// two lines, and a note left behind when the setting was removed. They are
+    /// matched so that a file which accumulated them is cleaned up by the next write
+    /// instead of carrying them forever.
+    private static func isManaged(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        return ["# Managed by Wietty.",
+                "# No override set:",
+                "# Written by Wietty.",
+                "# wins for Wietty's terminals"].contains { trimmed.hasPrefix($0) }
+    }
 
     /// The `key = value` in one line, or nil for a comment, a blank line, or
     /// anything this type does not recognise. Anything returning nil is preserved

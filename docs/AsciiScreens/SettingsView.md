@@ -143,12 +143,13 @@ so the section that controls it sits above the test button rather than below.
 │    Turned off, a program asking for a             │
 │    notification is answered by nothing: no        │
 │    banner, no 🔔, and no error either. …          │
-│    (only while Wietty's file holds an override:)  │
-│    [ Use my Ghostty config ]                      │
-│    Wietty writes this to ~/.config/wietty/        │
-│    ghostty.cfg, which it loads after your own     │
-│    Ghostty config so what is set here wins.       │
-│    Ghostty.app is not affected either way. …      │
+│    This writes desktop-notifications to           │
+│    ~/.config/wietty/ghostty.cfg, which Wietty     │
+│    loads after your own Ghostty config so what is │
+│    set here wins. Ghostty.app is not affected     │
+│    either way. Until you touch it your Ghostty    │
+│    config decides, and deleting that file goes    │
+│    back to that.                                  │
 │                                                    │
 │  Test notification                                │
 │    [ Send test notification ]                     │
@@ -325,9 +326,16 @@ Legend:
   and the user's own config disagree, which is exactly when Wietty is overriding
   them. Without it a switch quietly contradicting a file they wrote reads as Wietty
   having ignored it.
-- `[ Use my Ghostty config ]` appears only while Wietty's file actually holds the
-  key, and removes the line rather than writing `true`: those are different, since
-  the point is to hand the decision back to a config that may well say `false`.
+- There is no control for going back to the user's own config, because that is what
+  not touching the toggle already does: the file does not exist until the switch is
+  first flipped, and deleting it returns to the same state. A button whose job is to
+  reach the default is a button for something you get by doing nothing, and it was
+  briefly there before being taken out.
+- Every write strips the comments Wietty itself wrote before adding them back, so
+  the file holds exactly one header however many times it is toggled. It did not,
+  once: comments are preserved like any other line the user might have added, so the
+  header was preserved too and prepended again, and nine toggles left nine copies of
+  it. A file from that build is repaired by the next write.
 - `[ Send test notification ]`: `BellNotifier.sendTest(sound:)`, which posts
   `BellNotification.test()` with the sound currently selected below. It reports
   what happened either way: `UNUserNotificationCenter` refuses to ask on behalf of a
