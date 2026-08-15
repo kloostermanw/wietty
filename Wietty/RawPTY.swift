@@ -128,6 +128,22 @@ final class RawPTY: @unchecked Sendable {
         return "xterm-256color"
     }()
 
+    /// What names the terminal itself, as against TERM, which names what it can
+    /// draw. A program that adapts to its host reads this: iTerm2 answers
+    /// `iTerm.app`, Ghostty.app answers `ghostty`, Apple's Terminal answers
+    /// `Apple_Terminal`.
+    ///
+    /// Set for the same reason TERM is, and unconditionally for the same reason:
+    /// left alone it names whatever launched Wietty, and an app opened from the
+    /// Finder sets it to nothing at all. Either answer is wrong, and the wrong
+    /// answer is worse than none, because the program acts on it.
+    ///
+    /// Unset is what the notifications this app posts were failing on. An agent
+    /// choosing between the bell, OSC 9 and OSC 777 picks by this variable, finds
+    /// nothing to match, and emits none of them, so a terminal that handles all
+    /// three (`docs/notifications.md`) is never given the chance.
+    static let programName = "Wietty"
+
     /// Spawns `command` on a fresh pty, or an interactive login shell when it is
     /// nil.
     ///
@@ -179,6 +195,8 @@ final class RawPTY: @unchecked Sendable {
         var merged = ProcessInfo.processInfo.environment
         for (key, value) in environment { merged[key] = value }
         merged["TERM"] = Self.terminalType
+        merged["TERM_PROGRAM"] = Self.programName
+        merged["TERM_PROGRAM_VERSION"] = AppVersion.current.description
         merged["PWD"] = directory.path
         let cEnv: [UnsafeMutablePointer<CChar>?] = merged.map { strdup("\($0.key)=\($0.value)") } + [nil]
         let cShell = strdup(shell)

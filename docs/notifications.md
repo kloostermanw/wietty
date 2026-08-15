@@ -22,6 +22,12 @@ An empty body counts as no body: libghostty passes an empty string for an `OSC 9
 carrying no payload. One with no title is kept, because `OSC 9;text` supplies only a
 body.
 
+Something has to send one before any of this runs, and what decides that is the environment the
+shell was spawned with. A program picks between the bell, `OSC 9` and `OSC 777` by reading
+`TERM_PROGRAM`, so a terminal that leaves it unset is told nothing by an agent that would otherwise
+have announced itself. `RawPTY.spawn` sets it to `Wietty` (`docs/terminal.md`, under "Spawning the
+shell"). Before it did, this whole path was correct and idle.
+
 One thing that decides whether the action arrives at all is not this app's: libghostty
 gates `OSC 9` and `OSC 777` behind its own `desktop-notifications` setting, and
 `GhosttySurfaceHost` calls `ghostty_config_load_default_files`, so a user who turned

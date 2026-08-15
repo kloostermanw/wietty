@@ -400,6 +400,17 @@ so it needs `2 * MAXCOMLEN` plus a terminator; handed less it returns 0 with `EN
 any process on any machine, which reports every terminal's foreground job as unknown and silently
 freezes every agent's status in the sidebar.
 
+**The child is told what this terminal is, not what launched it.** `TERM` names what may be drawn
+(above, and `RawPTY.terminalType`), `TERM_PROGRAM` and `TERM_PROGRAM_VERSION` name who is drawing it:
+`Wietty` and the bundle's version. All three are set unconditionally, because the child's environment
+starts as Wietty's own and every one of them would otherwise carry an answer about a different
+terminal. `TERM_PROGRAM` is the variable a program reads to decide what its host supports (iTerm2
+answers `iTerm.app`, Ghostty.app `ghostty`, Apple's Terminal `Apple_Terminal`), and leaving it unset
+is not neutral. An agent choosing between the bell, `OSC 9` and `OSC 777` finds nothing to match and
+emits none of them, so a terminal that handles all three (`docs/notifications.md`) never hears from
+it, and the user sees no 🔔 and no banner. An app launched from the Finder inherits no value at all,
+so the unset case is the ordinary one rather than the exception.
+
 Everything the child needs is built before the fork, because between fork and exec only
 async-signal-safe calls are legal: the child inherits one thread but every lock the parent held, so
 touching the Swift runtime there can deadlock. That is why argv and the environment are already C
