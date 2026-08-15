@@ -93,12 +93,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
             throw SurfaceHostError.initFailed("libghostty could not initialise.")
         }
 
-        let config = ghostty_config_new()
-        // The user's own Ghostty configuration is loaded deliberately: the font,
-        // theme, and cursor they already chose for Ghostty are the right defaults
-        // for a Ghostty terminal inside another app.
-        ghostty_config_load_default_files(config)
-        ghostty_config_finalize(config)
+        let config = Self.buildConfig()
         self.config = config
 
         var runtime = ghostty_runtime_config_s()
@@ -153,6 +148,72 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
         guard let pointer = info.version, info.version_len > 0 else { return "unknown" }
         return String(decoding: UnsafeRawBufferPointer(start: pointer, count: Int(info.version_len)),
                       as: UTF8.self) + " (build mode \(info.build_mode.rawValue))"
+    }
+
+    // MARK: - Configuration
+
+    /// The user's Ghostty config, then Wietty's own file over the top.
+    ///
+    /// Order is the whole mechanism. libghostty has no setter, so the only way to
+    /// change a value is to load another file after the one that set it, and the
+    /// last file to set a key wins. Loading the user's config first keeps the font,
+    /// theme and cursor they already chose for Ghostty, which is why it is loaded at
+    /// all; loading Wietty's file second is what makes a toggle in Wietty's Settings
+    /// window mean anything.
+    ///
+    /// The overlay is loaded unconditionally. A path that does not exist is not an
+    /// error to libghostty: it sets no values and raises no diagnostics, which is
+    /// exactly what "Wietty has no opinion" should do, so there is nothing to check
+    /// for first.
+    ///
+    /// - Parameter overlay: nil builds the user's configuration alone, which is what
+    ///   `desktopNotifications` compares against to tell whether Wietty is
+    ///   overriding a value the user set themselves.
+    private static func buildConfig(overlay: URL? = GhosttyOverrideFile.defaultURL) -> ghostty_config_t? {
+        let config = ghostty_config_new()
+        ghostty_config_load_default_files(config)
+        if let overlay { ghostty_config_load_file(config, overlay.path) }
+        ghostty_config_finalize(config)
+        return config
+    }
+
+    var desktopNotifications: (effective: Bool, userConfig: Bool) {
+        // The user's configuration is rebuilt rather than remembered, because this
+        // is read when the Settings tab is drawn and not on any hot path, and a
+        // remembered copy would go stale the moment they edited their own config.
+        let theirs = Self.buildConfig(overlay: nil)
+        defer { ghostty_config_free(theirs) }
+        return (Self.desktopNotifications(in: config), Self.desktopNotifications(in: theirs))
+    }
+
+    /// libghostty's answer for one key. `ghostty_config_get` exposes a subset of the
+    /// configuration and this key is in it, which is measured rather than assumed:
+    /// neighbouring keys are not, so this cannot be generalised without checking the
+    /// one being added.
+    ///
+    /// A getter that refuses leaves `true`, libghostty's own default, which is also
+    /// what a config setting nothing resolves to.
+    private static func desktopNotifications(in config: ghostty_config_t?) -> Bool {
+        guard let config else { return true }
+        var value = true
+        let key = "desktop-notifications"
+        _ = key.withCString { ghostty_config_get(config, &value, $0, UInt(strlen($0))) }
+        return value
+    }
+
+    func reloadConfig() {
+        guard let app else { return }
+        let rebuilt = Self.buildConfig()
+        // The app first, then every surface. libghostty copies what it needs out of
+        // the config, so the old one can be freed once both have been handed the new
+        // one, and freeing it before the surfaces are updated would leave them
+        // reading it.
+        ghostty_app_update_config(app, rebuilt)
+        for surface in surfaces.values {
+            ghostty_surface_update_config(surface.handle, rebuilt)
+        }
+        if let previous = config { ghostty_config_free(previous) }
+        config = rebuilt
     }
 
     // MARK: - Surfaces

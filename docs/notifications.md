@@ -28,11 +28,25 @@ shell was spawned with. A program picks between the bell, `OSC 9` and `OSC 777` 
 have announced itself. `RawPTY.spawn` sets it to `Wietty` (`docs/terminal.md`, under "Spawning the
 shell"). Before it did, this whole path was correct and idle.
 
-One thing that decides whether the action arrives at all is not this app's: libghostty
-gates `OSC 9` and `OSC 777` behind its own `desktop-notifications` setting, and
-`GhosttySurfaceHost` calls `ghostty_config_load_default_files`, so a user who turned
-that off in their own Ghostty config gets no action here and therefore no banner.
-The bell is not gated that way.
+One thing that decides whether the action arrives at all is libghostty's rather than
+this app's: it gates `OSC 9` and `OSC 777` behind its own `desktop-notifications`
+setting, and `GhosttySurfaceHost` calls `ghostty_config_load_default_files`, so a
+user who turned that off in their own Ghostty config gets no action here and
+therefore no banner. The bell is not gated that way.
+
+That gate is on the Notifications tab, because it used to be invisible: turned off,
+a program asking for a notification is answered by nothing at all, and the Settings
+window said as much about it as the terminal did. `DesktopNotificationSetting` writes
+`~/.config/wietty/ghostty.cfg` and `GhosttySurfaceHost` loads that file after the
+user's own config, so the toggle wins without Wietty ever editing a file Ghostty.app
+reads. libghostty has no setter, so handing it another file is the only way to change
+a value at all; the tab reads the resolved value back through `ghostty_config_get`
+rather than reading its own file, and says so when the two configs disagree. Changing
+it calls `ghostty_app_update_config` and `ghostty_surface_update_config`, so terminals
+that are already open take the new value.
+
+The default is on, measured against the linked libghostty rather than assumed, so the
+overwhelmingly common case of no config file at all notifies normally.
 
 `PaneStreamHub` also counts `0x07` in a session's byte stream, for the viewers it
 serves, and that is deliberately not the same code: telling a real bell from a

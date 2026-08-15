@@ -8,6 +8,10 @@ struct SettingsView: View {
     /// The app's own notifier, not one built here: the permission the Notifications
     /// tab reports has to be the permission the bells are subject to.
     let bells: BellNotifier
+    /// The app's own setting, for the same reason `bells` is the app's own notifier:
+    /// a toggle reporting a config the live surfaces are not running on would be
+    /// worse than no toggle.
+    let desktopNotifications: DesktopNotificationSetting
 
     /// View state, not a preference. The panel is destroyed when the pane shows
     /// anything else, so this resets on the way back in, which is what a user who
@@ -35,11 +39,13 @@ struct SettingsView: View {
          remoteConnections: RemoteConnectionsStore,
          remoteWorkspaces: RemoteWorkspacesController,
          bells: BellNotifier,
+         desktopNotifications: DesktopNotificationSetting,
          tab: SettingsTab = .default) {
         _store = Bindable(wrappedValue: store)
         _remoteConnections = ObservedObject(wrappedValue: remoteConnections)
         _remoteWorkspaces = ObservedObject(wrappedValue: remoteWorkspaces)
         self.bells = bells
+        self.desktopNotifications = desktopNotifications
         _tab = State(initialValue: tab)
     }
 
@@ -75,7 +81,8 @@ struct SettingsView: View {
                 periodicChecksSection
             }
         case .notifications:
-            form { NotificationSettings(store: store, bells: bells) }
+            form { NotificationSettings(store: store, bells: bells,
+                                        desktopNotifications: desktopNotifications) }
         case .agents:
             form { agentsSection }
         case .remote:
@@ -282,6 +289,10 @@ struct SettingsView: View {
 struct NotificationSettings: View {
     @Bindable var store: ProjectStore
     let bells: BellNotifier
+    /// The `desktop-notifications` gate. Drawn on this tab because it is where
+    /// somebody looks when notifications are not arriving, and being turned off in
+    /// a Ghostty config file is one of the reasons they would not be.
+    let desktopNotifications: DesktopNotificationSetting
 
     /// Nil until the first read comes back, which is a state worth drawing: "not
     /// asked yet" and "we have not looked yet" are different things to say.
@@ -306,11 +317,13 @@ struct NotificationSettings: View {
     ///     decide five of the branches drawn here and a render test that could not
     ///     set them would cover one.
     init(store: ProjectStore, bells: BellNotifier,
+         desktopNotifications: DesktopNotificationSetting,
          permission: NotificationPermission? = nil,
          testResult: BellNotifier.TestResult? = nil,
          requestFailure: String? = nil) {
         _store = Bindable(wrappedValue: store)
         self.bells = bells
+        self.desktopNotifications = desktopNotifications
         _permission = State(initialValue: permission)
         _testResult = State(initialValue: testResult)
         _requestFailure = State(initialValue: requestFailure)
@@ -356,6 +369,31 @@ struct NotificationSettings: View {
                 .font(.caption).foregroundStyle(.secondary)
             Text("A Focus mode can hold banners back even when this says Allowed. Add Wietty to the Focus's allowed apps if you want them through.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+
+        Section("Desktop notifications from programs") {
+            Toggle("Let programs post notifications (OSC 9 and OSC 777)",
+                   isOn: Binding(get: { desktopNotifications.isEnabled },
+                                 set: { desktopNotifications.setEnabled($0) }))
+            if desktopNotifications.overridesUserConfig {
+                Label("Your own Ghostty config sets this to \(desktopNotifications.userConfigValue ? "on" : "off"). Wietty is overriding it.",
+                      systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let failure = desktopNotifications.writeFailure {
+                Label("Could not save that: \(failure)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red)
+            }
+            Text("Turned off, a program asking for a notification is answered by nothing: no banner, no 🔔, and no error either. It is libghostty that enforces this, before any of the settings above are consulted, so it is the first thing to check when notifications are not arriving.")
+                .font(.caption).foregroundStyle(.secondary)
+            if desktopNotifications.hasOverride {
+                HStack {
+                    Button("Use my Ghostty config") { desktopNotifications.clearOverride() }
+                    Spacer()
+                }
+                Text("Wietty writes this to \(desktopNotifications.fileURL.path), which it loads after your own Ghostty config so what is set here wins. Ghostty.app is not affected either way. Clearing it hands the decision back to your config.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
 
         Section("Test notification") {
@@ -407,7 +445,13 @@ struct NotificationSettings: View {
         // Read on the way in rather than once per app launch: permission can be
         // granted or revoked in System Settings while Wietty runs, and this tab is
         // the one place that would then be wrong about it.
-        .task { permission = await bells.permission() }
+        // Both are read on the way in rather than once per launch, and for the same
+        // reason: each can be changed outside this app while it runs. Permission in
+        // System Settings, and `desktop-notifications` in either config file.
+        .task {
+            permission = await bells.permission()
+            desktopNotifications.refresh()
+        }
     }
 
     /// The installed sounds, plus whatever is stored if it is not among them. A

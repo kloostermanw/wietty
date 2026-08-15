@@ -25,6 +25,7 @@ import WiettyShared
         return SettingsView(store: store, remoteConnections: connectionStore,
                             remoteWorkspaces: RemoteWorkspacesController(connections: connectionStore),
                             bells: BellNotifier(sink: FakeNotificationSink()),
+                            desktopNotifications: .fake(),
                             tab: tab)
     }
 

@@ -102,6 +102,7 @@ import WiettyShared
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: BellNotifier(sink: FakeNotificationSink()),
+            desktopNotifications: .fake(),
             selection: .workspaceSettings(workspace))
         #expect(ImageRenderer(content: pane.frame(width: 600, height: 800)).nsImage != nil)
     }

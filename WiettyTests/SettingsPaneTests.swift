@@ -29,6 +29,7 @@ import WiettyShared
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: notifier(),
+            desktopNotifications: setting(),
             selection: selection)
     }
 
@@ -37,6 +38,10 @@ import WiettyShared
     /// reason `NotificationSink` is a protocol.
     private func notifier() -> BellNotifier {
         BellNotifier(sink: FakeNotificationSink())
+    }
+
+    private func setting(overriding: Bool = false) -> DesktopNotificationSetting {
+        .fake(overriding: overriding)
     }
 
     private func sizeOffered<V: View>(_ view: V, _ size: NSSize) -> NSSize {
@@ -130,6 +135,7 @@ import WiettyShared
                 remoteConnections: connections,
                 remoteWorkspaces: RemoteWorkspacesController(connections: connections),
                 bells: notifier(),
+                desktopNotifications: setting(),
                 tab: tab)
             let renderer = ImageRenderer(content: view.frame(width: 600, height: 800))
             #expect(renderer.nsImage != nil, "\(tab.title) failed to render")
@@ -161,6 +167,7 @@ import WiettyShared
                 NotificationSettings(
                     store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
                     bells: notifier(),
+                    desktopNotifications: setting(),
                     permission: permission,
                     testResult: result,
                     requestFailure: failure)
@@ -169,6 +176,23 @@ import WiettyShared
             let renderer = ImageRenderer(content: view.frame(width: 600, height: 900))
             #expect(renderer.nsImage != nil, "\(String(describing: permission)) failed to render")
         }
+    }
+
+    /// The branch that explains the override draws. It only appears when Wietty's
+    /// file and the user's own Ghostty config disagree, which is a state no other
+    /// render test reaches, so without this the notice would first be seen by
+    /// somebody who had already been confused by the toggle.
+    @Test func theTabRendersTheOverrideNotice() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let setting = setting(overriding: true)
+        #expect(setting.overridesUserConfig)
+        let view = Form {
+            NotificationSettings(store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
+                                 bells: notifier(),
+                                 desktopNotifications: setting, permission: .granted)
+        }
+        .formStyle(.grouped)
+        #expect(ImageRenderer(content: view.frame(width: 600, height: 900)).nsImage != nil)
     }
 
     /// The preview button's failure is drawn, rather than leaving a button that makes
@@ -188,7 +212,8 @@ import WiettyShared
         let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
         store.bellSound = .named("SoundFromAnotherMac")
         let view = Form {
-            NotificationSettings(store: store, bells: notifier(), permission: .granted)
+            NotificationSettings(store: store, bells: notifier(),
+                                 desktopNotifications: setting(), permission: .granted)
         }
         .formStyle(.grouped)
         #expect(ImageRenderer(content: view.frame(width: 600, height: 900)).nsImage != nil)
@@ -214,6 +239,7 @@ import WiettyShared
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: notifier(),
+            desktopNotifications: setting(),
             tab: .remote)
         let renderer = ImageRenderer(content: view.frame(width: 600, height: 1200))
         #expect(renderer.nsImage != nil)

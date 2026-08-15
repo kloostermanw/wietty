@@ -120,6 +120,26 @@ protocol TerminalSurfaceHosting: AnyObject {
     /// user reads when something died, and `destroySurface` is reserved for the
     /// row actually being closed. The host frees nothing on this path either.
     var onCloseRequested: (@MainActor (_ id: String) -> Void)? { get set }
+
+    /// What libghostty resolved for `desktop-notifications`, both as it stands and
+    /// as it would stand without Wietty's own overlay
+    /// (`GhosttyOverrideFile`).
+    ///
+    /// Two values rather than one because the Settings toggle has to be able to say
+    /// which answer won. When they differ, the user's own Ghostty config asked for
+    /// something Wietty is deliberately overriding, and a toggle that showed only
+    /// the winner would look like it had ignored their config.
+    ///
+    /// Read from libghostty rather than from the file, because the file is one of
+    /// several inputs and only libghostty resolves them. `OSC 9` and `OSC 777` are
+    /// gated on this: false means a program asking for a notification is answered by
+    /// nothing at all, no matter what the rest of `docs/notifications.md` describes.
+    var desktopNotifications: (effective: Bool, userConfig: Bool) { get }
+
+    /// Rebuilds the configuration from disk and hands it to the app and every live
+    /// surface, so a setting changed in the Settings window takes effect on
+    /// terminals that are already open rather than on the next launch.
+    func reloadConfig()
 }
 
 /// A host with no libghostty behind it, for a launch where libghostty could not
@@ -146,4 +166,10 @@ final class InertSurfaceHost: TerminalSurfaceHosting {
     func view(id: String) -> NSView? { nil }
     func size(id: String) -> TerminalSize? { nil }
     func snapshot(id: String, maxLines: Int) -> ScreenSnapshot? { nil }
+    /// libghostty's own default, which is what a launch with no libghostty would
+    /// have resolved to. Reporting the default rather than false keeps the Settings
+    /// toggle from claiming notifications are turned off when the truth is that
+    /// there is no terminal at all to turn them off for.
+    var desktopNotifications: (effective: Bool, userConfig: Bool) { (true, true) }
+    func reloadConfig() {}
 }

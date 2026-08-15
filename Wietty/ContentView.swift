@@ -76,6 +76,7 @@ struct ContentView: View {
                                       remoteConnections: remoteConnections,
                                       remoteWorkspaces: remoteWorkspaces,
                                       bells: bells,
+                                      desktopNotifications: terminals.desktopNotifications,
                                       selection: paneSelection)
                 }
                 .frame(maxWidth: .infinity)

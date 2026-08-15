@@ -76,7 +76,25 @@ final class FakeSurfaceHost: TerminalSurfaceHosting {
                               cursorY: max(full.cursorY - dropped, 0))
     }
 
+    /// What this host claims libghostty resolved, and what it would have resolved
+    /// without Wietty's overlay. Settable so a test can put the two out of step,
+    /// which is the state the Settings toggle has to describe rather than hide.
+    var desktopNotifications: (effective: Bool, userConfig: Bool) = (true, true)
+    /// How many times the setting asked for the config to be re-read. A write that
+    /// does not reload leaves every open terminal on the old value, and nothing on
+    /// screen would say so.
+    private(set) var reloadCount = 0
+    /// What `desktopNotifications` becomes on the next reload, for the case the real
+    /// host has after its file was rewritten: a resolved value that changes because
+    /// the config underneath it did. Nil leaves the value alone.
+    var desktopNotificationsAfterReload: (effective: Bool, userConfig: Bool)?
+    func reloadConfig() {
+        reloadCount += 1
+        if let next = desktopNotificationsAfterReload { desktopNotifications = next }
+    }
+
     func emitTitle(_ id: String, _ title: String) { onTitle?(id, title) }
+
     func emitBell(_ id: String) { onBell?(id) }
     func emitNotification(_ id: String, title: String, body: String) {
         onDesktopNotification?(id, title, body)
@@ -84,5 +102,33 @@ final class FakeSurfaceHost: TerminalSurfaceHosting {
     func emitResize(_ id: String, _ size: TerminalSize) {
         sizes[id] = size
         onResized?(id, size)
+    }
+}
+
+extension DesktopNotificationSetting {
+    /// A setting over a fake host and a file under a fresh temporary directory.
+    ///
+    /// Every construction in the suite goes through this, for one reason that is not
+    /// convenience: the real `GhosttyOverrideFile` is the developer's own
+    /// `~/.config/wietty/ghostty.cfg`, and a test that built the setting with its
+    /// default would read it, while one that exercised the toggle would rewrite it.
+    ///
+    /// - Parameter overriding: makes the host report a value that disagrees with the
+    ///   user's own config, which is the state the Settings tab has to explain rather
+    ///   than hide.
+    @MainActor
+    static func fake(overriding: Bool = false) -> DesktopNotificationSetting {
+        let host = FakeSurfaceHost()
+        if overriding { host.desktopNotifications = (effective: false, userConfig: true) }
+        return DesktopNotificationSetting(host: host, file: .temporary())
+    }
+}
+
+extension GhosttyOverrideFile {
+    /// A file under a directory that does not exist yet, so a test covers the
+    /// creating-it path the real first write takes.
+    static func temporary() -> GhosttyOverrideFile {
+        GhosttyOverrideFile(url: FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString)/ghostty.cfg"))
     }
 }

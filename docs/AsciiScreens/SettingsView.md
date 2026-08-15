@@ -95,10 +95,14 @@ the whole window can get.
 
 ## Notifications
 
-Three sections (`NotificationSettings`, in `SettingsView.swift`): whether macOS
-lets this app post at all, a way to prove the whole path works, and which sound it
-makes. See
+Four sections (`NotificationSettings`, in `SettingsView.swift`): whether macOS lets
+this app post at all, whether libghostty lets a program ask for one, a way to prove
+the whole path works, and which sound it makes. See
 `../notifications.md` for what the app does with a bell and with an `OSC 9`.
+
+The order is the order the gates are passed. A notification a program asks for has
+to clear libghostty's `desktop-notifications` before anything in this app sees it,
+so the section that controls it sits above the test button rather than below.
 
 ```
 ┌─ pane ───────────────────────────────────────────┐
@@ -126,6 +130,25 @@ makes. See
 │    are waiting on your input. …                   │
 │    A Focus mode can hold banners back even when   │
 │    this says Allowed. …                           │
+│                                                    │
+│  Desktop notifications from programs              │
+│    Let programs post notifications        (  ●)   │
+│    (OSC 9 and OSC 777)                            │
+│    (only when Wietty's file and the user's own    │
+│     Ghostty config disagree:)                     │
+│    ⓘ Your own Ghostty config sets this to off.    │
+│    Wietty is overriding it.                       │
+│    (only after a write failed:)                   │
+│    ⚠ Could not save that: <reason>               │
+│    Turned off, a program asking for a             │
+│    notification is answered by nothing: no        │
+│    banner, no 🔔, and no error either. …          │
+│    (only while Wietty's file holds an override:)  │
+│    [ Use my Ghostty config ]                      │
+│    Wietty writes this to ~/.config/wietty/        │
+│    ghostty.cfg, which it loads after your own     │
+│    Ghostty config so what is set here wins.       │
+│    Ghostty.app is not affected either way. …      │
 │                                                    │
 │  Test notification                                │
 │    [ Send test notification ]                     │
@@ -288,6 +311,23 @@ Legend:
   Drawing only the unchanged state made the button look dead, which is how this
   was found. `BellNotifier.PermissionRequest` keeps that case apart from a
   denial, since only one of the two is a switch in System Settings.
+- `Let programs post notifications`: libghostty's `desktop-notifications`, read
+  through `ghostty_config_get` and written to `~/.config/wietty/ghostty.cfg`
+  (`DesktopNotificationSetting`, `GhosttyOverrideFile`). It is a config file rather
+  than a `UserDefaults` key because libghostty has no setter: the only way to change
+  a value is to hand it another file, and Wietty's is loaded after the user's own so
+  it wins. Writing is followed by `reloadConfig()`, so terminals already open take
+  the new value rather than the next launch's.
+- The toggle shows what libghostty resolved, not what Wietty wrote. The two differ
+  whenever the user's own Ghostty config has the last word, and a toggle reading its
+  own file would then disagree with the terminal it claims to describe.
+- `ⓘ Your own Ghostty config sets this to …` appears only when the resolved value
+  and the user's own config disagree, which is exactly when Wietty is overriding
+  them. Without it a switch quietly contradicting a file they wrote reads as Wietty
+  having ignored it.
+- `[ Use my Ghostty config ]` appears only while Wietty's file actually holds the
+  key, and removes the line rather than writing `true`: those are different, since
+  the point is to hand the decision back to a config that may well say `false`.
 - `[ Send test notification ]`: `BellNotifier.sendTest(sound:)`, which posts
   `BellNotification.test()` with the sound currently selected below. It reports
   what happened either way: `UNUserNotificationCenter` refuses to ask on behalf of a

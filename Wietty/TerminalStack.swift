@@ -19,6 +19,13 @@ struct TerminalStack {
     let monitor: any SessionMonitoring
     let ghostty: GhosttyStack
 
+    /// The Settings window's control over libghostty's `desktop-notifications`.
+    ///
+    /// Built here rather than reached for later because the host is private to
+    /// `GhosttyStack`, and this is the one place that has it: the composition root
+    /// is where the setting and the host it drives are introduced to each other.
+    let desktopNotifications: DesktopNotificationSetting
+
     /// What is wrong with the terminal, if anything. With nothing left to fall back
     /// to, this message is all a user whose libghostty failed to start ever gets,
     /// so it has to say what they can do about it.
@@ -49,6 +56,7 @@ struct TerminalStack {
         service = stack.service
         streamer = stack.hub
         monitor = stack.monitor
+        desktopNotifications = DesktopNotificationSetting(host: built.host)
         // Unconditional, because the sweep answers "is this socket abandoned" itself
         // rather than trusting its caller to be the only Wietty on the machine.
         stack.clearStaleSockets()
