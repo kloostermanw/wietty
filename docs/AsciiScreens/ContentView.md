@@ -192,10 +192,11 @@ absorbs every resize, and the width is a number the app owns and can persist.
 Three pieces, each with one job. `SidebarWidth` is the arithmetic (the 240 point
 sidebar floor, the 480 point pane floor, the 6 points the divider occupies, the
 320 point default, and the clamp), `SidebarDivider` is the hit area, the resize
-cursor and the drag, and `ProjectStore.sidebarWidth` is the persisted value under
-`wietty.sidebarWidth`. The live width while a drag is running is `@State` in
-`ContentView`, and the store is written once, on release, so one drag is one
-`UserDefaults` write rather than one per frame. That state starts nil and falls
+cursor and the drag, and `ProjectStore.sidebarWidth` is the persisted value, written
+to `~/.config/wietty/config` under `sidebar-width` (see settings-storage.md). The
+live width while a drag is running is `@State` in `ContentView`, and the store is
+written once, on release, so one drag is one file write rather than one per frame.
+That state starts nil and falls
 back to the store, which is what makes the first frame after a launch the stored
 width rather than the default.
 
