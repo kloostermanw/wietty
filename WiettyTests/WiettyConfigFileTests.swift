@@ -8,14 +8,26 @@ import Foundation
 @Suite struct WiettyConfigFileTests {
     private func file() -> WiettyConfigFile { .temporary() }
 
-    @Test func anAbsentFileReadsEmpty() {
-        #expect(file().read().isEmpty)
+    @Test func anAbsentFileReadsEmpty() throws {
+        #expect((try file().read()).isEmpty)
+    }
+
+    /// A present but unreadable file (here, bytes that are not valid UTF-8) throws
+    /// rather than reading as empty. The caller must be able to tell "no file" from
+    /// "broken file", because treating the second as the first would migrate or seed
+    /// over it and lose everything it held.
+    @Test func aPresentButUnreadableFileThrows() throws {
+        let file = file()
+        try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data([0xFF, 0xFE, 0x00]).write(to: file.url)
+        #expect(throws: (any Error).self) { try file.read() }
     }
 
     @Test func writtenPairsReadBack() throws {
         let file = file()
         try file.write([("remote-port", "8080"), ("bell-sound", "Submarine")])
-        let values = file.read()
+        let values = (try file.read())
         #expect(values["remote-port"] == "8080")
         #expect(values["bell-sound"] == "Submarine")
     }
@@ -33,7 +45,7 @@ import Foundation
     @Test func anEmptyValueReadsBackAsEmptyNotNil() throws {
         let file = file()
         try file.write([("agent.0.args", "")])
-        #expect(file.read()["agent.0.args"] == "")
+        #expect((try file.read())["agent.0.args"] == "")
     }
 
     /// The user's own comments and any key this write does not manage survive.
@@ -49,7 +61,7 @@ import Foundation
         let text = try String(contentsOf: file.url, encoding: .utf8)
         #expect(text.contains("# mine"))
         #expect(text.contains("my-own-key = keep"))
-        #expect(file.read()["remote-port"] == "8080")
+        #expect((try file.read())["remote-port"] == "8080")
     }
 
     /// A list that shrank drops its stale entries: rewriting one agent where the file
@@ -63,7 +75,7 @@ import Foundation
 
         try file.write([("agent.0.name", "A")], managedPrefixes: ["agent."])
 
-        let values = file.read()
+        let values = (try file.read())
         #expect(values["agent.0.name"] == "A")
         #expect(values["agent.1.name"] == nil)
         #expect(values["agent.2.name"] == nil)
@@ -78,7 +90,7 @@ import Foundation
 
         try file.write([("mcp-port", "3900")], managedKeys: ["remote-port", "mcp-port"])
 
-        let values = file.read()
+        let values = (try file.read())
         #expect(values["remote-port"] == nil)
         #expect(values["mcp-port"] == "3900")
     }
@@ -90,7 +102,30 @@ import Foundation
         try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
         try "remote-port = 1\nremote-port = 2\n".write(to: file.url, atomically: true, encoding: .utf8)
-        #expect(file.read()["remote-port"] == "2")
+        #expect((try file.read())["remote-port"] == "2")
+    }
+
+    /// A value with an embedded `=` survives: the parser splits on the first `=`, so
+    /// an agent argument or an approved command carrying one round-trips.
+    @Test func aValueContainingAnEqualsSignRoundTrips() throws {
+        let file = file()
+        try file.write([("agent.0.args", "--model=opus")], managedPrefixes: ["agent."])
+        #expect((try file.read())["agent.0.args"] == "--model=opus")
+    }
+
+    /// The format is one value per line, so a value with a newline cannot be
+    /// represented. Rather than write it and let the second line reappear as a stray
+    /// (or injected) key on the next read, the write is refused and the file is left
+    /// exactly as it was.
+    @Test func aValueWithANewlineIsRefusedRatherThanCorruptingTheFile() throws {
+        let file = file()
+        try file.write([("remote-port", "8080")], managedKeys: ["remote-port"])
+        let before = try String(contentsOf: file.url, encoding: .utf8)
+
+        #expect(throws: (any Error).self) {
+            try file.write([("agent.0.command", "echo hi\nrm -rf /")], managedPrefixes: ["agent."])
+        }
+        #expect(try String(contentsOf: file.url, encoding: .utf8) == before)
     }
 
     /// Repeated writes of the same content must not grow the file.

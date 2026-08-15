@@ -69,6 +69,24 @@ the way it watches `ghostty.cfg` and a workspace `wietty.json`.
 
 On the first launch after settings moved here, the file does not exist yet.
 `ProjectStore` then reads the old `UserDefaults` values, writes them to the file, and
-removes those old keys so nothing reads them again and the two cannot drift.
-Deleting the file resets these settings to their defaults on the next launch, which
-is the same "delete to reset" the `ghostty.cfg` override already had.
+removes those old keys so nothing reads them again and the two cannot drift. That
+last step only happens once the file has been written successfully, so a migration
+that could not be saved is retried on the next launch rather than losing the old
+values. Deleting the file resets these settings to their defaults on the next launch,
+which is the same "delete to reset" the `ghostty.cfg` override already had.
+
+If the file is present but cannot be read (a bad encoding, a half-written file, a
+permission problem), Wietty does not treat that as "no settings": it loads the
+defaults so the app still opens, leaves the file exactly as it is instead of
+overwriting it, and reports the problem. Fix or remove the file, then relaunch.
+
+## Editing the file by hand
+
+Two things to keep in mind when editing directly:
+
+- **One value per line.** A value cannot contain a line break; Wietty refuses to save
+  one rather than write a broken line.
+- **Keep list indices contiguous.** The indexed lists (`agent.N.*`, `workspace.N.*`,
+  and a workspace's `terminal.N.*`) are read in order and stop at the first missing
+  index. Deleting `agent.1` while keeping `agent.2` drops `agent.2` on the next read,
+  so renumber after removing an entry.

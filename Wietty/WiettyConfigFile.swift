@@ -25,10 +25,30 @@ struct WiettyConfigFile {
         self.url = url
     }
 
-    /// Every `key = value` pair in the file, last-wins for a repeated key. Empty for
-    /// a file that is absent or unreadable.
-    func read() -> [String: String] {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
+    enum WriteError: LocalizedError {
+        /// A value (or key) carried a newline, which the one-value-per-line format
+        /// cannot hold. Refused rather than written, so the second line does not
+        /// reappear as a stray or injected key on the next read.
+        case multilineValue(key: String)
+
+        var errorDescription: String? {
+            switch self {
+            case let .multilineValue(key):
+                return "A setting value contains a line break and cannot be saved (\(key))."
+            }
+        }
+    }
+
+    /// Every `key = value` pair in the file, last-wins for a repeated key.
+    ///
+    /// An absent file reads as empty, and that is not an error: it is the first launch
+    /// or a reset. A file that is present but cannot be read (wrong encoding, a partial
+    /// write, permissions) throws instead of reading as empty, because the two must not
+    /// be confused: treating an unreadable file as empty would let the caller migrate
+    /// or seed over it and lose everything it held. See `ProjectStore`'s init.
+    func read() throws -> [String: String] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        let text = try String(contentsOf: url, encoding: .utf8)
         var values: [String: String] = [:]
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             // Last wins, so a plain assignment over any earlier value is correct.
@@ -50,6 +70,11 @@ struct WiettyConfigFile {
     func write(_ pairs: [(key: String, value: String)],
                managedKeys: Set<String> = [],
                managedPrefixes: [String] = []) throws {
+        // Checked before any file is touched, so a value the format cannot hold fails
+        // the whole write rather than corrupting the file with a half-written line.
+        for pair in pairs where pair.key.containsLineBreak || pair.value.containsLineBreak {
+            throw WriteError.multilineValue(key: pair.key)
+        }
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         var lines = existing.isEmpty
             ? [] : existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
@@ -102,4 +127,8 @@ struct WiettyConfigFile {
         guard !key.isEmpty else { return nil }
         return (key, value)
     }
+}
+
+private extension String {
+    var containsLineBreak: Bool { contains("\n") || contains("\r") }
 }
