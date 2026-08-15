@@ -122,6 +122,10 @@ final class ProjectStore {
 
     private let defaults: UserDefaults
     private let configFile: WiettyConfigFile
+    /// False when the config file was present but could not be read at launch, so the
+    /// app must not write over it. Blocks `persistSettings` for the process's life;
+    /// the next launch that reads the file cleanly clears the condition.
+    private var settingsPersistable = true
     private let service: TerminalService
     private let gitProvider: GitInfoProviding
     let processes: ProcessSupervisor
@@ -140,8 +144,9 @@ final class ProjectStore {
     private let approvedCommandsKey = "wietty.approvedCommands"
 
     /// Every old `UserDefaults` key this store migrated out of, cleared once the
-    /// config file has been seeded so nothing reads them again. The remote token key
-    /// is deliberately absent: it is a secret and stays in `UserDefaults`.
+    /// config file has been seeded so nothing reads them again. The remote token is a
+    /// secret and is not managed here at all: `RemoteAccessToken` keeps it in
+    /// `UserDefaults`, so it is neither in this list nor ever written to the file.
     private var migratedDefaultsKeys: [String] {
         [storageKey, badgeKey, bellSoundKey, intervalsKey, remoteEnabledKey,
          mcpPortKey, remotePortKey, sidebarWidthKey, agentsKey, approvedCommandsKey]
@@ -335,14 +340,14 @@ final class ProjectStore {
     /// `UserDefaults` so it can be migrated into the config file. Nothing encodes it
     /// anymore; it is `Decodable`, not `Codable`.
     private struct StoredProject: Decodable {
-        var id: UUID
-        var bookmark: Data
-        var terminals: [TerminalRef]
-        var terminalSeq: Int
-        var claudeSeq: Int
-        var displayName: String?
-        var windowId: String?
-        var collapsed: Bool
+        let id: UUID
+        let bookmark: Data
+        let terminals: [TerminalRef]
+        let terminalSeq: Int
+        let claudeSeq: Int
+        let displayName: String?
+        let windowId: String?
+        let collapsed: Bool
 
         private enum CodingKeys: String, CodingKey {
             case id, bookmark, terminals, terminalSeq, claudeSeq, displayName, windowId, collapsed
@@ -411,10 +416,28 @@ final class ProjectStore {
         // The file is the source of truth once it exists. Its absence means the first
         // launch since settings moved here (or a fresh install, or the user deleted
         // it), and only then are the old `UserDefaults` keys read, to migrate them.
+        //
+        // A read that throws is a file that is present but unreadable (bad encoding, a
+        // partial write, a permission change). It is treated as neither of those: the
+        // settings load as their defaults so the app still opens, but nothing is
+        // migrated over it and nothing is written back (`settingsPersistable` stays
+        // false), so a corrupt or half-written file is left for the user to fix rather
+        // than silently overwritten with defaults, taking every workspace with it.
         let fileExisted = FileManager.default.fileExists(atPath: configFile.url.path)
-        let cfg = configFile.read()
+        let cfg: [String: String]
+        let readError: Error?
+        do {
+            cfg = try configFile.read()
+            readError = nil
+        } catch {
+            cfg = [:]
+            readError = error
+        }
+        // Read from the file (empty means defaults) whenever there is a file, readable
+        // or not; migrate from `UserDefaults` only when there is genuinely no file.
+        let migrating = !fileExisted && readError == nil
 
-        if fileExisted {
+        if !migrating {
             self.showWorkspaceBadge = cfg[SettingsKeys.showWorkspaceBadge] == "true"
             self.bellSound = BellSound(stored: cfg[SettingsKeys.bellSound] ?? "")
             self.checkIntervals = Self.intervals(from: cfg)
@@ -456,14 +479,24 @@ final class ProjectStore {
         // Loads workspaces (from the file, or by migrating the old bookmarks) and
         // reconciles every one that has a `wietty.json`, which needs the approvals
         // read just above.
-        load(cfg: cfg, migrating: !fileExisted)
+        load(cfg: cfg, migrating: migrating)
 
-        // Seed the file from the migrated values on the first launch, then drop the
-        // old keys so nothing reads them again. Done after `load()` so the seed write
-        // includes the workspaces it just migrated.
-        if !fileExisted {
-            persistSettings()
-            for key in migratedDefaultsKeys { defaults.removeObject(forKey: key) }
+        if let readError {
+            // Present but unreadable: refuse to write until the next launch reads it
+            // cleanly, and say so. `lastError` is the store's usual channel and is
+            // shown as an alert by `ContentView`.
+            settingsPersistable = false
+            lastError = "Could not read \(configFile.url.path): \(readError.localizedDescription). "
+                + "The file was left untouched; fix or remove it, then relaunch."
+        } else if migrating {
+            // Seed the file from the migrated values on the first launch, then drop the
+            // old keys so nothing reads them again. Done after `load()` so the seed
+            // write includes the workspaces it just migrated. The keys are removed only
+            // if that write succeeded: a failed seed must stay repeatable, not destroy
+            // the only remaining copy.
+            if persistSettings() {
+                for key in migratedDefaultsKeys { defaults.removeObject(forKey: key) }
+            }
         }
     }
 
@@ -1674,7 +1707,13 @@ final class ProjectStore {
     ///
     /// Reported on failure rather than dropped: silence would leave the file and the
     /// screen disagreeing, with the change the user just made gone at the next launch.
-    private func persistSettings() {
+    /// Returns whether the write happened, which the first-launch migration uses to
+    /// decide whether it is safe to drop the old `UserDefaults` keys.
+    @discardableResult
+    private func persistSettings() -> Bool {
+        // A launch that could not read the file does not write one either, so a
+        // corrupt or half-written file is not overwritten with defaults.
+        guard settingsPersistable else { return false }
         var pairs: [(key: String, value: String)] = [
             (SettingsKeys.showWorkspaceBadge, showWorkspaceBadge ? "true" : "false"),
             (SettingsKeys.bellSound, bellSound.stored),
@@ -1704,8 +1743,10 @@ final class ProjectStore {
         do {
             try configFile.write(pairs, managedKeys: SettingsKeys.scalars,
                                  managedPrefixes: SettingsKeys.prefixes)
+            return true
         } catch {
             lastError = "Could not save settings: \(error.localizedDescription)"
+            return false
         }
     }
 
