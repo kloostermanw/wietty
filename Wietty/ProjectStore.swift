@@ -51,6 +51,18 @@ final class ProjectStore {
     /// row's attention flag on rather than on every bell. A program ringing in a
     /// loop is then one event, and visiting the row re-arms it.
     var onBell: ((Project, TerminalRef) -> Void)?
+    /// Called for every desktop notification a process asks for on a tracked row,
+    /// including the second one on a row that is already flagged.
+    ///
+    /// Deliberately not the once-per-flag rule `onBell` uses. That rule exists
+    /// because a shell rings the bell for ambiguous tab completion, so a bell is
+    /// ambiguous by nature and a run of them says nothing new. An `OSC 9` is a
+    /// program choosing to send words, and an agent that says "waiting for input"
+    /// and then "build failed" has said two things; suppressing the second because
+    /// the row had not been visited would lose the one that matters. Nothing stacks
+    /// as a result: the identifier is per terminal, so the newer banner replaces the
+    /// older one.
+    var onNotification: ((Project, TerminalRef, _ title: String, _ body: String) -> Void)?
     /// Called with the row ids whose attention flag has just been cleared, so a
     /// notification about a bell that has been dealt with can be taken back.
     var onAttentionCleared: ((Set<UUID>) -> Void)?
@@ -74,6 +86,23 @@ final class ProjectStore {
     /// the "config changed" affordance on the card.
     private(set) var configChangedOnDisk: Set<UUID> = []
 
+    /// The shell lines from each workspace's config file the user has agreed to run.
+    ///
+    /// Kept per workspace rather than globally, because agreeing to a line in a
+    /// folder you trust is not agreeing to it everywhere. Lines rather than a hash of
+    /// the file, so removing a row or renaming the workspace does not ask again: only
+    /// a line nobody has seen can run something new. See `ConfigTrust`.
+    private(set) var approvedCommands: [UUID: Set<String>] = [:] {
+        didSet {
+            guard approvedCommands != oldValue else { return }
+            persistSettings()
+        }
+    }
+
+    /// The file waiting to be agreed to, and what it wants to run. Nil when there is
+    /// nothing to ask. Shown by `ContentView`.
+    var pendingConfigApproval: ConfigApprovalRequest?
+
     private var watchers: [UUID: ConfigWatcher] = [:]
 
     /// One `.git` watcher per workspace, giving snappy local git feedback
@@ -92,17 +121,36 @@ final class ProjectStore {
     }
 
     private let defaults: UserDefaults
+    private let configFile: WiettyConfigFile
+    /// False when the config file was present but could not be read at launch, so the
+    /// app must not write over it. Blocks `persistSettings` for the process's life;
+    /// the next launch that reads the file cleanly clears the condition.
+    private var settingsPersistable = true
     private let service: TerminalService
     private let gitProvider: GitInfoProviding
     let processes: ProcessSupervisor
     let testSupervisor: TestSupervisor
+    // The old `UserDefaults` keys, read once during migration and then removed. Their
+    // values now live in `~/.config/wietty/config`; see `SettingsKeys`.
     private let storageKey = "wietty.projects.bookmarks"
     private let badgeKey = "wietty.showWorkspaceBadge"
+    private let bellSoundKey = "wietty.bellSound"
     private let intervalsKey = "wietty.checkIntervals"
     private let remoteEnabledKey = "wietty.remote.enabled"
     private let mcpPortKey = "wietty.mcpPort"
     private let remotePortKey = "wietty.remotePort"
     private let sidebarWidthKey = "wietty.sidebarWidth"
+    private let agentsKey = "wietty.agents"
+    private let approvedCommandsKey = "wietty.approvedCommands"
+
+    /// Every old `UserDefaults` key this store migrated out of, cleared once the
+    /// config file has been seeded so nothing reads them again. The remote token is a
+    /// secret and is not managed here at all: `RemoteAccessToken` keeps it in
+    /// `UserDefaults`, so it is neither in this list nor ever written to the file.
+    private var migratedDefaultsKeys: [String] {
+        [storageKey, badgeKey, bellSoundKey, intervalsKey, remoteEnabledKey,
+         mcpPortKey, remotePortKey, sidebarWidthKey, agentsKey, approvedCommandsKey]
+    }
 
     /// Guards `clearDeadSessions()` against running twice in one process.
     ///
@@ -148,7 +196,16 @@ final class ProjectStore {
     var showWorkspaceBadge: Bool {
         didSet {
             guard showWorkspaceBadge != oldValue else { return }
-            defaults.set(showWorkspaceBadge, forKey: badgeKey)
+            persistSettings()
+        }
+    }
+
+    /// The sound every notification a terminal posts plays. Persisted, and applied
+    /// to the next notification rather than needing a restart.
+    var bellSound: BellSound {
+        didSet {
+            guard bellSound != oldValue else { return }
+            persistSettings()
         }
     }
 
@@ -159,7 +216,7 @@ final class ProjectStore {
             let clamped = checkIntervals.clamped()
             if clamped != checkIntervals { checkIntervals = clamped; return } // re-enter with clamped value
             guard checkIntervals != oldValue else { return }
-            defaults.set([checkIntervals.fast, checkIntervals.normal, checkIntervals.slow], forKey: intervalsKey)
+            persistSettings()
         }
     }
 
@@ -168,7 +225,7 @@ final class ProjectStore {
     var remoteEnabled: Bool {
         didSet {
             guard remoteEnabled != oldValue else { return }
-            defaults.set(remoteEnabled, forKey: remoteEnabledKey)
+            persistSettings()
         }
     }
 
@@ -179,7 +236,7 @@ final class ProjectStore {
             let clamped = Self.clampPort(mcpPort)
             if clamped != mcpPort { mcpPort = clamped; return }
             guard mcpPort != oldValue else { return }
-            defaults.set(mcpPort, forKey: mcpPortKey)
+            persistSettings()
         }
     }
 
@@ -190,7 +247,7 @@ final class ProjectStore {
             let clamped = Self.clampPort(remotePort)
             if clamped != remotePort { remotePort = clamped; return }
             guard remotePort != oldValue else { return }
-            defaults.set(remotePort, forKey: remotePortKey)
+            persistSettings()
         }
     }
 
@@ -212,8 +269,56 @@ final class ProjectStore {
             let floored = max(sidebarWidth, SidebarWidth.minimum)
             if floored != sidebarWidth { sidebarWidth = floored; return }
             guard sidebarWidth != oldValue else { return }
-            defaults.set(sidebarWidth, forKey: sidebarWidthKey)
+            persistSettings()
         }
+    }
+
+    /// The agents a workspace's context menu offers, in menu order. A preference
+    /// like the ports and the bell sound: persisted, and edited in the Agents tab.
+    ///
+    /// Seeded with Claude on a fresh install and never reseeded after that, so
+    /// deleting the last entry sticks. See `loadAgents`.
+    var agents: [AgentDefinition] {
+        didSet {
+            guard agents != oldValue else { return }
+            // Reported rather than dropped on failure (see `persistSettings`): silence
+            // leaves the list on screen and the list on disk disagreeing, with the
+            // agent the user just added present in the menu now and gone next launch.
+            persistSettings()
+        }
+    }
+
+    /// Appends an agent to the end of the menu.
+    func addAgent(_ agent: AgentDefinition) {
+        agents.append(agent)
+    }
+
+    /// Replaces the agent with the same id, and does nothing when there is none:
+    /// the edit form is on screen while the list can change under it, and an edit
+    /// of a deleted agent must not put it back.
+    func updateAgent(_ agent: AgentDefinition) {
+        guard let index = agents.firstIndex(where: { $0.id == agent.id }) else { return }
+        agents[index] = agent
+    }
+
+    func removeAgent(id: UUID) {
+        agents.removeAll { $0.id == id }
+    }
+
+    /// The stored list, or the seed when nothing has ever been stored.
+    ///
+    /// The distinction matters: seeding on an empty list rather than on an absent
+    /// key would put Claude back on the launch after the last entry was deleted,
+    /// which reads as a delete that did not work. An unreadable list is stored data
+    /// too, so it is not the seed either: reseeding there hands back an agent the
+    /// user did not ask for and the next edit writes it over what was stored.
+    ///
+    /// Entry by entry, so one bad entry costs that entry rather than the list, and
+    /// only entries that could actually start something are kept.
+    private static func loadAgents(_ defaults: UserDefaults, key: String) -> [AgentDefinition] {
+        guard let data = defaults.data(forKey: key) else { return [.claude] }
+        let stored = (try? JSONDecoder().decode([FailableAgentDefinition].self, from: data)) ?? []
+        return stored.compactMap(\.agent).filter(\.isValid)
     }
 
     /// The shared secret required on every remote request and socket.
@@ -231,27 +336,18 @@ final class ProjectStore {
         min(max(port, portRange.lowerBound), portRange.upperBound)
     }
 
-    private struct StoredProject: Codable {
-        var id: UUID
-        var bookmark: Data
-        var terminals: [TerminalRef]
-        var terminalSeq: Int
-        var claudeSeq: Int
-        var displayName: String?
-        var windowId: String?
-        var collapsed: Bool
-
-        init(id: UUID, bookmark: Data, terminals: [TerminalRef], terminalSeq: Int, claudeSeq: Int,
-             displayName: String?, windowId: String?, collapsed: Bool) {
-            self.id = id
-            self.bookmark = bookmark
-            self.terminals = terminals
-            self.terminalSeq = terminalSeq
-            self.claudeSeq = claudeSeq
-            self.displayName = displayName
-            self.windowId = windowId
-            self.collapsed = collapsed
-        }
+    /// The old workspace record, kept only to decode what earlier builds wrote to
+    /// `UserDefaults` so it can be migrated into the config file. Nothing encodes it
+    /// anymore; it is `Decodable`, not `Codable`.
+    private struct StoredProject: Decodable {
+        let id: UUID
+        let bookmark: Data
+        let terminals: [TerminalRef]
+        let terminalSeq: Int
+        let claudeSeq: Int
+        let displayName: String?
+        let windowId: String?
+        let collapsed: Bool
 
         private enum CodingKeys: String, CodingKey {
             case id, bookmark, terminals, terminalSeq, claudeSeq, displayName, windowId, collapsed
@@ -274,8 +370,33 @@ final class ProjectStore {
         }
     }
 
+    /// Where the user-facing settings live now, keyed to `defaults` so isolation
+    /// carries over. Production hands the standard defaults and gets the real file at
+    /// `~/.config/wietty/config`; a test that isolates its defaults gets a config file
+    /// isolated the same way, so two stores built with one defaults share one file
+    /// (settings-round-trip tests rely on that), and two built with different defaults
+    /// do not.
+    ///
+    /// The isolation directory is stamped into `defaults` on first use, not derived
+    /// from the instance's address: a freed `UserDefaults` can be reallocated at the
+    /// same address, so an address-derived path would let one test read the file
+    /// another test left behind. A stored id is unique per suite and stable for as
+    /// long as that suite exists.
+    private static func defaultConfig(for defaults: UserDefaults) -> WiettyConfigFile {
+        guard defaults !== UserDefaults.standard else { return WiettyConfigFile() }
+        let markerKey = "wietty.isolatedConfigDir"
+        let id = defaults.string(forKey: markerKey) ?? {
+            let fresh = UUID().uuidString
+            defaults.set(fresh, forKey: markerKey)
+            return fresh
+        }()
+        return WiettyConfigFile(url: FileManager.default.temporaryDirectory
+            .appendingPathComponent("wietty-settings-\(id)/config"))
+    }
+
     init(
         defaults: UserDefaults = .standard,
+        config: WiettyConfigFile? = nil,
         service: TerminalService,
         jobEvents: @escaping @MainActor () -> [MonitorEvent] = { [] },
         gitProvider: GitInfoProviding = GitInfoService(),
@@ -283,30 +404,152 @@ final class ProjectStore {
         testSupervisor: TestSupervisor = TestSupervisor()
     ) {
         self.defaults = defaults
+        self.configFile = config ?? Self.defaultConfig(for: defaults)
         self.service = service
         self.jobEvents = jobEvents
         self.gitProvider = gitProvider
         self.processes = processSupervisor
         self.testSupervisor = testSupervisor
-        self.showWorkspaceBadge = defaults.bool(forKey: badgeKey)
-        if let arr = defaults.array(forKey: intervalsKey) as? [Int], arr.count == 3 {
-            self.checkIntervals = CheckIntervals(fast: arr[0], normal: arr[1], slow: arr[2]).clamped()
-        } else {
-            self.checkIntervals = .default
-        }
-        self.remoteEnabled = defaults.bool(forKey: remoteEnabledKey)
-        let storedMCPPort = defaults.integer(forKey: mcpPortKey)
-        self.mcpPort = storedMCPPort == 0 ? MCPServerHost.defaultPort : Self.clampPort(storedMCPPort)
-        let storedRemotePort = defaults.integer(forKey: remotePortKey)
-        self.remotePort = storedRemotePort == 0 ? RemoteServer.defaultPort : Self.clampPort(storedRemotePort)
-        // `double(forKey:)` answers 0 for an absent key, which is also an
-        // impossible width, so the two cases collapse into the same fallback.
-        let storedSidebarWidth = defaults.double(forKey: sidebarWidthKey)
-        self.sidebarWidth = storedSidebarWidth == 0
-            ? SidebarWidth.default
-            : max(storedSidebarWidth, SidebarWidth.minimum)
+        // The secret stays in `UserDefaults`; the config file never holds it.
         self.remoteToken = RemoteAccessToken(defaults: defaults)
-        load()
+
+        // The file is the source of truth once it exists. Its absence means the first
+        // launch since settings moved here (or a fresh install, or the user deleted
+        // it), and only then are the old `UserDefaults` keys read, to migrate them.
+        //
+        // A read that throws is a file that is present but unreadable (bad encoding, a
+        // partial write, a permission change). It is treated as neither of those: the
+        // settings load as their defaults so the app still opens, but nothing is
+        // migrated over it and nothing is written back (`settingsPersistable` stays
+        // false), so a corrupt or half-written file is left for the user to fix rather
+        // than silently overwritten with defaults, taking every workspace with it.
+        let fileExisted = FileManager.default.fileExists(atPath: configFile.url.path)
+        let cfg: [String: String]
+        let readError: Error?
+        do {
+            cfg = try configFile.read()
+            readError = nil
+        } catch {
+            cfg = [:]
+            readError = error
+        }
+        // Read from the file (empty means defaults) whenever there is a file, readable
+        // or not; migrate from `UserDefaults` only when there is genuinely no file.
+        let migrating = !fileExisted && readError == nil
+
+        if !migrating {
+            self.showWorkspaceBadge = cfg[SettingsKeys.showWorkspaceBadge] == "true"
+            self.bellSound = BellSound(stored: cfg[SettingsKeys.bellSound] ?? "")
+            self.checkIntervals = Self.intervals(from: cfg)
+            self.remoteEnabled = cfg[SettingsKeys.remoteEnabled] == "true"
+            self.mcpPort = Self.port(cfg[SettingsKeys.mcpPort], default: MCPServerHost.defaultPort)
+            self.remotePort = Self.port(cfg[SettingsKeys.remotePort], default: RemoteServer.defaultPort)
+            self.sidebarWidth = Self.width(cfg[SettingsKeys.sidebarWidth])
+            self.agents = Self.agents(from: cfg)
+            self.approvedCommands = Self.approvals(from: cfg)
+        } else {
+            self.showWorkspaceBadge = defaults.bool(forKey: badgeKey)
+            // No stored value reads as "", which `BellSound` maps to the system
+            // default: the sound this app played before there was a setting.
+            self.bellSound = BellSound(stored: defaults.string(forKey: bellSoundKey) ?? "")
+            if let arr = defaults.array(forKey: intervalsKey) as? [Int], arr.count == 3 {
+                self.checkIntervals = CheckIntervals(fast: arr[0], normal: arr[1], slow: arr[2]).clamped()
+            } else {
+                self.checkIntervals = .default
+            }
+            self.remoteEnabled = defaults.bool(forKey: remoteEnabledKey)
+            let storedMCPPort = defaults.integer(forKey: mcpPortKey)
+            self.mcpPort = storedMCPPort == 0 ? MCPServerHost.defaultPort : Self.clampPort(storedMCPPort)
+            let storedRemotePort = defaults.integer(forKey: remotePortKey)
+            self.remotePort = storedRemotePort == 0 ? RemoteServer.defaultPort : Self.clampPort(storedRemotePort)
+            // `double(forKey:)` answers 0 for an absent key, which is also an
+            // impossible width, so the two cases collapse into the same fallback.
+            let storedSidebarWidth = defaults.double(forKey: sidebarWidthKey)
+            self.sidebarWidth = storedSidebarWidth == 0
+                ? SidebarWidth.default
+                : max(storedSidebarWidth, SidebarWidth.minimum)
+            self.agents = Self.loadAgents(defaults, key: agentsKey)
+            let storedApprovals = defaults.dictionary(forKey: approvedCommandsKey) as? [String: [String]] ?? [:]
+            self.approvedCommands = storedApprovals.reduce(into: [UUID: Set<String>]()) {
+                guard let id = UUID(uuidString: $1.key) else { return }
+                $0[id] = Set($1.value)
+            }
+        }
+
+        // Loads workspaces (from the file, or by migrating the old bookmarks) and
+        // reconciles every one that has a `wietty.json`, which needs the approvals
+        // read just above.
+        load(cfg: cfg, migrating: migrating)
+
+        if let readError {
+            // Present but unreadable: refuse to write until the next launch reads it
+            // cleanly, and say so. `lastError` is the store's usual channel and is
+            // shown as an alert by `ContentView`.
+            settingsPersistable = false
+            lastError = "Could not read \(configFile.url.path): \(readError.localizedDescription). "
+                + "The file was left untouched; fix or remove it, then relaunch."
+        } else if migrating {
+            // Seed the file from the migrated values on the first launch, then drop the
+            // old keys so nothing reads them again. Done after `load()` so the seed
+            // write includes the workspaces it just migrated. The keys are removed only
+            // if that write succeeded: a failed seed must stay repeatable, not destroy
+            // the only remaining copy.
+            if persistSettings() {
+                for key in migratedDefaultsKeys { defaults.removeObject(forKey: key) }
+            }
+        }
+    }
+
+    // MARK: - Reading settings from the config file
+
+    private static func intervals(from cfg: [String: String]) -> CheckIntervals {
+        guard let f = cfg[SettingsKeys.checkIntervalFast].flatMap(Int.init),
+              let n = cfg[SettingsKeys.checkIntervalNormal].flatMap(Int.init),
+              let s = cfg[SettingsKeys.checkIntervalSlow].flatMap(Int.init) else { return .default }
+        return CheckIntervals(fast: f, normal: n, slow: s).clamped()
+    }
+
+    private static func port(_ value: String?, default fallback: Int) -> Int {
+        guard let value, let port = Int(value), port != 0 else { return fallback }
+        return clampPort(port)
+    }
+
+    private static func width(_ value: String?) -> Double {
+        guard let value, let width = Double(value), width != 0 else { return SidebarWidth.default }
+        return max(width, SidebarWidth.minimum)
+    }
+
+    /// The `agent.N.*` entries, in index order, keeping only the ones that could
+    /// actually start something (`isValid`). No seed here: a file that exists is a
+    /// full snapshot, so no agents means the list is empty on purpose. Seeding only
+    /// happens when migrating, via `loadAgents`.
+    private static func agents(from cfg: [String: String]) -> [AgentDefinition] {
+        var result: [AgentDefinition] = []
+        var index = 0
+        while let name = cfg["\(SettingsKeys.agentPrefix)\(index).name"] {
+            let agent = AgentDefinition(
+                name: name,
+                command: cfg["\(SettingsKeys.agentPrefix)\(index).command"] ?? "",
+                defaultArguments: cfg["\(SettingsKeys.agentPrefix)\(index).args"] ?? ""
+            )
+            if agent.isValid { result.append(agent) }
+            index += 1
+        }
+        return result
+    }
+
+    /// The `approved.<uuid>.N` entries, grouped back by workspace id. The key after
+    /// the prefix is `<uuid>.<n>`, and a uuid has no dots, so the last dot splits the
+    /// index off.
+    private static func approvals(from cfg: [String: String]) -> [UUID: Set<String>] {
+        var result: [UUID: Set<String>] = [:]
+        for (key, value) in cfg where key.hasPrefix(SettingsKeys.approvedPrefix) {
+            let rest = key.dropFirst(SettingsKeys.approvedPrefix.count)
+            guard let dot = rest.lastIndex(of: "."),
+                  let id = UUID(uuidString: String(rest[..<dot])) else { continue }
+            result[id, default: []].insert(value)
+        }
+        return result
     }
 
     /// Registers a new subscriber for the coalesced workspace change signal. The
@@ -420,11 +663,25 @@ final class ProjectStore {
     }
 
     func openTerminal(for project: Project) async {
-        await openSession(for: project, command: nil, kind: .terminal)
+        await openSession(for: project, kind: .terminal)
     }
 
     func openClaude(for project: Project) async {
-        await openSession(for: project, command: "claude", kind: .claude)
+        await openSession(for: project, kind: .claude)
+    }
+
+    /// Opens a row for one of the configured agents.
+    ///
+    /// An agent row in every other respect: same kind, same numbering, same glyph.
+    /// What it carries of its own is the line to type, because that is the one thing
+    /// the kind cannot answer once there is more than one agent.
+    ///
+    /// - Parameter arguments: what "Add Agent with args" collected, or nil for a
+    ///   plain "Add Agent", which uses the agent's defaults.
+    func openAgent(_ agent: AgentDefinition, arguments: String? = nil, for project: Project) async {
+        await openSession(for: project, kind: .claude,
+                          agent: (name: agent.displayName,
+                                  line: agent.launchCommand(arguments: arguments)))
     }
 
     /// The one way a row is ever started: a plain shell, with the row's command
@@ -444,20 +701,31 @@ final class ProjectStore {
     /// it, leaving a dead surface; a shell outlives its command, so the row falls
     /// back to a prompt and can be used or restarted.
     ///
-    /// The command is derived from the kind here rather than passed in, so no
-    /// caller can hand one to `open` again.
+    /// The line is the row's own or the kind's, never a caller's, so no caller can
+    /// hand one to `open` again.
+    ///
+    /// - Parameter command: the row's stored line (`TerminalRef.command`), or nil for
+    ///   a row that runs whatever its kind runs.
     private func openShell(folder: URL, existingWindowId: String?, badge: String?,
-                           kind: TerminalKind) async throws -> TerminalHandle {
+                           kind: TerminalKind, command: String? = nil) async throws -> TerminalHandle {
         let handle = try await service.open(folder: folder, existingWindowId: existingWindowId,
                                             command: nil, badge: badge)
-        if let command = Self.command(for: kind) {
-            try await service.send(sessionId: handle.sessionId, text: command + "\n")
+        if let line = command ?? Self.command(for: kind) {
+            try await service.send(sessionId: handle.sessionId, text: line + "\n")
         }
         return handle
     }
 
+    /// What a row types into its shell: its own line if it has one, else whatever
+    /// its kind runs.
+    static func command(for ref: TerminalRef) -> String? {
+        ref.command ?? command(for: ref.kind)
+    }
+
     /// What a row of this kind types into its shell, and nil for a plain terminal,
-    /// whose shell is the terminal.
+    /// whose shell is the terminal. Claude rather than an agent from the list: a row
+    /// with no line of its own predates the list, or came from a `wietty.json`, and
+    /// both of those are Claude rows.
     static func command(for kind: TerminalKind) -> String? {
         switch kind {
         case .terminal: return nil
@@ -465,9 +733,10 @@ final class ProjectStore {
         }
     }
 
-    private func openSession(for project: Project, command: String?, kind: TerminalKind) async {
+    private func openSession(for project: Project, kind: TerminalKind,
+                             agent: (name: String, line: String)? = nil) async {
         do {
-            _ = try await openSessionThrowing(for: project, command: command, kind: kind)
+            _ = try await openSessionThrowing(for: project, kind: kind, agent: agent)
         } catch {
             lastError = (error as? TerminalError)?.errorDescription
                 ?? (error as? StoreError)?.errorDescription
@@ -478,8 +747,13 @@ final class ProjectStore {
     /// Opens a session and returns the new terminal ref, propagating failures
     /// instead of routing them to `lastError`. The UI paths use
     /// `openSession`; the MCP router uses this.
+    ///
+    /// - Parameter agent: the entry from the agent list this row is for, if it came
+    ///   from one: its name, which the label is built from, and the line it types.
+    ///   Nil for a plain terminal and for the hardcoded Claude row.
     @discardableResult
-    func openSessionThrowing(for project: Project, command: String?, kind: TerminalKind) async throws -> TerminalRef {
+    func openSessionThrowing(for project: Project, kind: TerminalKind,
+                             agent: (name: String, line: String)? = nil) async throws -> TerminalRef {
         guard let preIndex = projects.firstIndex(where: { $0.id == project.id }) else {
             throw StoreError.unknownProject
         }
@@ -489,7 +763,7 @@ final class ProjectStore {
         let handle: TerminalHandle
         do {
             handle = try await openShell(folder: folder, existingWindowId: existingWindowId,
-                                          badge: badge, kind: kind)
+                                          badge: badge, kind: kind, command: agent?.line)
         } catch {
             throw StoreError.terminal((error as? TerminalError)?.errorDescription ?? error.localizedDescription)
         }
@@ -502,11 +776,14 @@ final class ProjectStore {
             projects[index].terminalSeq += 1
             label = "Terminal \(projects[index].terminalSeq)"
         case .claude:
+            // One counter for every agent, so two agents in a workspace are numbered
+            // 1 and 2 rather than both 1. The name in front is what tells them apart.
             projects[index].claudeSeq += 1
-            label = "Claude \(projects[index].claudeSeq)"
+            label = "\(agent?.name ?? "Claude") \(projects[index].claudeSeq)"
         }
         recordWorkspaceId(handle.windowId, at: index, openedWith: existingWindowId)
-        let ref = TerminalRef(label: label, sessionId: handle.sessionId, kind: kind)
+        let ref = TerminalRef(label: label, sessionId: handle.sessionId, kind: kind,
+                              command: agent?.line)
         projects[index].terminals.append(ref)
         save()
         emitConfig(for: projects[index].id)
@@ -545,11 +822,29 @@ final class ProjectStore {
         emitConfig(for: projects[np].id)
     }
 
+    /// The window's entry point to activation, reporting rather than throwing.
+    ///
+    /// The same split `restart`/`restartTerminal` has, for the same reason: a click has
+    /// nobody to answer, so it reports into `lastError` and the alert shows it, while
+    /// the remote server turns the throw into a status for the viewer that asked.
     func activate(_ ref: TerminalRef, in project: Project) async {
+        do {
+            try await activateThrowing(ref, in: project)
+        } catch {
+            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    func activateThrowing(_ ref: TerminalRef, in project: Project) async throws {
         guard let prePIndex = projects.firstIndex(where: { $0.id == project.id }),
               let preTIndex = projects[prePIndex].terminals.firstIndex(where: { $0.id == ref.id }) else { return }
         let sessionId = projects[prePIndex].terminals[preTIndex].sessionId
         let kind = projects[prePIndex].terminals[preTIndex].kind
+        // The row's own line, so a reopen or a restart types what this row runs
+        // rather than what its kind runs. Read from the store rather than from the
+        // `ref` argument, which is a copy the caller may have been holding for a
+        // while.
+        let command = Self.command(for: projects[prePIndex].terminals[preTIndex])
         let folder = projects[prePIndex].url
         let existingWindowId = settleWorkspaceId(at: prePIndex)
         let badge = showWorkspaceBadge ? projects[prePIndex].name : nil
@@ -568,8 +863,9 @@ final class ProjectStore {
                 // `jobKnown` gates this: an unanswered job query is not evidence
                 // the agent stopped, and acting on it types `claude` into a
                 // running agent, which submits it as a prompt.
-                if kind == .claude, result.jobKnown, !claudeIsRunning(jobName: result.jobName) {
-                    try await service.send(sessionId: sessionId, text: "claude\n")
+                if kind == .claude, let command, result.jobKnown,
+                   !claudeIsRunning(jobName: result.jobName) {
+                    try await service.send(sessionId: sessionId, text: command + "\n")
                 }
             } else {
                 // Whatever the service still holds under the old id goes first.
@@ -581,7 +877,7 @@ final class ProjectStore {
                 // NSView on every revival.
                 if !sessionId.isEmpty { await service.discard(sessionId: sessionId) }
                 let handle = try await openShell(folder: folder, existingWindowId: existingWindowId,
-                                                  badge: badge, kind: kind)
+                                                  badge: badge, kind: kind, command: command)
                 guard let pIndex = projects.firstIndex(where: { $0.id == project.id }),
                       let tIndex = projects[pIndex].terminals.firstIndex(where: { $0.id == ref.id }) else { return }
                 // The pane id is recorded either way: a rename moves a session's
@@ -592,7 +888,7 @@ final class ProjectStore {
                 save()
             }
         } catch {
-            lastError = (error as? TerminalError)?.errorDescription ?? error.localizedDescription
+            throw StoreError.terminal((error as? TerminalError)?.errorDescription ?? error.localizedDescription)
         }
     }
 
@@ -624,6 +920,15 @@ final class ProjectStore {
             if attention.insert(projects[p].terminals[t].id).inserted {
                 onBell?(projects[p], projects[p].terminals[t])
             }
+        case .notification(let sessionId, let title, let body):
+            guard let (p, t) = indexOfSession(sessionId) else { return }
+            // The flag goes up the same way a bell raises it, so the 🔔 in the
+            // sidebar means "this terminal wants you" whichever way it said so, and
+            // visiting the row withdraws the banner through the same path. What is
+            // reported is every notification rather than only the transition; see
+            // `onNotification` for why the two rules differ.
+            attention.insert(projects[p].terminals[t].id)
+            onNotification?(projects[p], projects[p].terminals[t], title, body)
         case .job(let sessionId, let jobName):
             guard let (p, t) = indexOfSession(sessionId) else { return }
             jobNames[projects[p].terminals[t].id] = jobName
@@ -939,21 +1244,34 @@ final class ProjectStore {
     }
 
     /// Restarts a tracked session: closes the current session and opens a
-    /// fresh one in the same window, re-running the kind's command (`claude`
-    /// for claude rows). The terminal ref keeps its id, label, and kind; its
-    /// `sessionId` is updated to the new session. Returns the updated ref.
+    /// fresh one in the same window, re-running the row's line (its own if it has
+    /// one, else `claude` for an agent row and nothing for a terminal). The terminal
+    /// ref keeps its id, label, kind, and line; its `sessionId` is updated to the new
+    /// session. Returns the updated ref.
     @discardableResult
     func restart(sessionId: String) async throws -> TerminalRef {
         guard let (p, t) = indexOfSession(sessionId) else { throw StoreError.unknownSession }
         let kind = projects[p].terminals[t].kind
+        let command = Self.command(for: projects[p].terminals[t])
         let folder = projects[p].url
         let existingWindowId = settleWorkspaceId(at: p)
         let badge = showWorkspaceBadge ? projects[p].name : nil
         do {
-            try? await service.close(sessionId: sessionId)
+            // Propagated, not swallowed. A restart that could not stop the old
+            // session has not restarted anything, and carrying on repoints the row at
+            // the replacement, so the previous agent keeps running with its pty and
+            // its write access to the folder and nothing left referencing it.
+            try await service.close(sessionId: sessionId)
             let handle = try await openShell(folder: folder, existingWindowId: existingWindowId,
-                                              badge: badge, kind: kind)
-            guard let (np, nt) = indexOfSession(sessionId) else { throw StoreError.unknownSession }
+                                              badge: badge, kind: kind, command: command)
+            guard let (np, nt) = indexOfSession(sessionId) else {
+                // The row went away while the replacement was opening, so nothing will
+                // ever point at the shell just opened. Closed here rather than left
+                // running where no one can reach it. Best effort: the throw below is
+                // the more useful thing to report.
+                try? await service.close(sessionId: handle.sessionId)
+                throw StoreError.unknownSession
+            }
             let oldId = projects[np].terminals[nt].id
             recordWorkspaceId(handle.windowId, at: np, openedWith: existingWindowId)
             projects[np].terminals[nt].sessionId = handle.sessionId
@@ -965,6 +1283,22 @@ final class ProjectStore {
             throw error
         } catch {
             throw StoreError.terminal((error as? TerminalError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    /// The window's entry point to the same restart, reporting rather than throwing.
+    ///
+    /// `restart(sessionId:)` throws because the MCP server and the remote server turn
+    /// its error into a response for whoever asked. A click has nobody to answer, so
+    /// it reports into `lastError` and the alert shows it, which is what
+    /// `openTerminal`, `activate` and `closeTerminal` already do for the same reason.
+    /// Swallowing it instead left a restart that could not open its replacement
+    /// looking like a restart that worked.
+    func restartTerminal(sessionId: String) async {
+        do {
+            _ = try await restart(sessionId: sessionId)
+        } catch {
+            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -1110,7 +1444,7 @@ final class ProjectStore {
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.runDueChecks(now: Date())
-                let tick = await self?.checkIntervals.fast ?? 15
+                let tick = self?.checkIntervals.fast ?? 15
                 try? await Task.sleep(nanoseconds: UInt64(tick) * 1_000_000_000)
             }
         }
@@ -1133,6 +1467,10 @@ final class ProjectStore {
             tests: projects[index].configTests,
             shellInit: projects[index].configShellInit
         )
+        // Written from what this workspace is already running, so there is nothing
+        // here the user has not already asked for. Approving it here is what keeps
+        // turning sync on from immediately asking about the user's own rows.
+        approve(ConfigTrust.commands(in: config), for: project.id)
         do {
             lastConfigData[project.id] = try ConfigFile.write(config, in: projects[index].url)
             startWatching(projects[index])
@@ -1186,6 +1524,18 @@ final class ProjectStore {
             return false
         }
         guard let config else { return false }
+        // Nothing from an unapproved file reaches the store: not the rows, not the
+        // process definitions, and above all not an `auto_start` the supervisor would
+        // run on the spot. Laying the rows out and waiting for a click would not be
+        // enough, because a row's whole content is the line it types.
+        if case .needed(let commands) = ConfigTrust.approval(
+            for: config, approved: approvedCommands[projectId] ?? []
+        ) {
+            pendingConfigApproval = ConfigApprovalRequest(
+                projectId: projectId, workspaceName: projects[index].name, commands: commands
+            )
+            return false
+        }
         let result = ConfigReconcile.apply(config, to: projects[index].terminals)
         projects[index].terminals = result.terminals
         projects[index].configName = config.name
@@ -1259,29 +1609,32 @@ final class ProjectStore {
         }
     }
 
-    private func load() {
-        guard let dataArray = defaults.array(forKey: storageKey) as? [Data] else { return }
-        let decoder = JSONDecoder()
-        var loaded: [Project] = []
-        for data in dataArray {
-            guard let record = try? decoder.decode(StoredProject.self, from: data) else { continue }
-            var isStale = false
-            guard let url = try? URL(
-                resolvingBookmarkData: record.bookmark, options: [],
-                relativeTo: nil, bookmarkDataIsStale: &isStale
-            ) else { continue }
-            loaded.append(Project(
-                id: record.id,
-                url: url.standardizedFileURL,
-                terminals: record.terminals,
-                displayName: record.displayName,
-                windowId: record.windowId,
-                terminalSeq: record.terminalSeq,
-                claudeSeq: record.claudeSeq,
-                collapsed: record.collapsed
-            ))
+    /// Records lines as agreed to for one workspace.
+    func approve(_ commands: [String], for projectId: UUID) {
+        guard !commands.isEmpty else { return }
+        approvedCommands[projectId, default: []].formUnion(commands)
+    }
+
+    /// The user agreed to what the pending file wants to run, so it is applied now.
+    func approvePendingConfig() {
+        guard let request = pendingConfigApproval else { return }
+        pendingConfigApproval = nil
+        approve(request.commands, for: request.projectId)
+        if reconcileWithFile(request.projectId) {
+            configChangedOnDisk.remove(request.projectId)
         }
-        projects = loaded
+    }
+
+    /// The user did not. Nothing is applied and nothing is recorded, so the question
+    /// is asked again the next time the file is reached for, rather than the folder
+    /// becoming one this app quietly ignores.
+    func declinePendingConfig() {
+        pendingConfigApproval = nil
+    }
+
+    private func load(cfg: [String: String], migrating: Bool) {
+        projects = migrating ? Self.migrateWorkspaces(from: defaults, key: storageKey)
+                             : Self.workspaces(from: cfg)
         for project in projects {
             if ConfigFile.exists(in: project.url) {
                 reconcileWithFile(project.id)
@@ -1291,24 +1644,138 @@ final class ProjectStore {
         }
     }
 
-    private func save() {
-        let encoder = JSONEncoder()
-        let dataArray: [Data] = projects.compactMap { project in
-            guard let bookmark = try? project.url.bookmarkData(
-                options: [], includingResourceValuesForKeys: nil, relativeTo: nil
-            ) else { return nil }
-            let record = StoredProject(
-                id: project.id,
-                bookmark: bookmark,
-                terminals: project.terminals,
-                terminalSeq: project.terminalSeq,
-                claudeSeq: project.claudeSeq,
-                displayName: project.displayName,
-                windowId: project.windowId,
-                collapsed: project.collapsed
-            )
-            return try? encoder.encode(record)
+    /// Workspaces as this build wrote them: plain folder paths, no security-scoped
+    /// bookmark.
+    private static func workspaces(from cfg: [String: String]) -> [Project] {
+        var loaded: [Project] = []
+        var index = 0
+        while let path = cfg["\(SettingsKeys.workspacePrefix)\(index).path"] {
+            let base = "\(SettingsKeys.workspacePrefix)\(index)"
+            var terminals: [TerminalRef] = []
+            var t = 0
+            while let label = cfg["\(base).terminal.\(t).label"] {
+                let tk = "\(base).terminal.\(t)"
+                terminals.append(TerminalRef(
+                    id: cfg["\(tk).id"].flatMap { UUID(uuidString: $0) } ?? UUID(),
+                    label: label,
+                    sessionId: cfg["\(tk).session-id"] ?? "",
+                    kind: TerminalKind(rawValue: cfg["\(tk).kind"] ?? "") ?? .terminal,
+                    slot: cfg["\(tk).slot"] ?? label,
+                    command: cfg["\(tk).command"]
+                ))
+                t += 1
+            }
+            loaded.append(Project(
+                id: cfg["\(base).id"].flatMap { UUID(uuidString: $0) } ?? UUID(),
+                url: URL(fileURLWithPath: path).standardizedFileURL,
+                terminals: terminals,
+                displayName: cfg["\(base).name"],
+                windowId: cfg["\(base).window-id"],
+                terminalSeq: cfg["\(base).terminal-seq"].flatMap(Int.init) ?? 0,
+                claudeSeq: cfg["\(base).claude-seq"].flatMap(Int.init) ?? 0,
+                collapsed: cfg["\(base).collapsed"] == "true"
+            ))
+            index += 1
         }
-        defaults.set(dataArray, forKey: storageKey)
+        return loaded
     }
+
+    /// The old `[Data]` of security-scoped bookmarks, resolved to paths once so the
+    /// next write is plain text. A bookmark that no longer resolves is dropped, the
+    /// same as the previous loader did.
+    private static func migrateWorkspaces(from defaults: UserDefaults, key: String) -> [Project] {
+        guard let dataArray = defaults.array(forKey: key) as? [Data] else { return [] }
+        let decoder = JSONDecoder()
+        return dataArray.compactMap { data -> Project? in
+            guard let record = try? decoder.decode(StoredProject.self, from: data) else { return nil }
+            var isStale = false
+            guard let url = try? URL(resolvingBookmarkData: record.bookmark, options: [],
+                                     relativeTo: nil, bookmarkDataIsStale: &isStale) else { return nil }
+            return Project(
+                id: record.id, url: url.standardizedFileURL, terminals: record.terminals,
+                displayName: record.displayName, windowId: record.windowId,
+                terminalSeq: record.terminalSeq, claudeSeq: record.claudeSeq,
+                collapsed: record.collapsed
+            )
+        }
+    }
+
+    /// The single write for every user-facing setting: scalars, agents, approvals, and
+    /// workspaces, all rebuilt from the store's current state. Called from each
+    /// setting's `didSet` and from `save()`, so the file always mirrors what the app
+    /// holds. The secret is not here.
+    ///
+    /// Reported on failure rather than dropped: silence would leave the file and the
+    /// screen disagreeing, with the change the user just made gone at the next launch.
+    /// Returns whether the write happened, which the first-launch migration uses to
+    /// decide whether it is safe to drop the old `UserDefaults` keys.
+    @discardableResult
+    private func persistSettings() -> Bool {
+        // A launch that could not read the file does not write one either, so a
+        // corrupt or half-written file is not overwritten with defaults.
+        guard settingsPersistable else { return false }
+        var pairs: [(key: String, value: String)] = [
+            (SettingsKeys.showWorkspaceBadge, showWorkspaceBadge ? "true" : "false"),
+            (SettingsKeys.bellSound, bellSound.stored),
+            (SettingsKeys.checkIntervalFast, String(checkIntervals.fast)),
+            (SettingsKeys.checkIntervalNormal, String(checkIntervals.normal)),
+            (SettingsKeys.checkIntervalSlow, String(checkIntervals.slow)),
+            (SettingsKeys.sidebarWidth, String(sidebarWidth)),
+            (SettingsKeys.remoteEnabled, remoteEnabled ? "true" : "false"),
+            (SettingsKeys.remotePort, String(remotePort)),
+            (SettingsKeys.mcpPort, String(mcpPort)),
+        ]
+        for (i, agent) in agents.enumerated() {
+            pairs.append(("\(SettingsKeys.agentPrefix)\(i).name", agent.name))
+            pairs.append(("\(SettingsKeys.agentPrefix)\(i).command", agent.command))
+            pairs.append(("\(SettingsKeys.agentPrefix)\(i).args", agent.defaultArguments))
+        }
+        // Sorted so the file is stable: an unordered set would reshuffle the lines on
+        // every write and read as a change to anyone diffing the file.
+        for (id, commands) in approvedCommands.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+            for (i, command) in commands.sorted().enumerated() {
+                pairs.append(("\(SettingsKeys.approvedPrefix)\(id.uuidString).\(i)", command))
+            }
+        }
+        for (i, project) in projects.enumerated() {
+            pairs.append(contentsOf: Self.workspacePairs(project, index: i))
+        }
+        do {
+            try configFile.write(pairs, managedKeys: SettingsKeys.scalars,
+                                 managedPrefixes: SettingsKeys.prefixes)
+            return true
+        } catch {
+            lastError = "Could not save settings: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private static func workspacePairs(_ project: Project, index: Int) -> [(key: String, value: String)] {
+        let base = "\(SettingsKeys.workspacePrefix)\(index)"
+        var pairs: [(key: String, value: String)] = [
+            ("\(base).path", project.url.standardizedFileURL.path),
+            ("\(base).id", project.id.uuidString),
+            ("\(base).collapsed", project.collapsed ? "true" : "false"),
+            ("\(base).terminal-seq", String(project.terminalSeq)),
+            ("\(base).claude-seq", String(project.claudeSeq)),
+        ]
+        if let name = project.displayName { pairs.append(("\(base).name", name)) }
+        if let windowId = project.windowId { pairs.append(("\(base).window-id", windowId)) }
+        for (t, ref) in project.terminals.enumerated() {
+            let tk = "\(base).terminal.\(t)"
+            pairs.append(("\(tk).id", ref.id.uuidString))
+            pairs.append(("\(tk).label", ref.label))
+            pairs.append(("\(tk).kind", ref.kind.rawValue))
+            pairs.append(("\(tk).slot", ref.slot))
+            // The app mostly mints ghostty-prefixed ids that `clearDeadSessions` wipes
+            // on the next launch, so this is usually empty by the time it is read back.
+            // It is still persisted: the clearing reads it to know what to clear, and a
+            // non-prefixed id from another substrate is meant to survive.
+            if !ref.sessionId.isEmpty { pairs.append(("\(tk).session-id", ref.sessionId)) }
+            if let command = ref.command { pairs.append(("\(tk).command", command)) }
+        }
+        return pairs
+    }
+
+    private func save() { persistSettings() }
 }

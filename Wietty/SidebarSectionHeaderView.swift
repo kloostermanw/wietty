@@ -1,25 +1,40 @@
 import SwiftUI
 
 struct SidebarSectionHeaderView: View {
-    let title: String
+    /// Nil leaves the buttons alone in the row, with no chevron and nothing to click
+    /// to collapse the section. That is the Local section when it is the only
+    /// section; `LocalSectionHeader` is the rule and says why.
+    let title: String?
     let collapsed: Bool
     let onToggle: () -> Void
     let buttons: [ButtonSpec]
 
+    /// One icon button in a header or in the bar above the pane.
+    ///
+    /// The id is the symbol name rather than a `UUID`, and that is load bearing: the
+    /// arrays are built inside `body`, so a fresh `UUID` per pass gave `ForEach` a new
+    /// identity on every redraw and the `Button` was torn down and rebuilt rather than
+    /// updated. A redraw landing between mouse down and mouse up then drops the click,
+    /// and the bar above the pane redraws on every selection change and on every git
+    /// poll. A symbol name is unique within one row of buttons and stable across
+    /// redraws. It cannot be `Equatable` instead, because of the closure.
     struct ButtonSpec: Identifiable {
-        let id = UUID(); let system: String; let help: String; let action: () -> Void
+        var id: String { system }
+        let system: String; let help: String; let action: () -> Void
     }
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(action: onToggle) {
-                HStack(spacing: 6) {
-                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text(title).font(.headline)
+            if let title {
+                Button(action: onToggle) {
+                    HStack(spacing: 6) {
+                        Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(title).font(.headline)
+                    }
                 }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             Spacer()
             ForEach(buttons) { b in
                 Button(action: b.action) { Image(systemName: b.system).frame(width: 26, height: 26) }

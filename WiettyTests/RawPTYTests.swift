@@ -262,6 +262,37 @@ import Darwin
         #expect(collect(pty, until: RawPTY.terminalType).contains(RawPTY.terminalType))
     }
 
+    /// TERM says what may be drawn; TERM_PROGRAM says who is drawing it. A program
+    /// that adapts to its host terminal reads the second, and an agent picks
+    /// between the bell, OSC 9 and OSC 777 by it. Left unset it emits none of them,
+    /// which is a terminal that handles all three being told about nothing. It must
+    /// also not be inherited: whatever launched Wietty is not what the shell is
+    /// talking to.
+    @Test func termProgramNamesThisApp() throws {
+        let pty = try RawPTY.spawn(command: "echo \"[$TERM_PROGRAM/$TERM_PROGRAM_VERSION]\"",
+                                   directory: URL(fileURLWithPath: "/tmp"),
+                                   environment: [:], size: TerminalSize(cols: 80, rows: 24),
+                                   shell: "/bin/zsh")
+        defer { pty.terminate() }
+        let expected = "[\(RawPTY.programName)/\(AppVersion.current)]"
+        #expect(collect(pty, until: expected).contains(expected))
+    }
+
+    /// And it wins over an inherited value rather than deferring to it. The caller's
+    /// environment is the same door a stale `TERM_PROGRAM` comes through when Wietty
+    /// is launched from another terminal, so the override is asserted at the point
+    /// it would be lost.
+    @Test func termProgramOverridesAnInheritedValue() throws {
+        let pty = try RawPTY.spawn(command: "echo \"[$TERM_PROGRAM]\"",
+                                   directory: URL(fileURLWithPath: "/tmp"),
+                                   environment: ["TERM_PROGRAM": "iTerm.app"],
+                                   size: TerminalSize(cols: 80, rows: 24),
+                                   shell: "/bin/zsh")
+        defer { pty.terminate() }
+        let expected = "[\(RawPTY.programName)]"
+        #expect(collect(pty, until: expected).contains(expected))
+    }
+
     /// Job control, which is the whole reason this uses `forkpty` rather than
     /// `posix_spawn`. Without a controlling terminal `^C` kills the shell along
     /// with the foreground command, so the terminal is dead after the first

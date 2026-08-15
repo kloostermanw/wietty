@@ -424,6 +424,8 @@ import Foundation
             in: folder
         )
         store.addProject(url: folder)
+        // The definitions carry commands, so the file waits to be agreed to.
+        store.approvePendingConfig()
         #expect(store.projects[0].configProcesses == processes)
 
         // Trigger an emit (a structural mutation with sync already on, since
@@ -447,6 +449,8 @@ import Foundation
             in: folder
         )
         store.addProject(url: folder)
+        // The definitions carry commands, so the file waits to be agreed to.
+        store.approvePendingConfig()
         #expect(store.projects[0].configTests == tests)
 
         // Trigger an emit (a structural mutation with sync already on, since

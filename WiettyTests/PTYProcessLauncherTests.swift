@@ -15,7 +15,7 @@ import Foundation
     let dir = URL(fileURLWithPath: "/tmp")
 
     @Test func capturesOutputAndZeroExit() async throws {
-        let launcher = PTYProcessLauncher()
+        let launcher = PTYProcessLauncher(spawnsFromTestHost: true)
         var output = ""
         var exit: Int32?
         _ = try launcher.launch(
@@ -29,7 +29,7 @@ import Foundation
     }
 
     @Test func reportsNonZeroExit() async throws {
-        let launcher = PTYProcessLauncher()
+        let launcher = PTYProcessLauncher(spawnsFromTestHost: true)
         var exit: Int32?
         _ = try launcher.launch(
             command: "exit 3", directory: dir, environment: [:],
@@ -41,7 +41,7 @@ import Foundation
     }
 
     @Test func reportsTTYToChild() async throws {
-        let launcher = PTYProcessLauncher()
+        let launcher = PTYProcessLauncher(spawnsFromTestHost: true)
         var output = ""
         var exit: Int32?
         _ = try launcher.launch(
@@ -69,7 +69,7 @@ import Foundation
                 shellInit: ["export PATH=\(bin.path):$PATH"]
             ),
             directory: dir,
-            launcher: PTYProcessLauncher()
+            launcher: PTYProcessLauncher(spawnsFromTestHost: true)
         )
         process.start()
         try await waitUntil {
@@ -92,11 +92,80 @@ import Foundation
             name: "p",
             config: ProcessConfig(command: "only-here-too", kind: .shortRunning),
             directory: dir,
-            launcher: PTYProcessLauncher()
+            launcher: PTYProcessLauncher(spawnsFromTestHost: true)
         )
         process.start()
         try await waitUntil { process.state != .running }
         #expect(process.state != .finished)
+    }
+
+    /// The default launcher refuses to spawn from a test host, which is what keeps
+    /// `ProjectStore`'s default supervisors inert in the suite. A workspace config
+    /// carrying `auto_start` was once applied straight through to a real login shell
+    /// with the developer's own `HOME`, and the fixture command was `rm -rf ~`.
+    @Test func theDefaultLauncherRefusesToSpawnFromATestHost() {
+        #expect(PTYProcessLauncher.isRunningInTestHost)
+        #expect(throws: ProcessLaunchError.spawnRefusedInTestHost) {
+            _ = try PTYProcessLauncher().launch(
+                command: "echo this must never run", directory: dir, environment: [:],
+                onOutput: { _ in }, onExit: { _ in }
+            )
+        }
+    }
+
+    /// And a store built the way most of the suite builds one launches nothing, even
+    /// though its supervisors hold the real launcher by default.
+    ///
+    /// The assertions are all synchronous, and deliberately so. Checking that the
+    /// command's side effect never happened cannot fail: `posix_spawn` returns as
+    /// soon as the child exists, and the child still has to load a login shell
+    /// before it runs anything, so the side effect is always absent this early
+    /// whether or not the guard is there. What separates the two is the state the
+    /// refusal leaves behind: `launchMain` marks the process `.failed(-1)` the
+    /// moment `launch` throws, and a spawn that went through would leave it
+    /// `.running` instead.
+    @Test func aDefaultStoreLaunchesNothingFromAnAutoStartConfig() throws {
+        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        let marker = workspace.appendingPathComponent("spawned")
+        _ = try ConfigFile.write(
+            WorkspaceConfig(
+                name: nil, agents: [], terminals: [],
+                processes: ["boot": ProcessConfig(command: "touch \(marker.path)", autoStart: true)]
+            ),
+            in: workspace
+        )
+
+        let store = ProjectStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
+                                 service: FakeTerminalService())
+        store.addProject(url: workspace)
+        store.approvePendingConfig()
+
+        // Without these the test would also pass if the file stopped being
+        // detected or approving became a no-op, which is to say if nothing ever
+        // reached the launcher in the first place.
+        let project = try #require(store.projects.first)
+        #expect(project.configProcesses?["boot"]?.autoStart == true)
+        let process = try #require(store.processes.process(projectId: project.id, name: "boot"))
+
+        #expect(process.state == .failed(-1))
+
+        // The control for the assertion above: the same config through a launcher
+        // that does hand back a handle leaves the process `.running` at exactly
+        // this point, so `.failed(-1)` is reading the refusal and not something
+        // every auto-started process would show.
+        let permissive = ProjectStore(
+            defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
+            service: FakeTerminalService(),
+            processSupervisor: ProcessSupervisor(launcher: FakeProcessLauncher())
+        )
+        permissive.addProject(url: workspace)
+        permissive.approvePendingConfig()
+        let permissiveProject = try #require(permissive.projects.first)
+        let permissiveProcess = try #require(
+            permissive.processes.process(projectId: permissiveProject.id, name: "boot")
+        )
+        #expect(permissiveProcess.state == .running)
     }
 
     private func waitUntil(_ condition: @MainActor () -> Bool, timeout: Duration = .seconds(5)) async throws {

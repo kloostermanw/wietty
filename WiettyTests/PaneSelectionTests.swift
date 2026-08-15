@@ -36,6 +36,10 @@ import Foundation
                 == .processLog(log("npm")))
     }
 
+    @Test func aSettingsOverrideAloneIsSettings() {
+        #expect(PaneSelection.resolve(local: nil, override: .settings) == .settings)
+    }
+
     /// The precedence, and the reason the local selection is left alone rather than
     /// cleared: the pane holds one thing, so whatever was picked covers the local
     /// terminal instead of replacing it.
@@ -44,24 +48,32 @@ import Foundation
         #expect(PaneSelection.resolve(local: "gt:1", override: .remote(session)) == .remote(session))
         #expect(PaneSelection.resolve(local: "gt:1", override: .log(log("npm")))
                 == .processLog(log("npm")))
+        #expect(PaneSelection.resolve(local: "gt:1", override: .settings) == .settings)
     }
 
     /// The other half of covering: clearing the override puts the local terminal
     /// back rather than emptying the pane, which is what makes leaving a remote
-    /// session or a log return to where the user was.
+    /// session, a log or the settings panel return to where the user was. Which paths
+    /// do the clearing is `PaneRouterTests`.
     @Test func clearingTheOverrideUncoversTheLocalSelection() {
         #expect(PaneSelection.resolve(local: "gt:1", override: nil) == .local("gt:1"))
     }
 
-    /// Two things cover the local terminal and they cannot both be on screen, which
-    /// is why they are one value rather than two. Picking a log after a remote
-    /// session replaces it, and nothing has to remember to clear the other.
+    /// Three things cover the local terminal and no two of them can be on screen,
+    /// which is why they are one value rather than three: picking any of them replaces
+    /// whatever was there, and nothing has to remember to clear the others. Asserted
+    /// against the type rather than by assigning a local variable, which would only
+    /// re-test `resolve`.
+    @MainActor
     @Test func onlyOneThingCoversTheLocalTerminal() {
         let session = RemoteSessionRef(connectionId: connection, sessionId: "%3")
-        var override: PaneOverride? = .remote(session)
-        override = .log(log("npm"))
-        #expect(PaneSelection.resolve(local: "gt:1", override: override)
+        let router = PaneRouter()
+        router.show(.remote(session))
+        router.show(.log(log("npm")))
+        #expect(PaneSelection.resolve(local: "gt:1", override: router.override)
                 == .processLog(log("npm")))
+        router.show(.settings)
+        #expect(PaneSelection.resolve(local: "gt:1", override: router.override) == .settings)
     }
 
     /// The pane draws local and nothing-selected through one view, so both must
@@ -72,6 +84,7 @@ import Foundation
         #expect(PaneSelection.remote(RemoteSessionRef(connectionId: connection,
                                                       sessionId: "%3")).localSession == nil)
         #expect(PaneSelection.processLog(log("npm")).localSession == nil)
+        #expect(PaneSelection.settings.localSession == nil)
     }
 
     @Test func aLocalRowIsMarkedOnlyWhenItIsTheOneOnScreen() {
@@ -141,6 +154,27 @@ import Foundation
         #expect(!PaneSelection.processLog(log("npm")).selects(localSession: "gt:1"))
         #expect(!PaneSelection.processLog(log("npm")).selects(remoteSession: "%3", on: connection))
         #expect(!PaneSelection.local("gt:1").selects(processLog: log("npm")))
+    }
+
+    /// Settings belongs to no workspace, so it must leave every row in the sidebar
+    /// unmarked. Without this the sidebar would keep claiming a terminal is on
+    /// screen while the panel is covering it.
+    @Test func settingsMarksNoRow() {
+        let selection = PaneSelection.settings
+        #expect(!selection.selects(localSession: "gt:1"))
+        #expect(!selection.selects(remoteSession: "%3", on: connection))
+        #expect(!selection.selects(processLog: log("npm")))
+    }
+
+    /// The gear is marked while the panel is on screen, the same way a row is marked
+    /// while its terminal is, and nothing else marks it.
+    @Test func onlySettingsMarksTheGear() {
+        #expect(PaneSelection.settings.showsSettings)
+        #expect(!PaneSelection.none.showsSettings)
+        #expect(!PaneSelection.local("gt:1").showsSettings)
+        #expect(!PaneSelection.processLog(log("npm")).showsSettings)
+        #expect(!PaneSelection.remote(RemoteSessionRef(connectionId: connection,
+                                                       sessionId: "%3")).showsSettings)
     }
 
     /// The selection key deliberately excludes the row's label. A remote row's

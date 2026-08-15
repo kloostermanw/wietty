@@ -31,17 +31,26 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
     var readOutputCalls: [(sessionId: String, maxLines: Int)] = []
     var readOutputResult = ""
     var errorToThrow: TerminalError?
+    /// What `close` alone refuses with, for the paths where closing fails and
+    /// opening does not. `errorToThrow` fails every call, which cannot model a
+    /// restart that got as far as opening its replacement.
+    var closeErrorToThrow: TerminalError?
+    /// What `open` alone refuses with, for the paths that have to get past
+    /// `focus` first. `errorToThrow` fails every call, which cannot model a row
+    /// whose session is gone and whose replacement then fails to open: the
+    /// activation would end at the `focus` it never got an answer to.
+    var openErrorToThrow: TerminalError?
     /// Awaited inside `open`, after the call is recorded and before the handle
     /// is produced, so a test can run other main actor work while an open is in
     /// flight. `TerminalService` is nonisolated, so the real `open` leaves the
     /// main actor for its whole duration and anything queued on it runs; without
     /// a gate this fake returns before the first suspension gives it the chance.
     /// Nil in every test that does not care.
-    var openGate: (@Sendable () async -> Void)?
+    var openGate: (@MainActor () async -> Void)?
     private var openIndex = 0
 
     func open(folder: URL, existingWindowId: String?, command: String?, badge: String?) async throws -> TerminalHandle {
-        if let error = errorToThrow { throw error }
+        if let error = errorToThrow ?? openErrorToThrow { throw error }
         openCalls.append((folder, existingWindowId, command, badge))
         discardAndOpenOrder.append("open")
         await openGate?()
@@ -64,7 +73,7 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
     }
 
     func close(sessionId: String) async throws {
-        if let error = errorToThrow { throw error }
+        if let error = errorToThrow ?? closeErrorToThrow { throw error }
         closeCalls.append(sessionId)
     }
 
@@ -334,6 +343,82 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(fake.openCalls.last?.command == nil)
         #expect(fake.sendCalls.count == sendsAfterOpening + 1)
         #expect(fake.sendCalls.last! == ("sess-B", "claude\n"))
+    }
+
+    /// A row can go away while its replacement is opening, when its workspace is
+    /// removed. Nothing will ever point at the shell that just opened, so it is closed
+    /// rather than left running with no way to reach it.
+    @Test func aRestartWhoseRowVanishesClosesTheShellItOpened() async {
+        let fake = FakeTerminalService()
+        fake.handles = [
+            TerminalHandle(sessionId: "sess-A", windowId: "win-1"),
+            TerminalHandle(sessionId: "sess-B", windowId: "win-1"),
+        ]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+
+        // Pulls the row out from under the restart, after the replacement has been
+        // opened and before the store looks for the row to point at it.
+        fake.openGate = { store.remove(store.projects[0]) }
+        await store.restartTerminal(sessionId: "sess-A")
+
+        #expect(store.lastError == "No tracked terminal has that session id.")
+        #expect(fake.closeCalls.contains("sess-B"))
+    }
+
+    /// A restart that cannot stop the old session has not restarted anything. Going
+    /// on to open the replacement and repointing the row at it left the previous
+    /// agent running, holding its pty and still able to write to the folder, with
+    /// nothing referencing it and the restart reporting success.
+    @Test func aRestartThatCannotCloseTheOldSessionFails() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+        let opensAfterOpening = fake.openCalls.count
+
+        fake.closeErrorToThrow = .failed("still running")
+        await store.restartTerminal(sessionId: "sess-A")
+
+        #expect(store.lastError == "still running")
+        // No replacement was opened, so there is no second session to orphan, and the
+        // row still points at the one that is genuinely running.
+        #expect(fake.openCalls.count == opensAfterOpening)
+        #expect(store.projects[0].terminals[0].sessionId == "sess-A")
+    }
+
+    /// A restart the sidebar asked for reports its failure the way every other row
+    /// action does, through the alert. `restart(sessionId:)` throws instead, because
+    /// the MCP server and the remote server turn that error into a response for the
+    /// caller that asked; a click has no caller to answer, so the window's own entry
+    /// point is the one that reports.
+    @Test func aFailedRestartFromTheSidebarSetsLastError() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+
+        fake.errorToThrow = .failed("boom")
+        await store.restartTerminal(sessionId: "sess-A")
+
+        #expect(store.lastError == "boom")
+        // The row survives a restart that could not open the replacement, so there
+        // is still something to click once whatever broke is fixed.
+        #expect(store.projects[0].terminals.count == 1)
+    }
+
+    /// The unknown session is the case a stale click produces: the row's terminal is
+    /// gone from under it. It has to reach the alert too, rather than being swallowed
+    /// as "nothing to restart".
+    @Test func restartingAnUnknownSessionFromTheSidebarSetsLastError() async {
+        let store = ProjectStore(defaults: makeDefaults(), service: FakeTerminalService())
+
+        await store.restartTerminal(sessionId: "sess-gone")
+
+        #expect(store.lastError == StoreError.unknownSession.errorDescription)
     }
 
     @Test func activateDeadTerminalReopensPlainShell() async {

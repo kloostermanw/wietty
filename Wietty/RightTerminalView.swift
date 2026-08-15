@@ -3,12 +3,14 @@ import WiettyShared
 
 /// The right half of the main window: whatever is selected, and nothing else.
 ///
-/// Three things can be drawn here and they are not interchangeable. A local
+/// Five things can be drawn here and they are not interchangeable. A local
 /// terminal is a libghostty surface the app owns and keeps alive for the row's
 /// whole life (`LocalTerminalView`). A remote one is a SwiftTerm view over a socket
 /// to another Mac (`RemoteTerminalView`) that exists only while it is on screen. A
-/// process log is text this app already holds (`ProcessLogView`). This view is the
-/// seam, and it holds nothing itself.
+/// process log is text this app already holds (`ProcessLogView`). Settings is a
+/// form (`SettingsView`), here rather than in a window of its own, and one
+/// workspace's own page (`WorkspaceSettingsView`) is there beside it. This view is
+/// the seam, and it holds nothing itself.
 struct RightTerminalView: View {
     let store: ProjectStore
     let stack: GhosttyStack
@@ -16,6 +18,17 @@ struct RightTerminalView: View {
     /// Observed rather than read once: removing a connection has to take its
     /// terminal off the screen.
     @ObservedObject var remoteConnections: RemoteConnectionsStore
+    /// Only for `SettingsView`, which edits the connection list and has to make the
+    /// controller resync when it does.
+    @ObservedObject var remoteWorkspaces: RemoteWorkspacesController
+    /// Only for `SettingsView`, whose Notifications tab shows the permission state
+    /// and posts the test notification. The app's one notifier, so what that tab
+    /// reports is the state the bells themselves are subject to.
+    let bells: BellNotifier
+    /// Also only for `SettingsView`'s Notifications tab, and the app's one instance
+    /// for the same reason `bells` is: the toggle has to drive the config the live
+    /// surfaces are actually running on.
+    let desktopNotifications: DesktopNotificationSetting
     let selection: PaneSelection
 
     var body: some View {
@@ -29,6 +42,23 @@ struct RightTerminalView: View {
             remote(session)
         case let .processLog(log):
             ProcessLogView(store: store, log: log)
+        case .settings:
+            // The same floor the other branches carry. The window's minimum size is
+            // built from it, so a panel that asked for its own size would change how
+            // small the window can get depending on what is on screen.
+            SettingsView(store: store, remoteConnections: remoteConnections,
+                         remoteWorkspaces: remoteWorkspaces, bells: bells,
+                         desktopNotifications: desktopNotifications)
+                .frame(minWidth: SidebarWidth.paneMinimum,
+                       minHeight: SidebarWidth.paneMinimumHeight,
+                       maxHeight: .infinity)
+        case let .workspaceSettings(id):
+            // The same floor again, so which page is up cannot change how small the
+            // window can get.
+            WorkspaceSettingsView(project: store.projects.first { $0.id == id })
+                .frame(minWidth: SidebarWidth.paneMinimum,
+                       minHeight: SidebarWidth.paneMinimumHeight,
+                       maxHeight: .infinity)
         case .local, .none:
             LocalTerminalView(stack: stack, session: selection.localSession)
         }

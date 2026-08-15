@@ -8,25 +8,30 @@ Read this first, then the per view file for whichever screen you are changing.
 
 ## The scene tree
 
-`WiettyApp` (`Wietty/WiettyApp.swift`) is the `@main` entry point. It
-declares five scenes, so "the app" is five independent windows rather than one
-window with panels.
+`WiettyApp` (`Wietty/WiettyApp.swift`) is the `@main` entry point. It declares one
+scene, so "the app" is one window rather than a set of them.
 
 ```
 WiettyApp  (@main App)
 │
-├── Window("Wietty", id: "main")               the only always present window
-│   └── ContentView                            → ContentView.md
-│
-└── Settings                                    the standard macOS Settings window
-    └── SettingsView                           → SettingsView.md
-        └── RemoteConnectionRow
+└── Window("Wietty", id: "main")               the only window there is
+    ├── ContentView                            → ContentView.md
+    └── .commands                              a modifier on this scene
+        ├── Check for Updates…                 CommandGroup(after: .appInfo)
+        └── SettingsCommand                    CommandGroup(replacing: .appSettings)
+                                               "Settings…" plus ⌘,, which put
+                                               SettingsView in the window's pane
+                                               → SettingsView.md
 ```
 
-Two scenes, and one of them is the app. Everything the user looks at (a local
-terminal, a session on another Mac, a process log) is drawn in the main window's
-right half, so nothing opens a window except `openWindow(id: "main")`, which the
-bell notification tap uses to reopen the main window if it was closed.
+One scene, and it is the app. Everything the user looks at (a local terminal, a
+session on another Mac, a process log, the settings panel) is drawn in that
+window's right half, so nothing opens a window except `openWindow(id: "main")`,
+which the bell notification tap and the Settings menu item use to reopen the main
+window if it was closed.
+
+There is deliberately no `Settings` scene. Settings is one of the things the pane
+shows, so a second window would be the only part of the app that opened one.
 
 ## The main window
 
@@ -37,7 +42,7 @@ is the left column of a row of three, and the right column fills the rest with
 
 ```
 ┌─ Wietty─── ───────────────────────────────────────────────┐
-│ ▾ Local        (⟳) (+)  │ genotool                        │  NavBarView
+│ ▾ Local        (⟳) (+)  │ genotool                      ⚙ │  NavBarView
 │ ▾ genotool              │─────────────────────────────────│
 │   │  > Terminal 1       │ > implement the parser          │
 │   │  ✦ Claude Code ◀ sel│ ⏺ Reading files…                │  RightTerminalView
@@ -104,11 +109,12 @@ main window. See `UpdateAlertModifier.md`.
 | SwiftTerm | `RemoteTerminalView`, inside `RightTerminalView` | a session on another Mac, in the same pane |
 | xterm.js | `remote_index.html`, not a SwiftUI view | the browser client this app serves |
 
-`RightTerminalView` is the one place a libghostty surface, a SwiftTerm view and a
-plain text log can appear, because the pane holds one thing and the sidebar lists
-three kinds. It draws none of them itself: a local selection goes to
+`RightTerminalView` is the one place a libghostty surface, a SwiftTerm view, a
+plain text log, the settings form and a workspace's own page can appear, because
+the pane holds one thing. It draws none of them itself: a local selection goes to
 `LocalTerminalView`, a remote one to `RemoteTerminalView`, a log to
-`ProcessLogView`, and `PaneSelection` (not a view) says which. The remote branch
+`ProcessLogView`, settings to `SettingsView`, a workspace page to
+`WorkspaceSettingsView`, and `PaneSelection` (not a view) says which. The remote branch
 carries an explicit `.id`, without which switching between two remote sessions
 would reuse one view and keep the first session's connection.
 
@@ -142,7 +148,9 @@ Every view type, and where its layout is documented.
 | `NavBarView` | `NavBarView.swift` | `NavBarView.md`. What it says is `NavBarTitle.swift`, which is not a view |
 | `SidebarDivider` | `SidebarDivider.swift` | `ContentView.md`, under "Who gets the surplus, and where the divider is". Its arithmetic is `SidebarWidth.swift`, which is not a view |
 | `RemoteTerminalView` | `RemoteTerminalView.swift` | `ContentView.md`, under "What the pane shows" |
-| `SettingsView`, `RemoteConnectionRow` | `SettingsView.swift` | `SettingsView.md` |
+| `SettingsView`, `AgentRow`, `RemoteConnectionRow` | `SettingsView.swift` | `SettingsView.md`. Drawn in the pane, and reached through `PaneRouter.swift` and `SettingsCommand` (in `WiettyApp.swift`), neither of which is a view |
+| `WorkspaceSettingsView` | `WorkspaceSettingsView.swift` | `WorkspaceSettingsView.md`. Drawn in the same pane, reached from a card's "Edit workspace…" |
+| `ConfigApprovalView` | `ConfigApprovalView.swift` | `ConfigApprovalView.md`. A sheet over the main window, shown when a workspace's `wietty.json` asks to run a line nobody has agreed to. What counts as one is `ConfigTrust.swift`, which is not a view |
 | `UpdateAlertModifier` | `UpdateAlertModifier.swift` | `UpdateAlertModifier.md` |
 
 A view whose layout is already drawn inside a parent's file is documented there
@@ -151,7 +159,7 @@ rows above point at a parent.
 
 ## Keeping this in sync
 
-`../../CLAUDE.md` requires the `documentation/` folder to track the code it
+`../../CLAUDE.md` requires the `docs/` folder to track the code it
 describes, so editing a view means updating its matching file in the same
 change, and adding a new view worth documenting means adding a file and a row to
 the inventory above.

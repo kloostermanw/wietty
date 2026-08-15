@@ -27,8 +27,8 @@ the keys you type reach the session.
 
 ### How to use it
 
-1. Open Settings and turn on "Enable LAN remote terminal" in the "Remote
-   access (experimental)" section.
+1. Open the settings panel (the gear in the bar above the pane, or ⌘,) and turn on
+   "Enable LAN remote terminal" in the "Remote access (experimental)" section.
 2. A reachable URL and a QR code appear. The URL looks like
    `http://192.168.1.20:7434/?token=<token>`.
 3. On another device on the same wifi, open the URL or scan the QR code.
@@ -45,7 +45,7 @@ port.
 ### Architecture
 
 Terminals and Claude sessions are pseudo-terminals Wietty spawned itself and
-libghostty renders; see `documentation/terminal.md`. **The wire format has not
+libghostty renders; see `docs/terminal.md`. **The wire format has not
 changed** across the substrates this app used to ship: the browser client, the
 JSON/WebSocket shapes, and `WS /attach`/`WS /control` are the same, so an existing
 browser tab or iPadOS client needs no update. A session
@@ -114,7 +114,7 @@ knowing on the client side:
 - **The paint comes from the last recorded screen rather than the instant of
   attach**, bounded at 300 ms (`GhosttyService.snapshotDebounce`) and driven by
   the terminal's own output, with the app-wide job poll as a backstop. See
-  `documentation/terminal.md` for why the hub cannot read the surface itself.
+  `docs/terminal.md` for why the hub cannot read the surface itself.
 - **The end signal has one source.** The terminal is a PTY in this process, so
   `GhosttyService` reports its end and `PaneStreamHub.endViewers(ofSession:)`
   delivers the `ended` message. Both ways a terminal ends reach it: the child
@@ -141,8 +141,8 @@ the local `Project` type `WorkspaceCardView` expects.
 
 ### Setting up a connection
 
-Settings has a "Remote connections" section, below "Remote access
-(experimental)". It lists the connections already added
+The "Remote" tab of Settings has a "Remote connections" section, below "Remote
+access (experimental)". It lists the connections already added
 (`RemoteConnectionsStore`), each row showing the connection's name and
 `host:port` with edit and delete buttons, and below the list a form to add a
 new one (name, host, port, token). The token here is the same shared token
@@ -177,6 +177,16 @@ same `WorkspaceCardView` used for local projects, fed from the store's
 snapshot through `RemoteProjectAdapter`. Remote sections do not support the
 drag to reorder or drop zone that the Local section has.
 
+Each remote card's own collapse persists too, in the same `SectionCollapseState`
+the section headers use, under a key built from both the connection id and the
+workspace id (a workspace id is only unique on the Mac that owns it). A card
+nobody has toggled starts collapsed, unlike a section header and unlike a local
+card, so a connection serving a dozen workspaces does not push the Local section
+off the top of the sidebar the moment it connects. The collapse is a preference
+of the Mac doing the viewing and is never sent upstream: the serving Mac has its
+own idea of which of its cards are open, and one viewer must not rearrange
+another's sidebar. That is also why this needs no wire format change.
+
 Each remote section is its own view, `RemoteSectionView`, holding its
 `RemoteWorkspaceStore` as an `@ObservedObject`. That is a requirement rather
 than a preference: the store is a nested `ObservableObject` inside
@@ -187,8 +197,9 @@ updating.
 ### Remote actions
 
 A remote workspace card supports exactly the subset of actions that have a
-server side endpoint: open a new terminal, open a new claude session, attach
-to (tap) an existing session, restart a session, and close a session. Any
+server side endpoint: open a new terminal, open a new claude session, tap a
+session (which activates the row first, see below), restart a session, and
+close a session. Any
 action without a remote equivalent (rename, remove a terminal, remove a
 project, enable sync, apply config, process controls) is wired to a no-op on
 remote cards; those controls render but do nothing. There is no way to
@@ -200,6 +211,36 @@ hundred milliseconds. A failure is not swallowed, though. If the request
 returns a non success status or the host cannot be reached, the store records a
 short message in `lastActionError` and the section shows it as a small red
 caption, so a rejected open, restart, or close is visible rather than silent.
+
+Tapping a row is the exception: it waits for its reply. A tap first asks the
+serving instance to activate the row (`RemoteWorkspaceStore.activate(refId:)`),
+which opens a session when the row has none, and the pane attaches to the
+session id that comes back rather than to the one the last snapshot carried. A
+revived row gets a new session id, so a tap that used the id it already held
+would attach to the session that just died and the pane would print
+`[session ended]` with no way to get a working terminal out of that row. Waiting
+for the reply also keeps a dead session off the screen entirely, instead of
+showing one and swapping it a moment later. The request is capped at 15 seconds,
+well below `URLSession`'s default, because a tap shows nothing until it answers.
+
+The serving side of that is `ProjectStore.activateThrowing`, the same work a
+click on a local row does, so a remote tap reopens a dead row and re-runs a
+stopped agent's line exactly the way the Mac beside it does. It also focuses the
+session in the serving Mac's own pane, which is the accepted price of having one
+implementation of activation rather than two.
+
+A tap that answers no session id is reported rather than dropped. Usually the
+reason is already in the section's red caption, since a non success status
+writes `lastActionError` like any other action. The case that leaves that empty
+is a serving instance answering a success status with a body naming no session,
+which no current version does and a mismatched or intercepted one can: the
+controlling instance raises its own alert for it, because a click that quietly
+does nothing is the failure this whole route exists to remove.
+
+Note that a row's `run_state` cannot be used to decide any of this. It reports
+the row's foreground job, not whether a session exists, and it answers "running"
+whenever no job has been heard of, which is the case for a row that was never
+opened and for every row of an instance that has been relaunched.
 
 ### Live state: the control channel
 
@@ -236,6 +277,17 @@ The server (`RemoteServer.swift`) exposes, all token gated:
   with that id.
 - `POST /api/workspaces/{id}/claude`: opens a new claude session in the
   workspace with that id.
+- `POST /api/terminals/{ref_id}/activate`: gives the row with that id a live
+  session, opening one when it has none, and answers with the row's terminal
+  JSON. Keyed by the row's id rather than by a session id, unlike its two
+  neighbours below, because the rows that need it are exactly the rows whose
+  session id addresses nothing. `400` if `ref_id` is not a UUID, which no
+  snapshot could have named. `404` if no row has that id, meaning the caller's
+  snapshot is older than this instance's workspace list. `500` if the activation
+  itself failed, or left the row with no session to attach to. The two `500`
+  bodies carry the reason as `{"error": "..."}`, worded for a person and safe to
+  show; a client that reads only the status is unaffected. The reason is also
+  logged on the serving instance under the `remote` category.
 - `POST /api/sessions/{sid}/restart`: restarts the tracked session with that
   session id.
 - `POST /api/sessions/{sid}/close`: closes the tracked session with that
@@ -261,7 +313,7 @@ does for a local terminal whose command exited.
 
 A session that rings the bell on a connected Mac also posts a notification here,
 built by diffing the `needs_attention` flag across successive snapshots, since
-the protocol has no bell message of its own. `documentation/bell-notifications.md`
+the protocol has no bell message of its own. `docs/notifications.md`
 covers that diff and the two rules that keep a reconnect from re-announcing every
 waiting agent.
 
@@ -272,8 +324,8 @@ its connection leaves nothing in the sidebar to click out of a placeholder with.
 
 ## Ports
 
-Two servers run on separate ports, both configurable in the "Ports" section
-of Settings:
+Two servers run on separate ports, each configurable on its own tab of Settings
+(the MCP port on "MCP", the remote terminal port on "Remote"):
 
 - MCP server: `127.0.0.1:7433` (loopback only).
 - LAN remote terminal and control API: `0.0.0.0:7434` (reachable on the local

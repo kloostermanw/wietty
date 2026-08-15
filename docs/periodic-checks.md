@@ -25,7 +25,7 @@ Computes a fingerprint of the workspace's working tree and forwards it to `TestS
 
 One further check does not belong to a workspace. libghostty reports a terminal's title and its bell through the action callback but says nothing about its foreground command, so the only way to learn that an agent started or exited is to ask. The poll is therefore scheduled once per tick for the whole app rather than once per workspace (`JobPoll`), and `ProjectStore` is handed it as a closure (`GhosttyStack.pollJobs`).
 
-It costs no fork: one `tcgetpgrp` on each terminal's pty master plus one `proc_name`. The same tick also refreshes the screen a remote viewer's first paint is built from, which is why the poll runs even with no workspace expanded (see `documentation/terminal.md`).
+It costs no fork: one `tcgetpgrp` on each terminal's pty master plus one `proc_name`. The same tick also refreshes the screen a remote viewer's first paint is built from, which is why the poll runs even with no workspace expanded (see `docs/terminal.md`).
 
 Its tier ignores the CI-pending and needs-attention overlays, because a single workspace's state must not speed up or slow down a poll that serves all of them. It runs Fast while any workspace is expanded (an agent's status is on screen) and Slow when every workspace is collapsed. Both Instant triggers reset it, so expanding a card or pressing refresh updates agent status straight away.
 
@@ -51,7 +51,7 @@ Note: Collapsing a workspace does not trigger Instant checks.
 
 ## Configurable Intervals
 
-The three repeating intervals (Fast, Normal, Slow) are configurable in the Settings window. Only these three durations are user-editable; Instant remains event-driven and not a separate duration. Settings edits take effect on the next scheduler tick.
+The three repeating intervals (Fast, Normal, Slow) are configurable on the "General" tab of the settings panel (the gear in the bar above the pane, or ⌘,). Only these three durations are user-editable; Instant remains event-driven and not a separate duration. Settings edits take effect on the next scheduler tick.
 
 The valid ranges are:
   * Fast: 5 to 600 seconds

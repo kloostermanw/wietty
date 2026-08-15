@@ -134,7 +134,7 @@ private final class RoundTripGitInfoProvider: GitInfoProviding, @unchecked Senda
 
         await store.refreshAllGitInfo()
 
-        let ref = try await store.openSessionThrowing(for: project, command: "claude", kind: .claude)
+        let ref = try await store.openSessionThrowing(for: project, kind: .claude)
         store.handle(.job(sessionId: ref.sessionId, jobName: "2.1.203")) // claude version string: running
         store.handle(.bell(sessionId: ref.sessionId))
 

@@ -1,7 +1,21 @@
 import Foundation
 import UserNotifications
 
-/// The only three things this app asks of a notification centre.
+/// Whether this app may post, as far as it can tell without asking.
+///
+/// A type of this app's own rather than `UNAuthorizationStatus`, because the
+/// settings tab asks a narrower question than the system's five cases answer: may
+/// we post, may we ask, or is neither true. `provisional` and `ephemeral` both post
+/// without a prompt, so they land on `granted`.
+enum NotificationPermission: Equatable {
+    /// Nobody has been asked yet, so the tab can offer a button that asks.
+    case notAsked
+    case granted
+    /// Asking again does nothing: only System Settings can undo this.
+    case denied
+}
+
+/// The only things this app asks of a notification centre.
 ///
 /// A protocol so the posting rules can be tested without the real
 /// `UNUserNotificationCenter`, which needs an authorized bundle and would put a
@@ -9,8 +23,21 @@ import UserNotifications
 @MainActor
 protocol NotificationSink: AnyObject {
     /// Asks for permission, or reports what was already decided.
-    func requestAuthorization() async -> Bool
-    func add(_ notification: BellNotification)
+    ///
+    /// Throws when the centre refuses to even ask, which is not the same as a
+    /// denial and must not be reported as one: macOS turns down an app bundle it
+    /// does not consider properly signed in about a millisecond, without ever
+    /// showing the user a prompt. The bell path swallows that; the settings tab
+    /// shows it, because a button that asks for permission and then draws exactly
+    /// what it drew before is a button that looks broken.
+    func requestAuthorization() async throws -> Bool
+    /// What was decided already, without asking. Never prompts, so the settings tab
+    /// can show the state without one appearing because a panel was opened.
+    func authorizationStatus() async -> NotificationPermission
+    /// Throws whatever the centre refused with. The bell path swallows it, because
+    /// an alert about a failed notification is an interruption complaining about an
+    /// interruption; the Test button in Settings is the one caller that shows it.
+    func add(_ notification: BellNotification) async throws
     func removeDelivered(identifiers: [String])
     /// Called when the user taps a notification. Set by whoever knows how to show a
     /// terminal, which is `ContentView`.
@@ -32,7 +59,19 @@ final class BellNotifier {
     private var granted: Bool?
     /// The in flight request, so several bells arriving together await one answer
     /// instead of racing to ask.
-    private var request: Task<Bool, Never>?
+    private var request: Task<Answer, Never>?
+
+    /// What one request came back with: the permission, and the reason there is
+    /// none when the centre refused to ask at all.
+    ///
+    /// Returned to the caller rather than held on the notifier, so a reason only
+    /// ever describes the request that produced it. A stored one outlives the state
+    /// it was true of, and the settings tab then reports a refusal against a
+    /// permission that has since been granted.
+    private struct Answer {
+        let granted: Bool
+        let failure: String?
+    }
 
     init(sink: NotificationSink) {
         self.sink = sink
@@ -44,8 +83,85 @@ final class BellNotifier {
     }
 
     func post(_ notification: BellNotification) async {
-        guard await authorized() else { return }
-        sink.add(notification)
+        guard await authorized().granted else { return }
+        try? await sink.add(notification)
+    }
+
+    /// What the centre has already decided, without asking it for anything.
+    ///
+    /// Reads through to the sink every time rather than answering from `granted`:
+    /// permission can be revoked in System Settings while the app runs, and the
+    /// settings tab showing a cached "granted" would be the one place that is wrong
+    /// about it.
+    func permission() async -> NotificationPermission {
+        let status = await sink.authorizationStatus()
+        // Keep the posting path's cache honest with what was just read, so a
+        // permission granted from the settings tab does not leave bells suppressed
+        // by a `granted` of false decided at the first bell.
+        switch status {
+        case .granted: granted = true
+        case .denied: granted = false
+        case .notAsked: granted = nil
+        }
+        return status
+    }
+
+    /// Asks, from the settings tab's button, and reports what came back.
+    ///
+    /// The prompt appears once per install: a second call after a denial returns
+    /// false without showing anything, which is why the tab offers the button only
+    /// while the answer is `.notAsked`.
+    ///
+    /// A request the centre refused is `.failed` rather than a permission, because
+    /// the state afterwards is the state before ("not asked yet") and a tab that
+    /// reported only that has nothing to show for the press.
+    func requestPermission() async -> PermissionRequest {
+        // This press's own answer. A refusal from an earlier request says nothing
+        // about whether asking now would work, and reporting one the press did not
+        // produce is how a permission the user has since granted gets drawn as a
+        // refusal, under a tab already saying "Allowed".
+        if let reason = await authorized().failure { return .failed(reason: reason) }
+        return .decided(await permission())
+    }
+
+    /// What pressing "Allow notifications…" achieved.
+    enum PermissionRequest: Equatable {
+        /// The user answered, or had answered before.
+        case decided(NotificationPermission)
+        /// macOS turned the request down without asking anyone.
+        case failed(reason: String)
+    }
+
+    /// Posts the Test button's notification, and says what went wrong if it did not
+    /// arrive.
+    ///
+    /// Distinct from `post` because this is the one place a failure is worth
+    /// showing: the whole point of the button is to find out whether the path works,
+    /// and a button that fails silently answers the opposite question.
+    func sendTest(sound: BellSound) async -> TestResult {
+        switch await requestPermission() {
+        case .failed(let reason):
+            return .failed(reason: reason)
+        case .decided(.denied):
+            return .failed(reason: "Notifications are turned off for Wietty in System Settings.")
+        case .decided(.notAsked):
+            // Asked, and neither granted nor refused: nothing was decided, so there
+            // is nothing to post against.
+            return .failed(reason: "Wietty was not allowed to post notifications.")
+        case .decided(.granted):
+            do {
+                try await sink.add(.test(sound: sound))
+                return .posted
+            } catch {
+                return .failed(reason: error.localizedDescription)
+            }
+        }
+    }
+
+    /// What the Test button has to say afterwards.
+    enum TestResult: Equatable {
+        case posted
+        case failed(reason: String)
     }
 
     /// Takes notifications back out of Notification Center, for bells that have been
@@ -59,13 +175,26 @@ final class BellNotifier {
         sink.removeDelivered(identifiers: targets.map(\.notificationIdentifier))
     }
 
-    private func authorized() async -> Bool {
-        if let granted { return granted }
+    private func authorized() async -> Answer {
+        if let granted { return Answer(granted: granted, failure: nil) }
         if let request { return await request.value }
-        let task = Task { await sink.requestAuthorization() }
+        let task = Task { () -> Answer in
+            do {
+                return Answer(granted: try await sink.requestAuthorization(), failure: nil)
+            } catch {
+                // No permission, and a reason worth reporting. False for the bell
+                // path either way, which is what its silence needs.
+                return Answer(granted: false, failure: error.localizedDescription)
+            }
+        }
         request = task
         let result = await task.value
-        granted = result
+        // A refusal is not a decision, so it is not cached: `granted` stays nil and
+        // the next bell asks again. Caching it would mean one request macOS turned
+        // down early, before the app was signed or while the centre was still coming
+        // up, silences every notification until the app is restarted, with the only
+        // repair being a settings tab the user has no reason to open.
+        if result.failure == nil { granted = result.granted }
         request = nil
         return result
     }
@@ -103,29 +232,39 @@ final class SystemNotificationSink: NSObject, NotificationSink, UNUserNotificati
         centre.delegate = self
     }
 
-    func requestAuthorization() async -> Bool {
-        do {
-            return try await centre.requestAuthorization(options: [.alert, .sound])
-        } catch {
-            // Denied, or a bundle the notification centre refuses. Either way there
-            // is nothing to show and nothing to say: the 🔔 in the sidebar is still
-            // there, and an alert about a failed notification would be an
-            // interruption complaining about an interruption.
-            return false
+    /// Throws rather than reporting a refusal as a denial. The two look identical
+    /// from here (no prompt, no permission) and are not the same thing: a denial is
+    /// the user's answer, a refusal means the request never reached them, and only
+    /// one of those is worth telling someone how to fix.
+    func requestAuthorization() async throws -> Bool {
+        try await centre.requestAuthorization(options: [.alert, .sound])
+    }
+
+    /// What was decided already. Never prompts: `notificationSettings()` reads the
+    /// state, `requestAuthorization` is the one that can put a panel on screen.
+    func authorizationStatus() async -> NotificationPermission {
+        switch await centre.notificationSettings().authorizationStatus {
+        case .notDetermined: return .notAsked
+        // Both post without a prompt, so as far as this app is concerned they are
+        // permission.
+        case .authorized, .provisional, .ephemeral: return .granted
+        // `.denied`, and whatever a later macOS adds: anything this build does not
+        // recognise is treated as "cannot post", which is the safe way to be wrong.
+        default: return .denied
         }
     }
 
-    func add(_ notification: BellNotification) {
+    func add(_ notification: BellNotification) async throws {
         let content = UNMutableNotificationContent()
         content.title = notification.title
         content.subtitle = notification.subtitle
         content.body = notification.body
-        content.sound = .default
+        content.sound = notification.sound.notificationSound
         content.userInfo = notification.target.userInfo
         // No trigger: deliver now.
         let request = UNNotificationRequest(identifier: notification.identifier,
                                            content: content, trigger: nil)
-        centre.add(request)
+        try await centre.add(request)
     }
 
     func removeDelivered(identifiers: [String]) {

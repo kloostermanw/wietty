@@ -24,27 +24,39 @@ struct ProcessLogRef: Equatable, Hashable {
 
 /// What is covering the local terminal, if anything.
 ///
-/// One value rather than two, because these are the two things that can take the
-/// pane from a local terminal and they cannot both be on screen. Held apart, every
-/// place that set one would have to remember to clear the other, and the one that
-/// forgot would leave the sidebar marking a row the pane is not showing.
+/// One value rather than three, because these are the things that can take the
+/// pane from a local terminal and no two of them can be on screen at once. Held
+/// apart, every place that set one would have to remember to clear the others, and
+/// the one that forgot would leave the sidebar marking a row the pane is not
+/// showing.
+///
+/// Settings is one of them rather than a window of its own, which is also why the
+/// panel has no close button: activating a terminal row clears the override, and the
+/// gear toggles it. `PaneRouter` owns both rules.
 enum PaneOverride: Equatable {
     case remote(RemoteSessionRef)
     case log(ProcessLogRef)
+    case settings
+    /// One workspace's own page, by workspace id. Reached from "Edit workspace…" in
+    /// the card's menu, and covering the terminal for the same reason `settings`
+    /// does: it is a page rather than a window, so it goes where every other page
+    /// goes.
+    case workspaceSettings(UUID)
 }
 
 /// What the main window's pane is showing, and therefore which sidebar row is
 /// marked.
 ///
-/// The pane holds one thing at a time and the sidebar lists three kinds, so this
-/// is the one place that says which kind won. It is derived rather than stored:
-/// `GhosttyService` owns the local selection and `ContentView` holds the override,
-/// and neither has to know about the other.
+/// The pane holds one thing at a time, three of which the sidebar lists and one of
+/// which (settings) belongs to no workspace, so this is the one place that says which
+/// won. It is derived rather than stored: `GhosttyService` owns the local selection
+/// and `PaneRouter` holds the override, and neither has to know about the other.
 ///
 /// An override covers the local selection instead of replacing it. Nothing about
-/// the local terminal changes while a remote session or a log is on screen, so
-/// clearing the override puts the local terminal back rather than leaving an empty
-/// pane.
+/// the local terminal changes while a remote session, a log or settings is on screen,
+/// so clearing the override puts the local terminal back rather than leaving an empty
+/// pane. It is also why leaving settings cannot rely on the selection *changing*: the
+/// covered terminal is still the selected one. See `PaneRouter`.
 enum PaneSelection: Equatable {
     /// Nothing selected. The pane shows its placeholder.
     case none
@@ -54,6 +66,11 @@ enum PaneSelection: Equatable {
     case remote(RemoteSessionRef)
     /// A supervised process's output.
     case processLog(ProcessLogRef)
+    /// The app's own settings. The one thing here that belongs to no workspace, so
+    /// it marks no row in the sidebar and the bar above the pane names it directly.
+    case settings
+    /// One workspace's own page, by workspace id.
+    case workspaceSettings(UUID)
 
     /// - Parameter local: `GhosttyService.selected`, mirrored into SwiftUI state.
     /// - Parameter override: whatever a sidebar row put in front of it, if any.
@@ -61,6 +78,8 @@ enum PaneSelection: Equatable {
         switch override {
         case let .remote(session): return .remote(session)
         case let .log(process): return .processLog(process)
+        case .settings: return .settings
+        case let .workspaceSettings(project): return .workspaceSettings(project)
         case nil: break
         }
         if let local { return .local(local) }
@@ -91,5 +110,11 @@ enum PaneSelection: Equatable {
     /// Whether a process row's log is the one on screen.
     func selects(processLog process: ProcessLogRef) -> Bool {
         self == .processLog(process)
+    }
+
+    /// Whether the settings panel is the one on screen, which is what marks the gear
+    /// in the bar the way the sidebar marks a row.
+    var showsSettings: Bool {
+        self == .settings
     }
 }

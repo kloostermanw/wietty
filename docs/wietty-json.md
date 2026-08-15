@@ -2,13 +2,37 @@
 
 Each workspace can hold one `wietty.json` in its root folder. It is the per
 workspace configuration file: it names the workspace, lists the terminals and
-Claude agents to lay out, and declares the supervised processes and
+agents to lay out, and declares the supervised processes and
 test-processes Wietty runs.
 
 This document covers the file format and how the file is created and maintained.
 For how processes actually behave once declared (kinds, status dots, the log
 window, environment and PATH), see the "Processes" section of the top level
 `README.md`.
+
+## The file runs commands, so it is agreed to first
+
+Most of this file is shell lines Wietty will run in the workspace's folder, as you:
+an agent's `type` is typed into that row's shell, a process or test `command` is run
+by the supervisor, `shell_init` runs before each of those, and a process with
+`auto_start` needs no click at all.
+
+A file the user wrote is not the only kind there is. A `wietty.json` arrives with a
+clone, and nothing in the file says which kind it is, so the first time a workspace's
+file asks to run a line nobody has agreed to, Wietty shows it and asks. Nothing from
+the file is applied until then: not the rows, not the process definitions, and above
+all not an `auto_start`. Declining leaves the workspace in the sidebar with its file
+unapplied, and asks again next time rather than marking the folder refused for good.
+
+The answer is remembered per workspace as the set of lines agreed to, so removing a
+row, renaming the workspace or reordering entries never asks again, and a line nobody
+has seen always does, including one added to a file approved long ago. Turning sync
+on from the app writes the file from what the workspace is already running, so it
+agrees to those lines on your behalf. The default agent `type` is not a line the file
+chose, so it is never asked about.
+
+See `AsciiScreens/ConfigApprovalView.md` for the prompt and `ConfigTrust` for the
+rule.
 
 ## Location and naming
 
@@ -91,11 +115,15 @@ A minimal file:
 
 ## Top level keys
 
+`agents` and `terminals` have no default: a file missing either is rejected with the
+alert shown above, rather than read as a workspace with none. The rest may be left
+out.
+
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `name` | string | folder name | Display name for the workspace card. A name typed into "Rename workspace…" is stored locally and wins over this one. |
-| `agents` | array | `[]` | Claude agent sessions to lay out, in order. |
-| `terminals` | array | `[]` | Terminal sessions to open, in order. |
+| `agents` | array | required | Agent sessions to lay out, in order. |
+| `terminals` | array | required | Terminal sessions to open, in order. |
 | `processes` | object | `{}` | Supervised processes, keyed by name. |
 | `tests` | object | `{}` | Test-processes, keyed by name (run-to-completion checks). |
 | `shell_init` | array | `[]` | Shell lines run before every process and test command. |
@@ -106,18 +134,32 @@ Optional. Overrides the workspace card title. When absent, the folder name is us
 
 ### `agents`
 
-An ordered list of Claude agent rows. Each entry is an object:
+An ordered list of agent rows. Each entry is an object:
 
 ```json
 "agents": [
-  { "slot": "Design the sync feature", "type": "claude" }
+  { "slot": "Design the sync feature", "type": "claude" },
+  { "slot": "codex1", "type": "codex --model o3" }
 ]
 ```
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `slot` | string | The row's stable label and identity. |
-| `type` | string | The agent kind. Currently `claude`. |
+| `type` | string | What the row runs: the line typed into its shell. `claude` is the default and what every file written before agents were configurable says. |
+
+A row started from Settings › Agents is written down with the line that agent
+runs, so a workspace that syncs its file keeps a Codex row a Codex row. A `type` of
+`claude` means the row carries no line of its own and runs `claude`, which is what
+a hand written file means by it too.
+
+Editing a `type` changes what the row runs from its next start, and only while the
+row is idle. A row with a session open keeps the line it was started with, because
+a file older than configurable agents says `claude` for every agent row and
+applying that to a running Codex row would leave it typing `claude` into Codex.
+Close the row (or restart it after the edit) to pick up a new `type`. The row's
+label is not re-derived either, so a row named after the agent that opened it keeps
+that name.
 
 ### `terminals`
 

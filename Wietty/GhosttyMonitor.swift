@@ -4,11 +4,12 @@ import Foundation
 ///
 /// Three sources, and which is which is not arbitrary.
 ///
-/// Titles and bells come from libghostty's runtime action callback
-/// (`GHOSTTY_ACTION_SET_TITLE`, `GHOSTTY_ACTION_RING_BELL`), not from parsing the
-/// byte stream. The stream is available, and `PaneStreamHub` already counts bells
-/// in it, but titles would need OSC 0 and OSC 2 parsing that `OSCStringTracker`
-/// does not do, and libghostty has already parsed both correctly.
+/// Titles, bells and desktop notifications come from libghostty's runtime action
+/// callback (`GHOSTTY_ACTION_SET_TITLE`, `GHOSTTY_ACTION_RING_BELL`,
+/// `GHOSTTY_ACTION_DESKTOP_NOTIFICATION`), not from parsing the byte stream. The
+/// stream is available, and `PaneStreamHub` already counts bells in it, but titles
+/// would need OSC 0 and OSC 2 parsing that `OSCStringTracker` does not do, an
+/// `OSC 9` needs more again, and libghostty has already parsed all three correctly.
 ///
 /// Terminations come from `GhosttyService`, because the child exiting is what a
 /// termination is on this substrate and the service is what reaps it. The surface
@@ -38,6 +39,9 @@ final class GhosttyMonitor: SessionMonitoring, @unchecked Sendable {
         }
         host.onBell = { [weak self] session in
             self?.emit([.bell(sessionId: session)])
+        }
+        host.onDesktopNotification = { [weak self] session, title, body in
+            self?.emit([.notification(sessionId: session, title: title, body: body)])
         }
     }
 

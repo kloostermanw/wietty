@@ -10,7 +10,7 @@ Terminals run inside Wietty. Each one is a pseudo terminal the app owns, rendere
 which needs nothing installed: no iTerm2, no tmux, not even Ghostty.app. They do not survive quitting
 the app, so every row's session is cleared on launch and reopens on the next click. If you have a
 Ghostty configuration file, its font, theme, cursor, and keybindings are used here too. See
-`documentation/terminal.md`.
+`docs/terminal.md`.
 
 ## Bell notifications
 
@@ -19,11 +19,18 @@ saying which workspace and which row rang. Clicking the notification brings Wiet
 shows that terminal, the same as clicking the row. Sessions on a connected Mac notify too, with that
 connection's name in the notification.
 
+A program can also ask for a notification by name, with the `OSC 9` or `OSC 777` escape sequence,
+and then the banner carries the words it sent instead of "rang the bell". That is how coding agents
+announce that they are waiting on your input.
+
 Permission is asked for the first time something rings rather than at launch, and macOS keeps its own
 per app switch under System Settings → Notifications. One notification is posted per row until the
 row is visited, so a shell beeping at an ambiguous tab completion cannot flood Notification Center,
-and visiting a row takes its notification back. Nothing is posted about a terminal already on screen
-in front of you. See `documentation/bell-notifications.md`.
+and visiting a row takes its notification back. A message a program sent is posted every time,
+because it is deliberate and the second one says something the first did not. Nothing is posted
+about a terminal already on screen in front of you. Settings → Notifications shows whether macOS
+allows any of this, posts a test notification, and picks the sound.
+See `docs/notifications.md`.
 
 ## Build
 
@@ -189,7 +196,7 @@ process and test (and to a process's `stop` and `status` commands); a process or
 `shell_init`, which is appended after the workspace wide lines rather than replacing them. Terminal
 and agent sessions are unaffected, since they run your real interactive shell.
 
-See `documentation/wietty-json.md` for the full field reference.
+See `docs/wietty-json.md` for the full field reference.
 
 There is no dedicated PATH field. Prefer `shell_init` for PATH setup, since it runs after the login
 shell has built PATH (including `path_helper`) and can extend it. Setting PATH through `env` is the

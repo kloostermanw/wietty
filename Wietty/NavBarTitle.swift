@@ -13,16 +13,39 @@ struct PaneOrigin: Equatable {
 /// What the bar above the pane says.
 ///
 /// Two steps, both pure, because they can be wrong in different ways: finding the
-/// workspace a selection belongs to, and turning that into a line of text. The
-/// view is a `Text` around them.
+/// workspace a selection belongs to, and turning that into a line of text. `line`
+/// composes them, and the view is a `Text` around it.
 @MainActor
 enum NavBarTitle {
+    /// The bar's whole line, for everything the pane can hold.
+    ///
+    /// Settings is answered here rather than by the two steps below because it
+    /// belongs to no workspace: there is nothing for the lookup to find, and an
+    /// empty bar over the panel would be a worse answer than naming it.
+    static func line(for selection: PaneSelection,
+                     projects: [Project],
+                     remote: (RemoteSessionRef) -> PaneOrigin?) -> String? {
+        if case .settings = selection { return "Settings" }
+        // A workspace's own page is named for the workspace and for what it is, so
+        // it does not read as one of that workspace's terminals. Nil when the
+        // workspace is gone, which the lookup below already answers.
+        if case .workspaceSettings = selection {
+            guard let origin = origin(for: selection, projects: projects, remote: remote) else {
+                return nil
+            }
+            return "\(origin.workspace) settings"
+        }
+        return text(for: origin(for: selection, projects: projects, remote: remote))
+    }
+
     /// The workspace the pane's content belongs to, if it can still be named.
     ///
     /// Nil is a real answer at every branch and never a crash: a session id can
     /// outlive the row that carried it, a workspace can be removed while its log is
     /// on screen, and a connection may not have delivered a snapshot yet. An empty
     /// bar is right in all three cases, and a stale name would be worse than none.
+    /// Settings answers nil too, for a different reason: it belongs to no workspace,
+    /// which is why `line` names it instead of asking here.
     ///
     /// - Parameter remote: the lookup for a session on another Mac, which lives in
     ///   a live snapshot this has no business knowing about.
@@ -30,7 +53,7 @@ enum NavBarTitle {
                        projects: [Project],
                        remote: (RemoteSessionRef) -> PaneOrigin?) -> PaneOrigin? {
         switch selection {
-        case .none:
+        case .none, .settings:
             return nil
         case let .local(sessionId):
             let owner = projects.first { project in
@@ -39,6 +62,9 @@ enum NavBarTitle {
             return owner.map { PaneOrigin(workspace: $0.name) }
         case let .processLog(log):
             return projects.first { $0.id == log.projectId }
+                .map { PaneOrigin(workspace: $0.name) }
+        case let .workspaceSettings(project):
+            return projects.first { $0.id == project }
                 .map { PaneOrigin(workspace: $0.name) }
         case let .remote(session):
             return remote(session)

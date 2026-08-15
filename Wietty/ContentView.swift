@@ -8,6 +8,10 @@ struct ContentView: View {
     @ObservedObject var remoteConnections: RemoteConnectionsStore
     @ObservedObject var remoteWorkspaces: RemoteWorkspacesController
     let bells: BellNotifier
+    /// What is covering the local terminal in the pane, and the rules that uncover
+    /// it. See `PaneRouter`, which is where both live and why it is the app that owns
+    /// them.
+    let router: PaneRouter
     @Environment(\.openWindow) private var openWindow
     @State private var mcpHost: MCPServerHost?
     @State private var remoteServer: RemoteServer?
@@ -18,16 +22,16 @@ struct ContentView: View {
     /// than on the card because the alert is the window's, not the row's.
     @State private var workspaceRenameTarget: Project?
     @State private var workspaceRenameText = ""
+    /// The workspace and agent "Add Agent with args" was chosen for, and the
+    /// arguments typed for it. Held here for the same reason the renames are: the
+    /// dialog is the window's, not the card's.
+    @State private var agentArgumentsTarget: (project: Project, agent: AgentDefinition)?
+    @State private var agentArgumentsText = ""
     @State private var sections = SectionCollapseState()
-    @State private var remoteCardCollapsed: Set<UUID> = []
     /// The local terminal the pane shows, mirrored from `GhosttyService` so a
     /// selection it makes redraws the pane. Nil on the other two substrates, where
     /// nothing reads it.
     @State private var selectedTerminal: String?
-    /// What is covering the local terminal in the pane, if anything: a remote
-    /// session or a process log. One value, so picking either replaces the other and
-    /// nothing has to remember to clear it.
-    @State private var paneOverride: PaneOverride?
     /// The sidebar's live width while the divider is being dragged, and nil until
     /// one has been.
     ///
@@ -65,10 +69,14 @@ struct ContentView: View {
                 // divider is to its left, so the sidebar keeps the full height.
                 VStack(spacing: 0) {
                     NavBarView(store: store, remoteWorkspaces: remoteWorkspaces,
-                               selection: paneSelection)
+                               selection: paneSelection,
+                               onOpenSettings: { router.toggleSettings() })
                     Divider()
                     RightTerminalView(store: store, stack: terminals.ghostty,
                                       remoteConnections: remoteConnections,
+                                      remoteWorkspaces: remoteWorkspaces,
+                                      bells: bells,
+                                      desktopNotifications: terminals.desktopNotifications,
                                       selection: paneSelection)
                 }
                 .frame(maxWidth: .infinity)
@@ -103,16 +111,18 @@ struct ContentView: View {
                 selectedTerminal = service.selected
                 service.onSelectionChanged = { session in
                     selectedTerminal = session
-                    // A local terminal coming into view takes the pane back from a
-                    // remote one, which is what makes opening or focusing a local
-                    // terminal show it even while a remote session is on screen.
-                    // Only for a real selection: the service also selects nil when
-                    // the last local terminal is closed, and blanking the pane
-                    // someone is watching a remote terminal in would be a bug rather
-                    // than an intent. Closing one local terminal while another
-                    // remains still takes the pane, because the service selects that
+                    // A local terminal coming into view takes the pane back from
+                    // whatever was covering it, which is what makes opening or
+                    // focusing one show it even while a remote session, a log or
+                    // settings is on screen. Closing one local terminal while another
+                    // remains also takes the pane, because the service selects that
                     // other one and this cannot tell it apart from a click.
-                    if session != nil { paneOverride = nil }
+                    //
+                    // This is not the whole of it: `select` returns early when the
+                    // session is already selected, so re-activating the terminal the
+                    // pane was already showing arrives nowhere. `activate` clears the
+                    // override itself for that reason.
+                    router.localSelectionChanged(to: session)
                 }
             }
             startBellNotifications()
@@ -134,10 +144,13 @@ struct ContentView: View {
         // does not count as a removal. The placeholder still earns its place: it
         // covers the frame between the store changing and this firing.
         .onChange(of: remoteConnections.connections.map(\.id)) { _, ids in
-            if case let .remote(session) = paneOverride,
-               !ids.contains(session.connectionId) {
-                paneOverride = nil
-            }
+            router.connectionsChanged(to: ids)
+        }
+        // The same for a workspace removed while its own page is on screen: the card
+        // went with it, so the page would be left with nothing in the sidebar to
+        // click out of it. Keyed on the ids, so a rename is not a removal.
+        .onChange(of: store.projects.map(\.id)) { _, ids in
+            router.workspacesChanged(to: ids)
         }
         .onChange(of: store.remoteEnabled) { Task { await syncRemoteServer() } }
         .onChange(of: store.remotePort) { Task { await syncRemoteServer(forceRestart: true) } }
@@ -168,6 +181,20 @@ struct ContentView: View {
             Text("The folder on disk keeps its own name. Clear the field to go back "
                  + "to that name, or to the one in this workspace's wietty.json.")
         }
+        .alert("Arguments for \(agentArgumentsTarget?.agent.displayName ?? "")",
+               isPresented: agentArgumentsIsPresented) {
+            TextField("Arguments", text: $agentArgumentsText)
+            Button("Cancel", role: .cancel) { agentArgumentsTarget = nil }
+            Button("Add") {
+                if let target = agentArgumentsTarget {
+                    openAgent(target.agent, arguments: agentArgumentsText, in: target.project)
+                }
+                agentArgumentsTarget = nil
+            }
+        } message: {
+            Text("Typed after the agent's command. Clear the field to run it with no "
+                 + "arguments at all.")
+        }
         .alert(
             store.lastError ?? "",
             isPresented: Binding(
@@ -177,12 +204,26 @@ struct ContentView: View {
         ) {
             Button("OK", role: .cancel) { store.lastError = nil }
         }
+        // A sheet rather than an alert: the commands are the whole question, an alert
+        // gives a list of shell lines no room, and this is the one prompt where
+        // reading before pressing is the point.
+        .sheet(item: Binding(
+            get: { store.pendingConfigApproval },
+            set: { if $0 == nil { store.declinePendingConfig() } }
+        )) { request in
+            ConfigApprovalView(
+                request: request,
+                onRun: { store.approvePendingConfig() },
+                onCancel: { store.declinePendingConfig() }
+            )
+        }
     }
 
-    /// What the pane shows and which row is marked, from the two selections that
-    /// live apart: the local one in `GhosttyService`, the remote one here.
+    /// What the pane shows and which row is marked, from the two pieces of state that
+    /// live apart: the local selection in `GhosttyService`, and whatever covers it in
+    /// `PaneRouter`.
     private var paneSelection: PaneSelection {
-        .resolve(local: selectedTerminal, override: paneOverride)
+        .resolve(local: selectedTerminal, override: router.override)
     }
 
     /// The width to lay out and to drag: whatever this window's drag left, or the
@@ -210,6 +251,13 @@ struct ContentView: View {
         workspaceRenameTarget = project
     }
 
+    private var agentArgumentsIsPresented: Binding<Bool> {
+        Binding(
+            get: { agentArgumentsTarget != nil },
+            set: { presented in if !presented { agentArgumentsTarget = nil } }
+        )
+    }
+
     private var renameIsPresented: Binding<Bool> {
         Binding(
             get: { renameTarget != nil },
@@ -235,8 +283,7 @@ struct ContentView: View {
                             isSelected: {
                                 paneSelection.selects(remoteSession: $0.sessionId,
                                                       on: connection.id)
-                            },
-                            collapsedCards: $remoteCardCollapsed
+                            }
                         )
                     }
                 }
@@ -269,15 +316,23 @@ struct ContentView: View {
          .init(system: "plus", help: "Add project folder", action: add)]
     }
 
+    /// The Local header, and whether the section under it is collapsed. Titled only
+    /// while there is a remote section to tell it apart from; see `LocalSectionHeader`.
+    private var localHeader: LocalSectionHeader {
+        .resolve(hasRemoteConnections: !remoteConnections.connections.isEmpty,
+                 storedCollapsed: sections.isCollapsed("local"))
+    }
+
     @ViewBuilder
     private var localSection: some View {
+        let header = localHeader
         SidebarSectionHeaderView(
-            title: "Local",
-            collapsed: sections.isCollapsed("local"),
+            title: header.title,
+            collapsed: header.collapsed,
             onToggle: { sections.setCollapsed("local", !sections.isCollapsed("local")) },
             buttons: localSectionButtons
         )
-        if !sections.isCollapsed("local") {
+        if !header.collapsed {
             ForEach(store.projects) { project in
                 WorkspaceCardView(
                     project: project,
@@ -298,6 +353,7 @@ struct ContentView: View {
                         paneSelection.selects(processLog: ProcessLogRef(projectId: project.id,
                                                                         name: $0))
                     },
+                    agents: store.agents,
                     onActivate: { activate($0, in: project) },
                     onRestartTerminal: { restartTerminal($0, in: project) },
                     onRenameTerminal: { startRename($0, in: project) },
@@ -305,7 +361,11 @@ struct ContentView: View {
                     onCloseTerminal: { closeTerminal($0, in: project) },
                     onOpenTerminal: { openTerminal(for: project) },
                     onOpenClaude: { openClaude(for: project) },
+                    onAddAgent: { openAgent($0, in: project) },
+                    onAddAgentWithArgs: { startAgentArguments($0, in: project) },
+                    onAddWorkspace: addProject,
                     onRemoveProject: { store.remove(project) },
+                    onEditWorkspace: { router.show(.workspaceSettings(project.id)) },
                     onRenameWorkspace: { startWorkspaceRename(for: project) },
                     onToggleCollapsed: { store.toggleCollapsed(project) },
                     onEnableSync: { store.enableConfigSync(for: project) },
@@ -408,13 +468,41 @@ struct ContentView: View {
         }
     }
 
+    /// Starts a row for one of the configured agents.
+    ///
+    /// - Parameter arguments: what the "with args" dialog collected, or nil for the
+    ///   plain menu item, which uses the agent's defaults.
+    private func openAgent(_ agent: AgentDefinition, arguments: String? = nil, in project: Project) {
+        Task {
+            isBusy = true
+            await store.openAgent(agent, arguments: arguments, for: project)
+            isBusy = false
+        }
+    }
+
+    /// Opens the arguments dialog pre-filled with the agent's defaults, so a user
+    /// edits them rather than retyping them, and so clearing the field is visibly the
+    /// way to run the agent bare.
+    private func startAgentArguments(_ agent: AgentDefinition, in project: Project) {
+        agentArgumentsText = agent.defaultArguments
+        agentArgumentsTarget = (project, agent)
+    }
+
     /// Opens the row's terminal if it was gone, starts its agent if it had
     /// stopped, and shows it.
     ///
-    /// Showing it is `store.activate`'s own doing: selecting a session is what puts
-    /// its surface in the pane, and the pane is the only place a terminal is ever
-    /// drawn. Nothing further is needed here.
+    /// Selecting a session is what puts its surface in the pane, and `store.activate`
+    /// does that. The override is cleared here rather than left to the selection
+    /// callback because `GhosttyService.select` returns early when the session is
+    /// already the selected one, and that is precisely the row a user clicks to get
+    /// out of whatever is covering it: the terminal the pane was showing a moment ago.
+    /// Relying on the callback alone left the click dead and, with settings on screen,
+    /// left the panel with no exit at all.
+    ///
+    /// Before the await, so the pane switches on the click rather than after a
+    /// reopen that may take a moment.
     private func activate(_ ref: TerminalRef, in project: Project) {
+        router.localTerminalActivated()
         Task {
             isBusy = true
             await store.activate(ref, in: project)
@@ -433,7 +521,7 @@ struct ContentView: View {
     private func restartTerminal(_ ref: TerminalRef, in project: Project) {
         Task {
             isBusy = true
-            try? await store.restart(sessionId: ref.sessionId)
+            await store.restartTerminal(sessionId: ref.sessionId)
             isBusy = false
         }
     }
@@ -447,22 +535,76 @@ struct ContentView: View {
     /// and the context menu, never from a click on the row: a process row has no
     /// activate action, so clicking one still does nothing.
     private func openProcessLog(_ process: ManagedProcess, in project: Project) {
-        paneOverride = .log(ProcessLogRef(projectId: project.id, name: process.name))
+        router.show(.log(ProcessLogRef(projectId: project.id, name: process.name)))
     }
 
     private func openTestLog(_ test: ManagedProcess, in project: Project) {
-        paneOverride = .log(ProcessLogRef(projectId: project.id, name: test.name, isTest: true))
+        router.show(.log(ProcessLogRef(projectId: project.id, name: test.name, isTest: true)))
     }
 
+    /// Clicking a remote row does what clicking a local one does: the serving Mac
+    /// opens a session for the row when it has none, and only then does the pane
+    /// attach to it.
+    ///
+    /// The session id comes from the reply rather than from `ref`, because a revived
+    /// row gets a *new* one and `ref` still carries the dead id the last snapshot
+    /// described. Attaching to that is what put `[session ended]` in the pane with no
+    /// way back to a working terminal.
+    ///
+    /// Awaited before the pane switches, unlike the local path, which switches first.
+    /// Not because a local revival cannot renumber a row, it can and does: the
+    /// difference is that the local switch never names a session. It only clears the
+    /// pane's override (`PaneRouter.localTerminalActivated`) and lets the pane follow
+    /// whatever the service ends up selecting, so a new session id is already
+    /// accounted for by the time it matters. This path has to hand `showRemote` an
+    /// id, and the only id worth handing it is the one this call is about to answer
+    /// with.
     private func openRemoteTerminal(_ remoteStore: RemoteWorkspaceStore, _ ref: TerminalRef) {
-        showRemote(RemoteSessionRef(connectionId: remoteStore.connection.id,
-                                    sessionId: ref.sessionId))
+        Task {
+            isBusy = true
+            let sessionId = await remoteStore.activate(refId: ref.id)
+            isBusy = false
+            if let message = Self.remoteActivationFailureMessage(
+                sessionId: sessionId, lastActionError: remoteStore.lastActionError) {
+                store.lastError = message
+            }
+            // Nil means the activation failed, and it has been said somewhere by now:
+            // `remoteStore.lastActionError` under the connection's section, or the
+            // alert the line above raises when the reply left that empty. Nothing is
+            // attached either way: a pane showing a session that was never opened is
+            // the failure this exists to prevent.
+            guard let sessionId else { return }
+            showRemote(RemoteSessionRef(connectionId: remoteStore.connection.id,
+                                        sessionId: sessionId))
+        }
+    }
+
+    /// What to say about an activation that answered no session id, or nil when
+    /// there is nothing to say: a reply that named a session, or a failure the
+    /// connection's own red caption already carries.
+    ///
+    /// The case left over is why the reply is not simply a `guard let`.
+    /// `RemoteWorkspaceStore.activate` clears `lastActionError` on any 2xx and then
+    /// answers nil for a body it could not read or that named an empty session, so a
+    /// serving instance that says 200 and names nothing would leave a click with no
+    /// pane, no caption and nothing written anywhere. That is this route's own dead
+    /// click, one layer further out, and the alert is the only channel a viewer
+    /// cannot miss.
+    ///
+    /// A static function taking both halves rather than reading the store, so which
+    /// replies are reported is asserted in CI rather than only reachable by pointing
+    /// this Mac at a mismatched one.
+    static func remoteActivationFailureMessage(sessionId: String?,
+                                               lastActionError: String?) -> String? {
+        guard sessionId == nil, lastActionError == nil else { return nil }
+        return "The remote answered without naming a session to show. "
+            + "It may be running an older version of Wietty."
     }
 
     /// Shows a remote session in the main window's pane, the same one the local
     /// terminals use, so it arrives beside the sidebar with no second window.
     private func showRemote(_ session: RemoteSessionRef) {
-        paneOverride = .remote(session)
+        router.show(.remote(session))
     }
 
     // MARK: - Bells
@@ -480,7 +622,21 @@ struct ContentView: View {
                 appIsFrontmost: NSApp.isActive,
                 terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
             let notification = BellNotification.local(workspace: project.name,
-                                                      label: ref.label, refId: ref.id)
+                                                      label: ref.label, refId: ref.id,
+                                                      sound: store.bellSound)
+            Task { await bells.post(notification) }
+        }
+        // A notification the process asked for by name, with its own words. The same
+        // on screen rule as a bell: a terminal the user is already looking at needs
+        // no banner. The rule that differs is upstream, in the store, which reports
+        // every one of these rather than only the first per flag.
+        store.onNotification = { project, ref, title, body in
+            guard BellAlert.shouldPost(
+                appIsFrontmost: NSApp.isActive,
+                terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
+            let notification = BellNotification.sent(workspace: project.name, label: ref.label,
+                                                     refId: ref.id, title: title, body: body,
+                                                     sound: store.bellSound)
             Task { await bells.post(notification) }
         }
         // Visiting a row takes its notification back, so Notification Center does not
@@ -508,7 +664,8 @@ struct ContentView: View {
                 terminalIsOnScreen: paneSelection.selects(remoteSession: ringer.sessionId,
                                                          on: connection)) else { continue }
             let notification = BellNotification.remote(connection: name, workspace: ringer.workspace,
-                                                       label: ringer.label, session: session)
+                                                       label: ringer.label, session: session,
+                                                       sound: store.bellSound)
             Task { await bells.post(notification) }
         }
         bells.withdraw(diff.cleared.map {
@@ -523,7 +680,7 @@ struct ContentView: View {
     /// the main window has been closed: for a `Window` scene it reopens a closed one
     /// and focuses an open one.
     private func showBell(_ target: BellTarget) {
-        openWindow(id: "main")
+        openWindow(id: WiettyApp.mainWindowID)
         NSApp.activate()
         switch target {
         case .local(let refId):
@@ -532,9 +689,10 @@ struct ContentView: View {
             guard let found = store.session(withRefId: refId) else { return }
             activate(found.ref, in: found.project)
         case .remote(let session):
-            guard let remoteStore = remoteWorkspaces.stores[session.connectionId] else { return }
-            let label = remoteStore.workspaces.flatMap(\.sessions)
-                .first { $0.sessionId == session.sessionId }?.label
+            // The same rule as the local case, on the connection rather than the row:
+            // a notification outlives the connection it came from, and one that has
+            // been removed has no session left to show.
+            guard remoteWorkspaces.stores[session.connectionId] != nil else { return }
             showRemote(session)
         }
     }

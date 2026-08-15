@@ -14,7 +14,7 @@ divider is to the bar's left and the sidebar keeps the full height.
 
 ```
 ┌─ Wietty ────────────────────────────────────────────────────────────────────┐
-│ ▾ Local            ( ⟳ )  ( + )  │ Wietty                                   │
+│                    ( ⟳ )  ( + )  │ Wietty                                 ⚙ │
 │                                  ├──────────────────────────────────────────┤
 │ ▾ Wietty  origin/develop ↑1 ↓0   │ > implement the parser                   │
 │   │  > Terminal 1                │ ⏺ Reading files…                         │
@@ -27,41 +27,74 @@ divider is to the bar's left and the sidebar keeps the full height.
   six points wide and draggable
 ```
 
-The bar says which workspace the pane's content belongs to, and is empty when
-nothing is selected. See `NavBarView.md`, which also covers why its height is part
-of the window's minimum.
+The bar says which workspace the pane's content belongs to, or `Settings` for the
+panel, and is empty when nothing is selected. Its trailing gear toggles that panel and
+is the only way into it that is inside the window, which has no title bar to hold
+anything of its own. See `NavBarView.md`, which also covers why its height is part of
+the window's minimum.
 
 The Local header offers refreshing git status and adding a folder, and nothing
-else. See `ContentView.localSectionButtons(refresh:add:)`.
+else. See `ContentView.localSectionButtons(refresh:add:)`. It carries no title
+above, because this window has no remote connection: the word Local and its
+chevron only appear once there is a remote section to tell it apart from. See
+"The sidebar" below.
 
 ## What the pane shows
 
-One thing at a time, and it can be any of the three kinds the sidebar lists: a
-local libghostty surface, a session on another Mac over the LAN remote protocol,
-or a supervised process's log. `RightTerminalView` is only the seam. A local
+One thing at a time. Three of the five are kinds the sidebar lists: a local
+libghostty surface, a session on another Mac over the LAN remote protocol, or a
+supervised process's log. The other two are pages: the app's own settings, which
+belongs to no workspace and so marks no row, and one workspace's own page, reached
+from that card's "Edit workspace…". `RightTerminalView` is only the seam. A local
 selection (or none at all) goes to `LocalTerminalView`, described next; a remote
 one to `RemoteTerminalView`, a SwiftTerm viewer over a socket to that Mac; a log
-to `ProcessLogView`, which is text this app already holds.
+to `ProcessLogView`, which is text this app already holds; settings to
+`SettingsView` (see `SettingsView.md`); a workspace to `WorkspaceSettingsView`
+(see `WorkspaceSettingsView.md`).
 
 `PaneSelection` decides which, from two pieces of state that live apart and stay
-apart: the local selection belongs to `GhosttyService`, and
-`ContentView.paneOverride` holds whatever covers it. That override is one value
-(`PaneOverride`, either a remote session or a log) rather than two, because those
-are the two things that can take the pane and they cannot both be on screen:
-held apart, every place that set one would have to remember to clear the other,
-and the one that forgot would leave the sidebar marking a row the pane is not
-showing.
+apart: the local selection belongs to `GhosttyService`, and `PaneRouter.override`
+holds whatever covers it. That override is one value (`PaneOverride`: a remote
+session, a log, settings, or a workspace page) rather than four, because no two of
+them can be on screen at once: held apart, every place that set one would have to
+remember to clear the others, and the one that forgot would leave the sidebar
+marking a row the pane is not showing.
+
+`PaneRouter` is owned by `WiettyApp` rather than held as `ContentView` state, for
+one reason: the app menu's "Settings…" item and ⌘, are declared in the scene's
+`commands` (`SettingsCommand`), which cannot reach a view's `@State`. The gear in
+the bar and the menu item then go through the same object. It also holds every rule
+that uncovers the terminal, because a rule written inside a `.task` closure cannot be
+asserted in CI, and one of them was wrong for exactly that reason (see below).
+`PaneRouterTests` covers them now.
+
+The menu item opens or focuses the main window before setting the override, the way a
+tapped bell notification does, since the window can be closed while the app runs and a
+panel in a pane nobody can see is not an answer. There is no `Settings` scene: settings
+is one of the things this window's pane shows, so a second window would be the only
+part of the app that opened one.
 
 An override covers the local selection rather than replacing it, so nothing about
-the local terminal changes while a remote session or a log is on screen and
-clearing the override puts the local terminal back. A local terminal coming into
-view clears it, which is what makes opening or focusing a local terminal show that
-terminal even while something else is on screen. That is deliberately keyed on a
-non-nil selection: the service also selects nil when the last local terminal
-closes, and blanking a pane someone is watching a remote terminal in would be a
-bug rather than an intent. Closing one local terminal while another remains does
-take the pane, because the service selects that other terminal and nothing here
-can tell that apart from a click.
+the local terminal changes while a remote session, a log, or settings is on screen,
+and clearing the override puts the local terminal back. Three things clear it.
+
+Activating a terminal row clears it directly (`ContentView.activate`). This is not
+redundant with the callback below, it is the main path: because an override *covers*
+the local selection, the terminal a user clicks to get back is usually the one that is
+still selected, and `GhosttyService.select` returns early when the session is already
+selected, so no callback arrives. Relying on the callback alone left that click dead
+and left the settings panel, which has no close button, with no exit at all.
+
+A selection the service reports clears it too, which is what makes a click on a
+different row, the MCP server, or a remote client show that terminal even while
+something else is on screen. That is deliberately keyed on a non-nil selection: the
+service also selects nil when the last local terminal closes, and blanking a pane
+someone is reading would be a bug rather than an intent. Closing one local terminal
+while another remains does take the pane, because the service selects that other
+terminal and nothing here can tell that apart from a click.
+
+The gear toggles, so it is also a way out, and the only one when no local terminal is
+selected: a fresh install has no row to activate.
 
 Only the remote session on screen holds a socket. Its view carries an explicit
 `.id`, so switching sessions discards the view rather than reusing it, and
@@ -73,11 +106,17 @@ so what is lost is that viewer's scrollback and not the screen. A remote session
 that ends while it is on screen keeps its last output under a `[session ended]`
 banner, matching what this pane does for a local terminal whose command exited.
 
-A connection removed, from the sidebar or from Settings, takes its terminal off
-the screen and puts the local one back, because the rows went with it and a
-placeholder would be a dead end with nothing left to click out of it.
+A connection removed, from the sidebar or from the settings panel, takes its
+terminal off the screen and puts the local one back, because the rows went with it
+and a placeholder would be a dead end with nothing left to click out of it.
 `RightTerminalView`'s "Connection removed" placeholder still earns its place: it
-covers the frame between the store changing and `paneOverride` being cleared.
+covers the frame between the store changing and the override being cleared.
+
+A workspace removed while its own page is on screen is the same situation and gets
+the same treatment (`PaneRouter.workspacesChanged`, wired to the workspace ids
+rather than the workspaces, so a rename is not a removal). Only that page: a
+process log belongs to a workspace too and stays readable after it is gone, and the
+settings panel belongs to no workspace at all. See `WorkspaceSettingsView.md`.
 
 ## The local terminal in the pane
 
@@ -93,6 +132,11 @@ whose command has exited keeps its surface until the row is closed, so the pane
 keeps showing the last screen that command printed. The pane's three states are
 `GhosttyPaneState`: the terminal's setup error, the selected terminal, or a
 placeholder when nothing is selected. See `LocalTerminalView`.
+
+Dropping files from Finder onto the pane inserts their paths at the cursor, shell
+quoted and space separated, the standard macOS terminal gesture for handing a file
+to a running CLI. The surface itself is the drop target; see "Dropping files onto
+the pane" in `docs/terminal.md`.
 
 The same `PaneSelection` marks the row, through `WorkspaceCardView.isSelected`
 for a terminal row and `isProcessSelected` for a process row: a row is marked when
@@ -111,11 +155,11 @@ clicked. The fill itself is `SidebarRowBackground` and is described in
 
 ## The process log in the pane
 
-A log is the one pane content that is not a selection. Clicking a process row
-still does nothing; the log arrives through `[▤]` or the context menu's "Open
-log", which is what `ProcessRowView.md` describes. Once it is there it behaves
-exactly like a remote session: it stays until a terminal or remote row is clicked,
-and its process row is marked while it is on screen.
+A log is not something a click on its row selects, the way a terminal is. Clicking
+a process row still does nothing; the log arrives through `[▤]` or the context
+menu's "Open log", which is what `ProcessRowView.md` describes. Once it is there it
+behaves exactly like a remote session: it stays until a terminal or remote row is
+clicked, and its process row is marked while it is on screen.
 
 `ProcessLogView` looks its process up by `ProcessLogRef` on every redraw rather
 than holding it, because a process can be stopped, restarted, or dropped from the
@@ -153,10 +197,11 @@ absorbs every resize, and the width is a number the app owns and can persist.
 Three pieces, each with one job. `SidebarWidth` is the arithmetic (the 240 point
 sidebar floor, the 480 point pane floor, the 6 points the divider occupies, the
 320 point default, and the clamp), `SidebarDivider` is the hit area, the resize
-cursor and the drag, and `ProjectStore.sidebarWidth` is the persisted value under
-`wietty.sidebarWidth`. The live width while a drag is running is `@State` in
-`ContentView`, and the store is written once, on release, so one drag is one
-`UserDefaults` write rather than one per frame. That state starts nil and falls
+cursor and the drag, and `ProjectStore.sidebarWidth` is the persisted value, written
+to `~/.config/wietty/config` under `sidebar-width` (see settings-storage.md). The
+live width while a drag is running is `@State` in `ContentView`, and the store is
+written once, on release, so one drag is one file write rather than one per frame.
+That state starts nil and falls
 back to the store, which is what makes the first frame after a launch the stored
 width rather than the default.
 
@@ -201,7 +246,8 @@ its own `@ObservedObject`. That is required, not stylistic: the store is a neste
 `ObservableObject` inside `RemoteWorkspacesController`, so a view observing only
 the controller never redraws when a snapshot arrives on the socket.
 Each section starts with a `SidebarSectionHeaderView` and, unless collapsed
-(`sections: SectionCollapseState`, keyed `"local"` / `"remote-<connection id>"`),
+(`sections: SectionCollapseState`, keyed `"local"` / `"remote-<connection id>"`,
+and for the Local section resolved by `LocalSectionHeader`),
 lists one `WorkspaceCardView` per project with a `Divider` between cards. Only
 the Local section has the trailing drop zone and drag-to-reorder support; a
 Remote section instead shows a state line ("Connecting…", "Unreachable.
@@ -210,9 +256,21 @@ whenever that connection isn't `.connected`. When a remote action (open,
 restart, or close) is rejected by the server, that section also shows a small
 red caption from `store.lastActionError`, so the failure is visible.
 
+The Local header's title is the one thing that comes and goes. It exists to tell
+this Mac's workspaces apart from a connection's, so with no connection configured
+there is no second section, the word and its chevron say nothing, and the row
+keeps only its buttons (which are reachable nowhere else). Losing the chevron
+loses the only way to expand the section, so a collapse stored under `"local"` is
+ignored while the title is hidden rather than obeyed, and honoured again as soon
+as a connection puts the chevron back. `LocalSectionHeader.resolve` decides both
+halves and `LocalSectionHeaderTests` asserts them, because a stored collapse with
+nothing on screen to undo it would hide every workspace. The drawing below has two
+connections, so it shows the titled form; the window at the top of this file has
+none, so it shows the other one.
+
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ ▾ Local                                       ( ⊞ )  ( ⟳ )  ( + )  │  SidebarSectionHeaderView
+│ ▾ Local                                              ( ⟳ )  ( + )  │  SidebarSectionHeaderView
 ├───────────────────────────────────────────────────────────────────┤
 │ ▾ laravel-test                       origin/develop           ↑1 ↓0 │  WorkspaceCardView
 │                                      origin/feature/issue-15   ↑1 ↓0 │
@@ -237,13 +295,15 @@ red caption from `store.lastActionError`, so the failure is visible.
 
 Legend:
 
-- Bells: `task` wires `store.onBell` and a `RemoteBellObserver` to
+- Bells: `task` wires `store.onBell`, `store.onNotification` (the messages a
+  program sends with `OSC 9` or `OSC 777`) and a `RemoteBellObserver` to
   `BellNotifier`, and `bells.onTap` back to `showBell(_:)`, which brings this
   window forward and then takes the same path a row click does. The 🔔 on a row is
   unrelated plumbing (`store.attention`) and shows with or without notification
-  permission. See `../bell-notifications.md`.
+  permission. See `../notifications.md`.
 - `SidebarSectionHeaderView`: one per section, title, chevron, and trailing
-  icon buttons. Local: refresh git status, add a project folder.
+  icon buttons. A nil title draws the buttons alone, which is the Local header
+  with no connection configured. Local: refresh git status, add a project folder.
   Remote: reconnect (`store.stop(); store.start()`), remove connection
   (`remoteConnections.remove(id:)` then `remoteWorkspaces.sync()`).
   See `SidebarSectionHeaderView`.
@@ -254,9 +314,16 @@ Legend:
   `RemoteProjectAdapter.decoded(_:)`; actions that
   have no remote equivalent (rename, remove terminal, remove project, enable
   sync, apply config, process controls) are wired to no-ops. Tapping a remote
-  terminal row (`onActivate`) calls `openRemoteTerminal(remoteStore, ref)`,
-  which sets `remoteSelection` to `(remoteStore.connection.id, ref.sessionId)` and
-  so shows the session in this window's pane. See "What the pane shows" above.
+  terminal row (`onActivate`) calls `openRemoteTerminal(remoteStore, ref)`, which
+  awaits `RemoteWorkspaceStore.activate(refId:)` so the serving Mac opens a
+  session for the row when it has none, and then goes through `showRemote` to
+  `router.show(.remote(RemoteSessionRef(connectionId: sessionId:)))` with the
+  session id that call answered, never with the one the row already carried (a
+  revived row gets a new one). A failed activation attaches nothing and leaves
+  the reason in the section's red caption, except for the one reply that leaves
+  that caption empty (a success status naming no session), which
+  `remoteActivationFailureMessage` turns into the same alert a local failure
+  raises, so a tap is never simply ignored. See "What the pane shows" above.
   `RemoteSectionView` is also given `isSelected`, so a remote row is marked
   exactly like a local one.
   Tapping a local terminal row (`onActivate`) calls `activate(ref, in: project)`,
@@ -272,17 +339,26 @@ Legend:
   `SidebarWidth.minimum`, the floor a divider drag stops at, since the outer
   explicit width never goes below it.
 - Collapse state (both the section chevron and each remote card's own chevron)
-  is `@State` in `ContentView`, with the remote card set passed into each
-  `RemoteSectionView` as a `@Binding`; section collapse persists via
-  `SectionCollapseState` (`UserDefaults`), per-card collapse for remote
-  projects is in-memory only for this window's lifetime (local project cards
-  persist their collapse through `ProjectStore.toggleCollapsed`).
+  lives in one `SectionCollapseState`, held as `@State` in `ContentView` and
+  backed by `UserDefaults`, so both survive a relaunch. A section is stored under
+  `"local"` or `"remote-<connectionId>"` and is overruled for the Local section
+  while its header has no chevron. A remote card is stored under
+  `RemoteSectionView.cardKey(connectionId:workspaceId:)`, both ids because a
+  workspace id is only unique on the Mac that owns it. A remote card nobody has
+  toggled starts **collapsed**, unlike a section and unlike a local card, so a
+  connection serving a dozen workspaces does not fill the sidebar the moment it
+  connects. The collapse is the viewing Mac's own preference and is never sent
+  upstream. Local project cards persist their collapse through
+  `ProjectStore.toggleCollapsed` instead.
 
 ## Overlays and alerts
 
-`ContentView` is disabled and shows a small `ProgressView` while `isBusy` (a
-terminal or Claude session is being opened, activated, or closed). It also hosts
-three alerts:
+The sidebar is disabled and shows a small `ProgressView` while `isBusy` (a
+terminal or agent session is being opened, activated, or closed). The modifiers
+sit on the sidebar rather than on the window, so the pane beside it is left
+alone. A remote tap holds `isBusy` longest, since it waits for the serving
+instance to answer, up to the 15 second cap on that request. `ContentView` also
+hosts four alerts:
 
 ```
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
@@ -307,7 +383,29 @@ three alerts:
 │                  [ Cancel ] [ Rename ] │
 └────────────────────────────────────────┘
   (workspaceRenameTarget != nil)
+
+┌────────────────────────────────────────┐
+│ Arguments for Codex                    │
+│                                        │
+│ Typed after the agent's command. Clear │
+│ the field to run it with no arguments  │
+│ at all.                                │
+│                                        │
+│  [ --model o3________________ ]        │
+│                                        │
+│                     [ Cancel ] [ Add ] │
+└────────────────────────────────────────┘
+  (agentArgumentsTarget != nil)
 ```
+
+The arguments dialog is what "Add Agent with args" opens, after the agent has been
+picked from the submenu (`WorkspaceCardView.md`). Its field is pre-filled with that
+agent's default arguments, so the user edits rather than retypes, and so clearing
+the field is visibly the way to run the agent bare: what is typed replaces the
+defaults rather than being appended to them. Confirming starts the row through
+`ProjectStore.openAgent`, exactly as the plain "Add Agent" item does with the
+defaults. `ContentView` holds both halves of its state, `agentArgumentsTarget` and
+`agentArgumentsText`, which is why this alert lives here rather than on the card.
 
 The workspace rename dialog is opened from the workspace header's context menu
 (`WorkspaceCardView.md` covers which cards offer the item at all). Its field is
@@ -330,6 +428,14 @@ anything, and one thing sets it from the `.task`: `terminals.setupError`, which 
 libghostty or the bundled helper failing to start. There is nothing to fall back
 to, so that message is all the user gets and it has to say what they can do about
 it.
+
+Alongside the four alerts, `ContentView` hosts one sheet: `ConfigApprovalView`, on
+`store.pendingConfigApproval`. It asks whether the shell lines in a workspace's
+`wietty.json` may run, and it can also appear on launch, since `load()` reconciles
+every workspace that has a file. A sheet rather than an alert because the commands
+are the whole question and an alert gives a list of shell lines no room. Its binding
+treats any dismissal as declining, so there is no way to run the file by accident.
+See `ConfigApprovalView.md`.
 
 The `.task` also calls `store.clearDeadSessions()`, before the monitor starts. It
 never sets `store.lastError`: a PTY the app spawned cannot survive the app

@@ -60,6 +60,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
 
     var onTitle: (@MainActor (String, String) -> Void)?
     var onBell: (@MainActor (String) -> Void)?
+    var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
     var onResized: (@MainActor (String, TerminalSize) -> Void)?
     var onCloseRequested: (@MainActor (String) -> Void)?
 
@@ -92,12 +93,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
             throw SurfaceHostError.initFailed("libghostty could not initialise.")
         }
 
-        let config = ghostty_config_new()
-        // The user's own Ghostty configuration is loaded deliberately: the font,
-        // theme, and cursor they already chose for Ghostty are the right defaults
-        // for a Ghostty terminal inside another app.
-        ghostty_config_load_default_files(config)
-        ghostty_config_finalize(config)
+        let config = Self.buildConfig()
         self.config = config
 
         var runtime = ghostty_runtime_config_s()
@@ -152,6 +148,72 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
         guard let pointer = info.version, info.version_len > 0 else { return "unknown" }
         return String(decoding: UnsafeRawBufferPointer(start: pointer, count: Int(info.version_len)),
                       as: UTF8.self) + " (build mode \(info.build_mode.rawValue))"
+    }
+
+    // MARK: - Configuration
+
+    /// The user's Ghostty config, then Wietty's own file over the top.
+    ///
+    /// Order is the whole mechanism. libghostty has no setter, so the only way to
+    /// change a value is to load another file after the one that set it, and the
+    /// last file to set a key wins. Loading the user's config first keeps the font,
+    /// theme and cursor they already chose for Ghostty, which is why it is loaded at
+    /// all; loading Wietty's file second is what makes a toggle in Wietty's Settings
+    /// window mean anything.
+    ///
+    /// The overlay is loaded unconditionally. A path that does not exist is not an
+    /// error to libghostty: it sets no values and raises no diagnostics, which is
+    /// exactly what "Wietty has no opinion" should do, so there is nothing to check
+    /// for first.
+    ///
+    /// - Parameter overlay: nil builds the user's configuration alone, which is what
+    ///   `desktopNotifications` compares against to tell whether Wietty is
+    ///   overriding a value the user set themselves.
+    private static func buildConfig(overlay: URL? = GhosttyOverrideFile.defaultURL) -> ghostty_config_t? {
+        let config = ghostty_config_new()
+        ghostty_config_load_default_files(config)
+        if let overlay { ghostty_config_load_file(config, overlay.path) }
+        ghostty_config_finalize(config)
+        return config
+    }
+
+    var desktopNotifications: (effective: Bool, userConfig: Bool) {
+        // The user's configuration is rebuilt rather than remembered, because this
+        // is read when the Settings tab is drawn and not on any hot path, and a
+        // remembered copy would go stale the moment they edited their own config.
+        let theirs = Self.buildConfig(overlay: nil)
+        defer { ghostty_config_free(theirs) }
+        return (Self.desktopNotifications(in: config), Self.desktopNotifications(in: theirs))
+    }
+
+    /// libghostty's answer for one key. `ghostty_config_get` exposes a subset of the
+    /// configuration and this key is in it, which is measured rather than assumed:
+    /// neighbouring keys are not, so this cannot be generalised without checking the
+    /// one being added.
+    ///
+    /// A getter that refuses leaves `true`, libghostty's own default, which is also
+    /// what a config setting nothing resolves to.
+    private static func desktopNotifications(in config: ghostty_config_t?) -> Bool {
+        guard let config else { return true }
+        var value = true
+        let key = "desktop-notifications"
+        _ = key.withCString { ghostty_config_get(config, &value, $0, UInt(strlen($0))) }
+        return value
+    }
+
+    func reloadConfig() {
+        guard let app else { return }
+        let rebuilt = Self.buildConfig()
+        // The app first, then every surface. libghostty copies what it needs out of
+        // the config, so the old one can be freed once both have been handed the new
+        // one, and freeing it before the surfaces are updated would leave them
+        // reading it.
+        ghostty_app_update_config(app, rebuilt)
+        for surface in surfaces.values {
+            ghostty_surface_update_config(surface.handle, rebuilt)
+        }
+        if let previous = config { ghostty_config_free(previous) }
+        config = rebuilt
     }
 
     // MARK: - Surfaces
@@ -316,6 +378,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
     private enum SurfaceEvent: Sendable {
         case render
         case bell
+        case notification(title: String, body: String)
         case title(String)
         case cellSize
     }
@@ -340,6 +403,23 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
             event = .render
         case GHOSTTY_ACTION_RING_BELL:
             event = .bell
+        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
+            // A body is what there is to show, so a notification without one does not
+            // become a banner. It becomes a bell instead of nothing: something did
+            // happen on this terminal, and returning here dropped the event before
+            // the store saw it, so the row lost its attention mark too. A program that
+            // signalled got no banner, no mark in the sidebar, and no trace.
+            //
+            // Empty counts as absent. libghostty passes a non-null empty C string for
+            // an `OSC 9;` carrying no payload, so checking only for null let a
+            // textless banner through. A missing title is kept: `OSC 9;text` sets only
+            // the body, and libghostty passes an empty title in that case.
+            let payload = action.action.desktop_notification
+            let body = payload.body.map { String(cString: $0) } ?? ""
+            event = body.isEmpty
+                ? .bell
+                : .notification(title: payload.title.map { String(cString: $0) } ?? "",
+                                body: body)
         case GHOSTTY_ACTION_CELL_SIZE:
             // The font metrics changed, so the grid has to be derived again even
             // though the view did not move.
@@ -382,6 +462,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
             surface.view.requestRedraw()
         case .bell:
             onBell?(id)
+        case .notification(let title, let body):
+            onDesktopNotification?(id, title, body)
         case .title(let title):
             setTitle(title, for: id)
             onTitle?(id, title)
@@ -591,6 +673,9 @@ final class GhosttySurfaceView: NSView {
         // first frame and a host supplied layer is left detached, so writing
         // metrics to one would do nothing at all.
         wantsLayer = true
+        // Without this AppKit rejects a file drag before it reaches the view, so
+        // dropping a file onto the pane does nothing. See "Drag and drop" below.
+        registerForDraggedTypes([.fileURL])
     }
 
     @available(*, unavailable)
@@ -970,6 +1055,62 @@ final class GhosttySurfaceView: NSView {
     fileprivate func sendText(_ text: String) {
         guard let surface, !text.isEmpty else { return }
         text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
+    }
+
+    // MARK: Drag and drop
+
+    /// A dropped file's path, quoted so a shell reads it as one literal argument.
+    ///
+    /// Single quoted, with each embedded single quote closed and re-opened around
+    /// an escaped one (`'\''`), which is the only byte a single quoted string
+    /// cannot otherwise contain. Spaces, double quotes and newlines then stay
+    /// inside the quotes, so a filename with any of them lands as one argument and
+    /// cannot run as shell input.
+    static func shellQuoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// The text a drop of these files inserts: each path shell quoted, joined by a
+    /// single space, and with no trailing newline so nothing is submitted before
+    /// the user presses return.
+    static func insertionText(forDroppedFiles urls: [URL]) -> String {
+        urls.map { shellQuoted($0.path) }.joined(separator: " ")
+    }
+
+    /// The file URLs a pasteboard carries, in drop order, or empty for a drag that
+    /// is not files (a text selection, a colour). Restricted to file URLs so a
+    /// dragged web link does not read as a path.
+    static func fileURLs(on pasteboard: NSPasteboard) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options)
+        return (objects as? [URL]) ?? []
+    }
+
+    /// Whether a pasteboard carries file URLs, without materialising them. Called
+    /// from `draggingEntered` to decide whether to accept the drag, so it uses the
+    /// cheap `canReadObject` probe rather than reading the URLs to answer.
+    static func canDropFiles(on pasteboard: NSPasteboard) -> Bool {
+        pasteboard.canReadObject(forClasses: [NSURL.self],
+                                 options: [.urlReadingFileURLsOnly: true])
+    }
+
+    /// `.copy` while a file drag is over the pane, which is what draws the drop
+    /// highlight and the plus badge; nothing for any other drag.
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        Self.canDropFiles(on: sender.draggingPasteboard) ? .copy : []
+    }
+
+    /// Reads the dropped files, takes focus so the paths land where the user is
+    /// working, and sends them the same way pasted text is sent. Plain text, not
+    /// the paste binding: the paths are one line with no newline, `shellQuoted`
+    /// already makes them safe, and going through the binding would raise the
+    /// unsafe paste alert for nothing.
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let urls = Self.fileURLs(on: sender.draggingPasteboard)
+        guard !urls.isEmpty else { return false }
+        window?.makeFirstResponder(self)
+        sendText(Self.insertionText(forDroppedFiles: urls))
+        return true
     }
 
     // MARK: Mouse

@@ -19,9 +19,9 @@ checks `Content-Type` (the default also validates `Origin`, `Accept`, and the
 protocol version). Origin validation is intentionally relaxed, because many MCP
 HTTP clients omit the `Origin` header; the loopback-only bind is the mitigation.
 
-The port defaults to 7433 and can be changed in Settings → Ports. The server
-restarts on the new port as soon as you change it, and Settings shows an error
-there if it fails to bind.
+The port defaults to 7433 and can be changed on the MCP tab of Settings. The
+server restarts on the new port as soon as you change it, and that tab shows an
+error there if it fails to bind.
 
 ### Handshake
 
