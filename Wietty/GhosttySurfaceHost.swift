@@ -673,6 +673,9 @@ final class GhosttySurfaceView: NSView {
         // first frame and a host supplied layer is left detached, so writing
         // metrics to one would do nothing at all.
         wantsLayer = true
+        // Without this AppKit rejects a file drag before it reaches the view, so
+        // dropping a file onto the pane does nothing. See "Drag and drop" below.
+        registerForDraggedTypes([.fileURL])
     }
 
     @available(*, unavailable)
@@ -1052,6 +1055,62 @@ final class GhosttySurfaceView: NSView {
     fileprivate func sendText(_ text: String) {
         guard let surface, !text.isEmpty else { return }
         text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
+    }
+
+    // MARK: Drag and drop
+
+    /// A dropped file's path, quoted so a shell reads it as one literal argument.
+    ///
+    /// Single quoted, with each embedded single quote closed and re-opened around
+    /// an escaped one (`'\''`), which is the only byte a single quoted string
+    /// cannot otherwise contain. Spaces, double quotes and newlines then stay
+    /// inside the quotes, so a filename with any of them lands as one argument and
+    /// cannot run as shell input.
+    static func shellQuoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// The text a drop of these files inserts: each path shell quoted, joined by a
+    /// single space, and with no trailing newline so nothing is submitted before
+    /// the user presses return.
+    static func insertionText(forDroppedFiles urls: [URL]) -> String {
+        urls.map { shellQuoted($0.path) }.joined(separator: " ")
+    }
+
+    /// The file URLs a pasteboard carries, in drop order, or empty for a drag that
+    /// is not files (a text selection, a colour). Restricted to file URLs so a
+    /// dragged web link does not read as a path.
+    static func fileURLs(on pasteboard: NSPasteboard) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options)
+        return (objects as? [URL]) ?? []
+    }
+
+    /// Whether a pasteboard carries file URLs, without materialising them. Called
+    /// from `draggingEntered` to decide whether to accept the drag, so it uses the
+    /// cheap `canReadObject` probe rather than reading the URLs to answer.
+    static func canDropFiles(on pasteboard: NSPasteboard) -> Bool {
+        pasteboard.canReadObject(forClasses: [NSURL.self],
+                                 options: [.urlReadingFileURLsOnly: true])
+    }
+
+    /// `.copy` while a file drag is over the pane, which is what draws the drop
+    /// highlight and the plus badge; nothing for any other drag.
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        Self.canDropFiles(on: sender.draggingPasteboard) ? .copy : []
+    }
+
+    /// Reads the dropped files, takes focus so the paths land where the user is
+    /// working, and sends them the same way pasted text is sent. Plain text, not
+    /// the paste binding: the paths are one line with no newline, `shellQuoted`
+    /// already makes them safe, and going through the binding would raise the
+    /// unsafe paste alert for nothing.
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let urls = Self.fileURLs(on: sender.draggingPasteboard)
+        guard !urls.isEmpty else { return false }
+        window?.makeFirstResponder(self)
+        sendText(Self.insertionText(forDroppedFiles: urls))
+        return true
     }
 
     // MARK: Mouse
