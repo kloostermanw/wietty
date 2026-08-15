@@ -133,6 +133,11 @@ keeps showing the last screen that command printed. The pane's three states are
 `GhosttyPaneState`: the terminal's setup error, the selected terminal, or a
 placeholder when nothing is selected. See `LocalTerminalView`.
 
+Dropping files from Finder onto the pane inserts their paths at the cursor, shell
+quoted and space separated, the standard macOS terminal gesture for handing a file
+to a running CLI. The surface itself is the drop target; see "Dropping files onto
+the pane" in `docs/terminal.md`.
+
 The same `PaneSelection` marks the row, through `WorkspaceCardView.isSelected`
 for a terminal row and `isProcessSelected` for a process row: a row is marked when
 it is what the pane is drawn from, so the highlighted row and the thing on screen

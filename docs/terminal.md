@@ -533,6 +533,14 @@ a socket that then stays silent forever.
 - **The surface is kept after the child exits**, on purpose, so that last screen stays readable.
   `close`, `discard` and `closeAll` are the only things that destroy a surface, which is to say: closing
   the row, reopening it, or quitting. See "What happens to a terminal that stopped".
+- **Dropping files onto the pane inserts their paths.** `GhosttySurfaceView` registers for `.fileURL`
+  drags, so a file dragged from Finder inserts its path at the cursor, shell quoted, several files
+  separated by a single space and with no trailing newline, which is how a path is handed to a CLI
+  running in the terminal. Each path is single quoted with embedded single quotes escaped, so spaces,
+  quotes and newlines in a filename cannot run as shell input. The text goes through `sendText`
+  (`ghostty_surface_text`), the same plain path dictation and a Services item use, not the paste
+  binding: one line with no newline needs no bracketed paste and would only raise the unsafe paste
+  alert. Local pane only. The browser client and the iPad have the same gap and are served elsewhere.
 
 Consciously deferred, so do not read the above as a complete feature list and do not promise these:
 mouse shape (`GHOSTTY_ACTION_MOUSE_SHAPE` is unhandled, so a full screen program that asks for an

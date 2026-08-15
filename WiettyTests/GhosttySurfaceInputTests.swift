@@ -42,4 +42,79 @@ import AppKit
         // "none", so an inertial scroll would never be told it had stopped.
         #expect(GhosttySurfaceView.scrollMods(precision: true, momentum: 4) == 9)
     }
+
+    // MARK: Drag and drop
+
+    /// A path with nothing special still comes back quoted, because the shell the
+    /// text lands in must read it as one literal argument whether or not it needs
+    /// protecting.
+    @Test func aPlainPathIsSingleQuoted() {
+        #expect(GhosttySurfaceView.shellQuoted("/tmp/notes.txt") == "'/tmp/notes.txt'")
+    }
+
+    /// Spaces are the common case and the whole reason iTerm2 users reach for the
+    /// drag: unquoted, `/tmp/my file.txt` would arrive as two arguments.
+    @Test func spacesStayInsideTheQuotes() {
+        #expect(GhosttySurfaceView.shellQuoted("/tmp/my file.txt") == "'/tmp/my file.txt'")
+    }
+
+    /// The one byte a single quoted string cannot hold. `it's` has to close the
+    /// quote, emit an escaped quote, and reopen, or everything after it would be
+    /// read as unquoted shell input.
+    @Test func embeddedSingleQuotesAreEscaped() {
+        #expect(GhosttySurfaceView.shellQuoted("/tmp/it's here.txt") == "'/tmp/it'\\''s here.txt'")
+        #expect(GhosttySurfaceView.shellQuoted("a'b") == "'a'\\''b'")
+    }
+
+    /// A newline in a filename stays inside the quotes, so the shell reads a
+    /// multi-line quoted argument rather than running the second line.
+    @Test func newlinesStayInsideTheQuotes() {
+        #expect(GhosttySurfaceView.shellQuoted("a\nb") == "'a\nb'")
+    }
+
+    /// One file inserts one quoted path.
+    @Test func oneDroppedFileInsertsItsQuotedPath() {
+        let text = GhosttySurfaceView.insertionText(forDroppedFiles: [URL(fileURLWithPath: "/tmp/a.txt")])
+        #expect(text == "'/tmp/a.txt'")
+    }
+
+    /// Several files join with a single space and no trailing newline, so the line
+    /// waits at the cursor for the user to press return rather than submitting on
+    /// drop.
+    @Test func manyDroppedFilesJoinWithSpacesAndNoTrailingNewline() {
+        let text = GhosttySurfaceView.insertionText(forDroppedFiles: [
+            URL(fileURLWithPath: "/tmp/a.txt"),
+            URL(fileURLWithPath: "/tmp/b c.txt"),
+        ])
+        #expect(text == "'/tmp/a.txt' '/tmp/b c.txt'")
+        #expect(!text.hasSuffix("\n"))
+    }
+
+    /// Nothing dropped is empty text, which `sendText` then ignores.
+    @Test func noDroppedFilesIsEmptyText() {
+        #expect(GhosttySurfaceView.insertionText(forDroppedFiles: []) == "")
+    }
+
+    /// A pasteboard carrying file URLs is read as those URLs, in order.
+    @Test func fileURLsAreReadFromThePasteboard() {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name(rawValue: "wietty.test.drop.files"))
+        pasteboard.clearContents()
+        let a = URL(fileURLWithPath: "/tmp/a.txt")
+        let b = URL(fileURLWithPath: "/tmp/b c.txt")
+        pasteboard.writeObjects([a as NSURL, b as NSURL])
+
+        #expect(GhosttySurfaceView.canDropFiles(on: pasteboard))
+        #expect(GhosttySurfaceView.fileURLs(on: pasteboard).map(\.path) == [a.path, b.path])
+    }
+
+    /// A drag that is only text is not a file drop, so the pane refuses it and
+    /// draws no highlight.
+    @Test func aTextOnlyPasteboardCarriesNoFiles() {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name(rawValue: "wietty.test.drop.text"))
+        pasteboard.clearContents()
+        pasteboard.setString("just text", forType: .string)
+
+        #expect(!GhosttySurfaceView.canDropFiles(on: pasteboard))
+        #expect(GhosttySurfaceView.fileURLs(on: pasteboard).isEmpty)
+    }
 }
