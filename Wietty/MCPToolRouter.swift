@@ -134,8 +134,25 @@ final class MCPToolRouter {
     private func sendInput(_ args: [String: JSONValue]) async throws -> JSONValue {
         let (_, ref) = try resolveTerminal(args)
         guard let text = args["text"]?.stringValue else { throw MCPToolError.missingArgument("text") }
-        try await store.sendText(text, toSessionId: ref.sessionId)
+        try await store.sendText(Self.submitting(text), toSessionId: ref.sessionId)
         return .object(["sent": .bool(true), "session_id": .string(ref.sessionId)])
+    }
+
+    /// Rewrites newlines to carriage returns so a `\n` in `send_input` text submits
+    /// the line the way pressing Return does.
+    ///
+    /// A terminal reports the Return key as CR (0x0D), never LF (0x0A). A cooked mode
+    /// shell maps that CR to NL through its line discipline (ICRNL), and a raw mode
+    /// reader such as Claude Code treats CR as submit, so CR is what works for both.
+    /// A bare LF submits only under cooked mode: a raw mode reader takes it as a
+    /// literal newline and inserts a blank line instead of running the input, which
+    /// is why a trailing `\n` looked ignored against a running agent. The remote
+    /// keystroke path already sends CR, because its clients forward real key events,
+    /// so this rewrite lives here at the MCP boundary and leaves that path untouched.
+    /// CRLF collapses to a single CR, so "cmd\r\n" is one Return and not two.
+    static func submitting(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n", with: "\r")
     }
 
     private func closeProcess(_ args: [String: JSONValue]) async throws -> JSONValue {
@@ -285,10 +302,10 @@ final class MCPToolRouter {
                   description: "Open a new claude session in a workspace (shorthand for spawn_process with kind=claude).",
                   inputSchema: Self.schema(properties: ["project_id": Self.stringProp("Workspace id (defaults to selected)")], required: [])),
             .init(name: "send_input",
-                  description: "Send text to a session. Include a trailing newline (\\n) to submit a command.",
+                  description: "Send text to a session. Include a newline (\\n) to submit; every newline is sent as a Return.",
                   inputSchema: Self.schema(properties: [
                     "session_id": Self.stringProp("terminal session id"),
-                    "text": Self.stringProp("Text to send verbatim"),
+                    "text": Self.stringProp("Text to send. Each newline (\\n or \\r\\n) is rewritten to a carriage return, so it submits the line the way pressing Return does."),
                   ], required: ["session_id", "text"])),
             .init(name: "close_process",
                   description: "Close a session and drop it from the workspace.",

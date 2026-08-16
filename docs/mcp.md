@@ -47,6 +47,10 @@ traffic, which is what MCP clients generate in practice, is unaffected.
 
 ```sh
 claude mcp add --transport http wietty http://127.0.0.1:7433/mcp
+
+or
+
+claude mcp add --scope user --transport http wietty http://127.0.0.1:7433/mcp
 ```
 
 The app must be running for the endpoint to be reachable.

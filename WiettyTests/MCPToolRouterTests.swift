@@ -149,7 +149,34 @@ import Foundation
         )
         #expect(result["sent"]?.boolValue == true)
         #expect(fake.sendCalls.last?.sessionId == sid)
-        #expect(fake.sendCalls.last?.text == "ls\n")
+        // The trailing newline is rewritten to a carriage return, which is what the
+        // Return key sends and what a raw mode reader (Claude Code) treats as submit.
+        #expect(fake.sendCalls.last?.text == "ls\r")
+    }
+
+    @Test func sendInputRewritesNewlinesToCarriageReturns() async throws {
+        let (router, store, fake) = makeRouter(projectNames: ["alpha"])
+        let id = store.projects[0].id
+        _ = try await router.call("spawn_process", arguments: ["project_id": .string(id.uuidString)])
+        let sid = store.projects[0].terminals[0].sessionId
+        // Bare LF, CRLF, and an embedded newline all become a single CR each, so
+        // every line is submitted the way a keyboard would submit it.
+        _ = try await router.call(
+            "send_input", arguments: ["session_id": .string(sid), "text": .string("a\nb\r\nc\n")]
+        )
+        #expect(fake.sendCalls.last?.text == "a\rb\rc\r")
+    }
+
+    @Test func sendInputLeavesTextWithoutNewlinesUnchanged() async throws {
+        let (router, store, fake) = makeRouter(projectNames: ["alpha"])
+        let id = store.projects[0].id
+        _ = try await router.call("spawn_process", arguments: ["project_id": .string(id.uuidString)])
+        let sid = store.projects[0].terminals[0].sessionId
+        // Text meant to land in the input box without submitting stays verbatim.
+        _ = try await router.call(
+            "send_input", arguments: ["session_id": .string(sid), "text": .string("partial")]
+        )
+        #expect(fake.sendCalls.last?.text == "partial")
     }
 
     @Test func sendInputUnknownSessionThrows() async throws {
