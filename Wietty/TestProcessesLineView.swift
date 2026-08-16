@@ -12,6 +12,9 @@ struct TestProcessesLineView: View {
     let onRun: (ManagedProcess) -> Void
     let onRunAll: () -> Void
     let onOpenLog: (ManagedProcess) -> Void
+    /// Copies a test's `ManagedProcessID` so a prompt can point an agent at its output
+    /// through the MCP tools. Defaulted so a caller that never wires it can leave it out.
+    var onCopyId: (ManagedProcess) -> Void = { _ in }
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
@@ -29,6 +32,7 @@ struct TestProcessesLineView: View {
                         }
                         Divider()
                         Button("Open log") { onOpenLog(test) }
+                        Button("Copy ID for agent") { onCopyId(test) }
                     }
                 }
             }
