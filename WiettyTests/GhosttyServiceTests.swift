@@ -580,6 +580,55 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         }
     }
 
+    /// A terminal that is not the on-screen pane reads empty from the live surface:
+    /// libghostty's `read_text` returns nothing while a surface is off-screen. That
+    /// is the case for every MCP read, since the session read is almost never the one
+    /// pane the window shows, so `readOutput` must answer from the screen recorded
+    /// from the terminal's own output rather than return an empty string.
+    @Test func readOutputFallsBackToTheRecordedScreenWhenTheSurfaceIsOffScreen() async throws {
+        let host = FakeSurfaceHost()
+        let service = service(host)
+        defer { service.closeAll() }
+        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                            existingWindowId: nil, command: "sleep 5", badge: nil)
+        // The output path recorded a screen while the surface was still readable.
+        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
+        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["prompt$ echo hi", "hi"], cols: 80)
+        service.refreshSnapshots()
+        try #require(service.shared.snapshot(for: handle.sessionId)?.rows == ["prompt$ echo hi", "hi"])
+
+        // Now it is off-screen: the live read gives nothing, as libghostty's does for
+        // a surface that is not the displayed pane.
+        host.snapshots[handle.sessionId] = nil
+        host.sizes[handle.sessionId] = nil
+
+        let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 50)
+        #expect(text == "prompt$ echo hi\nhi")
+    }
+
+    /// Recording a screen never replaces a real one with a blank. A surface reads
+    /// empty the moment it leaves the screen, and output arriving right then would
+    /// otherwise record that blank over what the terminal printed, which is exactly
+    /// what `readOutput` then falls back to. Only `close` and `reap` clear a recorded
+    /// screen, and they do so directly.
+    @Test func recordingDoesNotReplaceARecordedScreenWithABlankOne() async throws {
+        let host = FakeSurfaceHost()
+        let service = service(host)
+        defer { service.closeAll() }
+        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                            existingWindowId: nil, command: "sleep 5", badge: nil)
+        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
+        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["real output"], cols: 80)
+        service.refreshSnapshots()
+        try #require(service.shared.snapshot(for: handle.sessionId)?.rows == ["real output"])
+
+        // Off-screen now: the live read is a blank screen, not nil.
+        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: [], cols: 80)
+        service.refreshSnapshots()
+
+        #expect(service.shared.snapshot(for: handle.sessionId)?.rows == ["real output"])
+    }
+
     /// The surface's grid is the sizing authority: a resize reported by
     /// libghostty has to reach the pty, or a full screen program keeps drawing
     /// for the old size.
