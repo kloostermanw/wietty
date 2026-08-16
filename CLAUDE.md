@@ -93,13 +93,8 @@ Never mention Claude Code in PR descriptions, PR comments, or issue comments.
 Do not include a "Test plan" section in PR descriptions.
 
 ## Git
-Git flow: work off `v2` on a `feature/issue-<number>` branch, and open PRs against `v2`. `v2` is the
-2.0 line, where the app is one window with one terminal; `develop` and `main` are the v1 line
-(iTerm2 and tmux) and take fixes only, until v2 is released and becomes `main`. Releases go through
-`release/vX.Y.Z` with `vX.Y.Z` tags, so do not tag anything as part of feature work.
-
-use /create-commit to create a commit message
-use /create-pr to create a pr message
+use `/create-commit force` to create a commit message
+use `/create-pr force` to create a pr message
 
 A global `commit-msg` hook rejects any commit message containing a word from
 `~/.config/git/disallowed-words.txt`, matched whole-word and case-insensitively. That list currently
