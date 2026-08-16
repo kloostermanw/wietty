@@ -253,7 +253,9 @@ final class GhosttyService: TerminalService {
         // what `readOutput` falls back to for every off-screen (so every MCP) read.
         // A live screen always has at least its prompt row, so an empty read is the
         // off-screen case rather than a genuinely cleared screen. Clearing a recorded
-        // screen is left to `close`/`reap`, which record `nil` directly.
+        // screen is left to `close`/`discard` (via `tearDown`) and `closeAll`, which
+        // record `nil` directly; `reap` deliberately keeps the screen so a terminal
+        // stays readable after its child exits.
         if fresh?.rows.isEmpty ?? true, let existing = shared.snapshot(for: session),
            !existing.rows.isEmpty {
             return

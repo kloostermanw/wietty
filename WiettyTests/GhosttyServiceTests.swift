@@ -580,12 +580,14 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         }
     }
 
-    /// A terminal that is not the on-screen pane reads empty from the live surface:
-    /// libghostty's `read_text` returns nothing while a surface is off-screen. That
-    /// is the case for every MCP read, since the session read is almost never the one
-    /// pane the window shows, so `readOutput` must answer from the screen recorded
-    /// from the terminal's own output rather than return an empty string.
-    @Test func readOutputFallsBackToTheRecordedScreenWhenTheSurfaceIsOffScreen() async throws {
+    /// A terminal that is not the on-screen pane reads empty from the live surface.
+    /// libghostty's `read_text` succeeds but hands back no text for a surface that is
+    /// not the displayed pane, and the host turns that into a snapshot with empty rows
+    /// (`GhosttySurfaceHost.snapshot` returns `ScreenSnapshot(rows: [], ...)`, not
+    /// nil). That is the case for every MCP read, since the session read is almost
+    /// never the one pane the window shows, so `readOutput` must answer from the screen
+    /// recorded from the terminal's own output rather than return an empty string.
+    @Test func readOutputFallsBackToTheRecordedScreenWhenTheLiveReadIsEmpty() async throws {
         let host = FakeSurfaceHost()
         let service = service(host)
         defer { service.closeAll() }
@@ -597,8 +599,30 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         service.refreshSnapshots()
         try #require(service.shared.snapshot(for: handle.sessionId)?.rows == ["prompt$ echo hi", "hi"])
 
-        // Now it is off-screen: the live read gives nothing, as libghostty's does for
-        // a surface that is not the displayed pane.
+        // Now it is off-screen: the live read is an empty-rows screen, exactly as the
+        // real host produces for a surface that is not the displayed pane. This drives
+        // the `!live.rows.isEmpty` branch, which a nil read would skip over instead.
+        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: [], cols: 80)
+
+        let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 50)
+        #expect(text == "prompt$ echo hi\nhi")
+    }
+
+    /// The nil live read (a surface with no grid yet) falls back the same way. This is
+    /// the other shape a live read comes back unusable in, distinct from the empty-rows
+    /// off-screen case, and it too must reach the recorded screen rather than "".
+    @Test func readOutputFallsBackToTheRecordedScreenWhenTheSurfaceHasNoGrid() async throws {
+        let host = FakeSurfaceHost()
+        let service = service(host)
+        defer { service.closeAll() }
+        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                            existingWindowId: nil, command: "sleep 5", badge: nil)
+        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
+        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["prompt$ echo hi", "hi"], cols: 80)
+        service.refreshSnapshots()
+        try #require(service.shared.snapshot(for: handle.sessionId)?.rows == ["prompt$ echo hi", "hi"])
+
+        // No grid: the host answers nil, not an empty-rows screen.
         host.snapshots[handle.sessionId] = nil
         host.sizes[handle.sessionId] = nil
 
@@ -606,11 +630,36 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         #expect(text == "prompt$ echo hi\nhi")
     }
 
+    /// The displayed pane answers from the live read, never the recorded screen. The
+    /// live read reaches scrollback and the recorded screen is only the viewport, so a
+    /// pane that is on screen must not be served the older, shorter recording. Guards
+    /// against the two branches of `readOutput` being swapped.
+    @Test func readOutputPrefersTheLiveReadOverAStaleRecordedScreen() async throws {
+        let host = FakeSurfaceHost()
+        let service = service(host)
+        defer { service.closeAll() }
+        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                            existingWindowId: nil, command: "sleep 5", badge: nil)
+        // A stale screen is recorded first.
+        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
+        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["old recorded screen"], cols: 80)
+        service.refreshSnapshots()
+        try #require(service.shared.snapshot(for: handle.sessionId)?.rows == ["old recorded screen"])
+
+        // The pane is on screen now, so the live read has the current scrollback.
+        host.snapshots[handle.sessionId] =
+            ScreenSnapshot(rows: ["line one", "line two", "line three"], cols: 80)
+
+        let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 50)
+        #expect(text == "line one\nline two\nline three")
+    }
+
     /// Recording a screen never replaces a real one with a blank. A surface reads
     /// empty the moment it leaves the screen, and output arriving right then would
     /// otherwise record that blank over what the terminal printed, which is exactly
-    /// what `readOutput` then falls back to. Only `close` and `reap` clear a recorded
-    /// screen, and they do so directly.
+    /// what `readOutput` then falls back to. Only `close`/`discard` (via `tearDown`)
+    /// and `closeAll` clear a recorded screen; `reap` keeps it so a terminal stays
+    /// readable after its child exits.
     @Test func recordingDoesNotReplaceARecordedScreenWithABlankOne() async throws {
         let host = FakeSurfaceHost()
         let service = service(host)
