@@ -336,7 +336,9 @@ The recorded screen that `readOutput` answers from is held to a stricter rule, b
 bytes behind it to bring a viewer current: `recordSnapshot` never replaces a recorded non-empty screen
 with the blank a surface reads the instant it leaves the screen (see "Reading a terminal's output"). A
 live screen always has at least its prompt row, so an empty read is the off-screen case rather than a
-cleared screen. Clearing a recorded screen is left to `close` and `reap`, which record nil directly.
+cleared screen. Clearing a recorded screen is left to `close` and `discard` (via `tearDown`) and to
+`closeAll`, which record nil directly. `reap` deliberately keeps the screen so a terminal stays readable
+after its child exits.
 
 ## Reading a terminal's output
 
