@@ -8,7 +8,7 @@ import Foundation
 /// belongs in CI rather than only being checkable by pasting one into an agent.
 ///
 /// Unlike a terminal's `sessionId`, a `ManagedProcess` has no persisted identifier: its
-/// runtime `id` is a fresh `UUID` regenerated on every config reload. The stable
+/// runtime `id` is an in-memory `UUID` that a relaunch mints afresh. The stable
 /// identity is `(projectId, kind, name)`, and a process and a test may share a name, so
 /// the kind has to be part of the handle.
 @Suite struct ManagedProcessIDTests {

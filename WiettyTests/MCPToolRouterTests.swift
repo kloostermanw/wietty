@@ -426,6 +426,23 @@ import Foundation
         #expect(result["type"]?.stringValue == "process")
     }
 
+    /// A failed process reports "failed" and carries the exit code, which is the field
+    /// an agent reaches for when a run went wrong. The `exit_code` member is emitted
+    /// only in the `.failed` branch, so it needs a failed process to exercise it.
+    @Test func getManagedProcessStatusReportsAFailedProcessWithItsExitCode() async throws {
+        let (router, store, project, procLauncher, _) = makeManagedRouter(
+            processes: ["queue": ProcessConfig(command: "run-queue")]
+        )
+        let process = try #require(store.processes.process(projectId: project.id, name: "queue"))
+        process.start()
+        procLauncher.last.onExit(3)
+        let id = ManagedProcessID.string(projectId: project.id, name: "queue", isTest: false)
+        let result = try await router.call("get_managed_process_status", arguments: ["id": .string(id)])
+        #expect(result["status"]?.stringValue == "failed")
+        #expect(result["running"]?.boolValue == false)
+        #expect(result["exit_code"]?.intValue == 3)
+    }
+
     @Test func getManagedProcessOutputForUnknownProcessThrows() async throws {
         let (router, _, project, _, _) = makeManagedRouter()
         let id = ManagedProcessID.string(projectId: project.id, name: "ghost", isTest: false)
