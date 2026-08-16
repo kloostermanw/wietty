@@ -79,7 +79,8 @@ struct WorkspaceCardView: View {
                         tests: tests,
                         onRun: onTestRun,
                         onRunAll: onTestRunAll,
-                        onOpenLog: onOpenTestLog
+                        onOpenLog: onOpenTestLog,
+                        onCopyId: { copyManagedProcessId($0, isTest: true) }
                     )
                     .padding(.leading, 24)
                 }
@@ -193,6 +194,24 @@ struct WorkspaceCardView: View {
         }
     }
 
+    @ViewBuilder private func terminalRowMenuItem(_ item: TerminalRowMenuItem, ref: TerminalRef) -> some View {
+        switch item {
+        case .rename: Button(item.title) { onRenameTerminal(ref) }
+        // Copies the row's `sessionId`, which is what the MCP tools resolve, so a
+        // prompt can point another agent straight at this session.
+        case .copyId: Button(item.title) { Clipboard.copy(ref.sessionId) }
+        case .remove: Button(item.title) { onRemoveTerminal(ref) }
+        case .close: Button(item.title) { onCloseTerminal(ref) }
+        }
+    }
+
+    /// The pasteboard handle for a process or test row: its `ManagedProcessID`, which
+    /// the MCP `get_managed_process_*` tools resolve. A process and a test may share a
+    /// name, so the handle carries which one this is.
+    private func copyManagedProcessId(_ process: ManagedProcess, isTest: Bool) {
+        Clipboard.copy(ManagedProcessID.string(projectId: project.id, name: process.name, isTest: isTest))
+    }
+
     private var children: some View {
         HStack(alignment: .top, spacing: 0) {
             Rectangle()
@@ -210,7 +229,8 @@ struct WorkspaceCardView: View {
                             onStop: { onProcessStop(process) },
                             onRestart: { onProcessRestart(process) },
                             onKill: { onProcessKill(process) },
-                            onOpenLog: { onOpenProcessLog(process) }
+                            onOpenLog: { onOpenProcessLog(process) },
+                            onCopyId: { copyManagedProcessId(process, isTest: false) }
                         )
                     }
                 }
@@ -228,11 +248,12 @@ struct WorkspaceCardView: View {
                     )
                     .onTapGesture { onActivate(ref) }
                     .contextMenu {
-                        if ref.kind == .terminal {
-                            Button("Rename") { onRenameTerminal(ref) }
+                        // Built from `TerminalRowMenu` rather than written out here, so
+                        // which items a row offers is asserted in CI (`TerminalRowMenuTests`)
+                        // rather than only by right clicking one, the same as the header menu.
+                        ForEach(TerminalRowMenu.items(kind: ref.kind)) { item in
+                            terminalRowMenuItem(item, ref: ref)
                         }
-                        Button("Remove") { onRemoveTerminal(ref) }
-                        Button("Close terminal") { onCloseTerminal(ref) }
                     }
                 }
             }

@@ -246,7 +246,21 @@ final class GhosttyService: TerminalService {
     /// described a saving that was not happening.
     private func recordSnapshot(_ session: String) {
         let rows = host.size(id: session)?.rows ?? Self.initialSize.rows
-        shared.record(host.snapshot(id: session, maxLines: rows), for: session)
+        let fresh = host.snapshot(id: session, maxLines: rows)
+        // A blank read never replaces a screen already recorded. libghostty reads a
+        // surface as empty the instant it leaves the screen, and output arriving then
+        // would otherwise record that blank over what the terminal printed, which is
+        // what `readOutput` falls back to for every off-screen (so every MCP) read.
+        // A live screen always has at least its prompt row, so an empty read is the
+        // off-screen case rather than a genuinely cleared screen. Clearing a recorded
+        // screen is left to `close`/`discard` (via `tearDown`) and `closeAll`, which
+        // record `nil` directly; `reap` deliberately keeps the screen so a terminal
+        // stays readable after its child exits.
+        if fresh?.rows.isEmpty ?? true, let existing = shared.snapshot(for: session),
+           !existing.rows.isEmpty {
+            return
+        }
+        shared.record(fresh, for: session)
     }
 
     /// Notes that a terminal printed something, and schedules the refresh that keeps
@@ -501,8 +515,19 @@ final class GhosttyService: TerminalService {
         // read of what a terminal has printed, which is rarely only the last
         // screenful, and it runs once per request rather than once per notch of a
         // window drag.
-        guard let snapshot = host.snapshot(id: sessionId, maxLines: maxLines) else { return "" }
-        return snapshot.rows.joined(separator: "\n")
+        //
+        // The live read first, because only it can reach scrollback, and it answers
+        // in full for the one pane the window is showing. But libghostty's
+        // `read_text` returns nothing for a surface that is not on screen, and an MCP
+        // read is almost always of a session that is not the displayed pane. So an
+        // empty live read falls back to the screen recorded from the terminal's own
+        // output within `snapshotDebounce`, which is the viewport rather than the
+        // scrollback but is what the terminal actually printed rather than "".
+        if let live = host.snapshot(id: sessionId, maxLines: maxLines), !live.rows.isEmpty {
+            return live.rows.joined(separator: "\n")
+        }
+        guard let recorded = shared.snapshot(for: sessionId) else { return "" }
+        return recorded.rows.joined(separator: "\n")
     }
 
     func select(_ session: String?) {

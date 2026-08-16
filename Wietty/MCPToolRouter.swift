@@ -13,6 +13,7 @@ enum MCPToolError: LocalizedError, Equatable {
     case invalidArgument(String)
     case unknownProject(String)
     case unknownSession(String)
+    case unknownManagedProcess(String)
     case failed(String)
 
     var errorDescription: String? {
@@ -22,6 +23,7 @@ enum MCPToolError: LocalizedError, Equatable {
         case let .invalidArgument(detail): return "Invalid argument: \(detail)."
         case let .unknownProject(id): return "No workspace with id \(id)."
         case let .unknownSession(id): return "No tracked terminal with session id \(id)."
+        case let .unknownManagedProcess(id): return "No managed process or test with id \(id)."
         case let .failed(message): return message
         }
     }
@@ -62,6 +64,9 @@ final class MCPToolRouter {
         case "rename_process": return try renameProcess(arguments)
         case "get_process_output": return try await getProcessOutput(arguments)
         case "restart_process": return try await restartProcess(arguments)
+        case "list_managed_processes": return try listManagedProcesses(arguments)
+        case "get_managed_process_output": return try getManagedProcessOutput(arguments)
+        case "get_managed_process_status": return try getManagedProcessStatus(arguments)
         default: throw MCPToolError.unknownTool(name)
         }
     }
@@ -134,8 +139,25 @@ final class MCPToolRouter {
     private func sendInput(_ args: [String: JSONValue]) async throws -> JSONValue {
         let (_, ref) = try resolveTerminal(args)
         guard let text = args["text"]?.stringValue else { throw MCPToolError.missingArgument("text") }
-        try await store.sendText(text, toSessionId: ref.sessionId)
+        try await store.sendText(Self.submitting(text), toSessionId: ref.sessionId)
         return .object(["sent": .bool(true), "session_id": .string(ref.sessionId)])
+    }
+
+    /// Rewrites newlines to carriage returns so a `\n` in `send_input` text submits
+    /// the line the way pressing Return does.
+    ///
+    /// A terminal reports the Return key as CR (0x0D), never LF (0x0A). A cooked mode
+    /// shell maps that CR to NL through its line discipline (ICRNL), and a raw mode
+    /// reader such as Claude Code treats CR as submit, so CR is what works for both.
+    /// A bare LF submits only under cooked mode: a raw mode reader takes it as a
+    /// literal newline and inserts a blank line instead of running the input, which
+    /// is why a trailing `\n` looked ignored against a running agent. The remote
+    /// keystroke path already sends CR, because its clients forward real key events,
+    /// so this rewrite lives here at the MCP boundary and leaves that path untouched.
+    /// CRLF collapses to a single CR, so "cmd\r\n" is one Return and not two.
+    static func submitting(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n", with: "\r")
     }
 
     private func closeProcess(_ args: [String: JSONValue]) async throws -> JSONValue {
@@ -174,6 +196,39 @@ final class MCPToolRouter {
         let updated = try await store.restart(sessionId: ref.sessionId)
         let project = store.projects.first { $0.terminals.contains { $0.id == updated.id } }
         return terminalJSON(updated, in: project ?? Project(url: URL(fileURLWithPath: "/")))
+    }
+
+    // MARK: - Managed processes and tests
+
+    /// Unlike a terminal session, a managed process or test is not a PTY. It is a
+    /// supervised command with a captured log, so the surface here is read only:
+    /// list what a workspace runs, and read one's recent output or status by the
+    /// `ManagedProcessID` handle the sidebar's "Copy ID for agent" action produces.
+    private func listManagedProcesses(_ args: [String: JSONValue]) throws -> JSONValue {
+        let projects: [Project]
+        if args["project_id"] != nil { projects = [try resolveProject(args)] }
+        else { projects = store.projects }
+        let items = projects.flatMap { project -> [JSONValue] in
+            let processes = store.processes.processes(for: project.id)
+                .map { managedProcessJSON($0, isTest: false, in: project) }
+            let tests = store.testSupervisor.tests(for: project.id)
+                .map { managedProcessJSON($0, isTest: true, in: project) }
+            return processes + tests
+        }
+        return .object(["managed_processes": .array(items)])
+    }
+
+    private func getManagedProcessOutput(_ args: [String: JSONValue]) throws -> JSONValue {
+        let (id, process, _, _) = try resolveManagedProcess(args)
+        let requested = args["lines"]?.intValue ?? 50
+        let lines = max(1, min(requested, Self.maxOutputLines))
+        let output = process.log.lines.suffix(lines).joined(separator: "\n")
+        return .object(["id": .string(id), "output": .string(output)])
+    }
+
+    private func getManagedProcessStatus(_ args: [String: JSONValue]) throws -> JSONValue {
+        let (_, process, parsed, project) = try resolveManagedProcess(args)
+        return managedProcessJSON(process, isTest: parsed.isTest, in: project)
     }
 
     // MARK: - Resolution helpers
@@ -218,6 +273,27 @@ final class MCPToolRouter {
         throw MCPToolError.unknownSession(sessionId)
     }
 
+    /// Resolves an `id` argument (a `ManagedProcessID` string) to the live process or
+    /// test it names. A malformed handle is an `invalidArgument`; a well-formed handle
+    /// whose workspace or definition is gone is an `unknownManagedProcess`, the same
+    /// distinction `resolveTerminal` draws for a missing session.
+    private func resolveManagedProcess(
+        _ args: [String: JSONValue]
+    ) throws -> (id: String, process: ManagedProcess, parsed: ManagedProcessID.Parsed, project: Project) {
+        let id = try requireString(args, "id")
+        guard let parsed = ManagedProcessID.parse(id) else {
+            throw MCPToolError.invalidArgument("id is not a managed process handle: \(id)")
+        }
+        guard let project = store.projects.first(where: { $0.id == parsed.projectId }) else {
+            throw MCPToolError.unknownManagedProcess(id)
+        }
+        let process = parsed.isTest
+            ? store.testSupervisor.test(projectId: parsed.projectId, name: parsed.name)
+            : store.processes.process(projectId: parsed.projectId, name: parsed.name)
+        guard let process else { throw MCPToolError.unknownManagedProcess(id) }
+        return (id, process, parsed, project)
+    }
+
     // MARK: - Serialization
 
     private var serializer: WorkspaceSerializer { WorkspaceSerializer(store: store) }
@@ -248,6 +324,35 @@ final class MCPToolRouter {
                                      runState: store.runState(for: ref),
                                      needsAttention: store.attention.contains(ref.id),
                                      jobName: store.jobNames[ref.id])
+    }
+
+    /// A managed process or test is serialized only for the MCP surface (not the shared
+    /// `WorkspaceSerializer`, which is the LAN protocol's shape too), so it is defined
+    /// here rather than there.
+    private func managedProcessJSON(_ process: ManagedProcess, isTest: Bool, in project: Project) -> JSONValue {
+        var members: [String: JSONValue] = [
+            "id": .string(ManagedProcessID.string(projectId: project.id, name: process.name, isTest: isTest)),
+            "name": .string(process.name),
+            "type": .string(isTest ? "test" : "process"),
+            "status": .string(Self.statusString(process.state)),
+            "running": .bool(processIsRunning(for: process.state)),
+            "project_id": .string(project.id.uuidString),
+            "project_name": .string(project.name),
+        ]
+        if case let .failed(code) = process.state { members["exit_code"] = .int(Int(code)) }
+        return .object(members)
+    }
+
+    private static func statusString(_ state: ProcessState) -> String {
+        switch state {
+        case .idle: return "idle"
+        case .starting: return "starting"
+        case .running: return "running"
+        case .finished: return "finished"
+        case .failed: return "failed"
+        case .stopping: return "stopping"
+        case .orphaned: return "orphaned"
+        }
     }
 
     // MARK: - Tool catalog
@@ -285,10 +390,10 @@ final class MCPToolRouter {
                   description: "Open a new claude session in a workspace (shorthand for spawn_process with kind=claude).",
                   inputSchema: Self.schema(properties: ["project_id": Self.stringProp("Workspace id (defaults to selected)")], required: [])),
             .init(name: "send_input",
-                  description: "Send text to a session. Include a trailing newline (\\n) to submit a command.",
+                  description: "Send text to a session. Include a newline (\\n) to submit; every newline is sent as a Return.",
                   inputSchema: Self.schema(properties: [
                     "session_id": Self.stringProp("terminal session id"),
-                    "text": Self.stringProp("Text to send verbatim"),
+                    "text": Self.stringProp("Text to send. Each newline (\\n or \\r\\n) is rewritten to a carriage return, so it submits the line the way pressing Return does."),
                   ], required: ["session_id", "text"])),
             .init(name: "close_process",
                   description: "Close a session and drop it from the workspace.",
@@ -311,6 +416,20 @@ final class MCPToolRouter {
             .init(name: "restart_process",
                   description: "Restart a session: close it and open a fresh one in the same window, re-running its command (claude for claude sessions).",
                   inputSchema: Self.schema(properties: ["session_id": Self.stringProp("terminal session id")], required: ["session_id"])),
+            .init(name: "list_managed_processes",
+                  description: "List a workspace's managed processes and tests (defined in wietty.json), with their id, name, type ('process' or 'test'), status, and whether they are running. Each id is the same handle the sidebar's 'Copy ID for agent' action copies. Optionally scoped to one workspace.",
+                  inputSchema: Self.schema(properties: ["project_id": Self.stringProp("Optional workspace id to scope to")], required: [])),
+            .init(name: "get_managed_process_output",
+                  description: "Read recent log output for a managed process or test by its id (most recent lines last, up to 200).",
+                  inputSchema: Self.schema(properties: [
+                    "id": Self.stringProp("managed process or test id (from list_managed_processes or 'Copy ID for agent')"),
+                    "lines": Self.intProp("Number of trailing lines (default 50, max 200)"),
+                  ], required: ["id"])),
+            .init(name: "get_managed_process_status",
+                  description: "Get the status of one managed process or test by its id.",
+                  inputSchema: Self.schema(properties: [
+                    "id": Self.stringProp("managed process or test id (from list_managed_processes or 'Copy ID for agent')"),
+                  ], required: ["id"])),
         ]
     }
 

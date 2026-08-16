@@ -53,8 +53,9 @@ Legend:
   passed, red failed, neutral for never-run/stale) with a spinner while running.
   Clicking a test button runs that test (`onTestRun`); `All` runs every test
   (`onTestRunAll`) and never shows a spinner itself; a button's context menu
-  offers Run, Cancel (while running), and Open log (`onOpenTestLog`, opens a
-  the pane with a `ProcessLogRef` carrying `isTest: true`). See `TestProcessesLineView.md`.
+  offers Run, Cancel (while running), Open log (`onOpenTestLog`, opens a
+  the pane with a `ProcessLogRef` carrying `isTest: true`), and Copy ID for agent.
+  See `TestProcessesLineView.md`.
 - `│`: the leading rule that groups the process and terminal rows
   (`WorkspaceCardView.children`).
 - `●` / `○`: process status dot (`ProcessRowView`). Filled = running, open =
@@ -74,7 +75,13 @@ Legend:
   (stop), and `onRestartTerminal` (refresh). See `ProcessRowView.md` and
   `TerminalRowView.md`.
 - A terminal or Claude row's context menu offers "Rename" (terminal rows only),
-  "Remove", and "Close terminal".
+  "Copy ID for agent", "Remove", and "Close terminal". Its items come from
+  `TerminalRowMenu.items(kind:)`, a pure type, so which of them a row offers is
+  asserted in CI (`TerminalRowMenuTests`) rather than only checkable by right
+  clicking one, the same way the header menu comes from `WorkspaceMenu`.
+- "Copy ID for agent" copies the row's session id to the pasteboard. That is the
+  `session_id` the MCP tools resolve, so pasting it into a prompt points another
+  agent straight at this session's output. See `docs/mcp.md`.
 - "Remove" and "Close terminal" both close the terminal in the end: the row is the
   only handle there is, so dropping it closes the terminal too rather than leaving
   a shell running that nothing can reach (`ProjectStore.releaseOrphaned`).

@@ -326,11 +326,19 @@ reported: the child exiting, and the row being closed. Without it a viewer went 
 indistinguishable from an idle terminal and is exactly the state the census exists to prevent for a
 viewer arriving later.
 
-A snapshot is not monotonic and nothing downstream may assume it is. A host that answers nil, which it
-does for a surface with no grid yet, overwrites a good screen with nothing, and the hub reads an empty
-paint as a capture that failed rather than as an empty screen: the viewer keeps whatever it had and the
-live bytes bring it current. Keeping the older screen instead would mean painting a state the terminal
-has since left.
+The snapshot the hub paints from is not monotonic and the hub does not assume it is. A host that
+answers nil, which it does for a surface with no grid yet, overwrites a good screen with nothing, and
+the hub reads an empty paint as a capture that failed rather than as an empty screen: the viewer keeps
+whatever it had and the live bytes bring it current. Keeping the older screen there would mean painting
+a state the terminal has since left.
+
+The recorded screen that `readOutput` answers from is held to a stricter rule, because it has no live
+bytes behind it to bring a viewer current: `recordSnapshot` never replaces a recorded non-empty screen
+with the blank a surface reads the instant it leaves the screen (see "Reading a terminal's output"). A
+live screen always has at least its prompt row, so an empty read is the off-screen case rather than a
+cleared screen. Clearing a recorded screen is left to `close` and `discard` (via `tearDown`) and to
+`closeAll`, which record nil directly. `reap` deliberately keeps the screen so a terminal stays readable
+after its child exits.
 
 ## Reading a terminal's output
 
@@ -353,6 +361,18 @@ the grid holds, the boundary included, and `GhosttyService.recordSnapshot` alway
 grid's own row count rather than a fixed larger number. `readOutput` honours the caller's `maxLines`
 instead, because reaching history is the whole point of that call and it runs once per request rather
 than once per notch of a window drag.
+
+**A read of a surface that is not on screen falls back to the recorded screen.** `read_text` answers
+nothing for a surface that is not the displayed pane, and in a one window, one terminal app that is
+every MCP read except the one session the window happens to be showing, so a live read alone returned
+an empty string for exactly the reads `get_process_output` exists to serve. So `readOutput` tries the
+live surface first, the only path that reaches scrollback, and when it comes back empty it answers from
+the screen `recordSnapshot` last recorded from the terminal's own output within `snapshotDebounce`. The
+fallback is the viewport rather than the scrollback, since the recorded screen is the grid's own height,
+but it is what the terminal printed rather than nothing. It works only because recording is kept honest
+for it: an off-screen surface reads blank, and `recordSnapshot` refuses to record that blank over a
+screen it already has, so output arriving the instant a pane leaves the screen cannot erase what the
+next read falls back to.
 
 **The boundary is the case that runs, so it has its own function**,
 `GhosttySurfaceHost.readsScrollback(maxLines:gridRows:)`, and a test at 27, 28 and 29 rows against a 28
