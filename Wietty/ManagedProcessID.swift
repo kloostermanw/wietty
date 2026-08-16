@@ -4,8 +4,10 @@ import Foundation
 /// identity `(projectId, kind, name)` as a single self-contained string.
 ///
 /// A `ManagedProcess` has no persisted identifier the way a terminal has its
-/// `sessionId`: its runtime `id` is a fresh `UUID` regenerated on every config reload
-/// and never written to disk, so it cannot survive a paste into a later agent turn.
+/// `sessionId`: its runtime `id` is an in-memory `UUID` that is never written to disk.
+/// It is kept when a config reload still defines the process, but a relaunch rebuilds
+/// every process from scratch and mints a new one, so it cannot survive a paste into a
+/// later agent turn.
 /// `(projectId, kind, name)` is what stays constant, and because a process and a test
 /// may share a name (see `ProcessLogRef.isTest`), the kind has to be part of the
 /// handle. The project id is included so the handle resolves globally, the way a

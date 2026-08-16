@@ -94,7 +94,10 @@ treat "not found" as "re-list", not as a transient error to retry.
 A managed process or test id is a different shape:
 `<workspace-id>:process:<name>` or `<workspace-id>:test:<name>`. Unlike a session,
 a managed process has no minted handle. Its identity is the workspace, the kind,
-and the name it has in `wietty.json`, so the id is stable across app restarts (it
-is derived from the file, not from a running instance) and a process and a test may
-share a name without colliding. It stops resolving when the workspace is removed or
-the definition is dropped from `wietty.json`.
+and the name it has in `wietty.json`. The kind and name come from the file and the
+workspace id is a persisted `Project` id, so none of the three is tied to a running
+instance and the id is stable across app restarts. A process and a test may share a
+name without colliding. It stops resolving when the workspace is removed, or when the
+definition is dropped from `wietty.json` and the process is not still alive (a
+running process whose definition is dropped is kept as `orphaned` and keeps resolving
+until it stops).
