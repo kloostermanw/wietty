@@ -64,6 +64,15 @@ Sessions: `list_processes`, `get_process_status`, `spawn_process`,
 `spawn_agent` (claude shorthand), `send_input`, `close_process`,
 `select_process`, `rename_process`, `get_process_output`, `restart_process`.
 
+Managed processes and tests: `list_managed_processes`,
+`get_managed_process_output`, `get_managed_process_status`. These are the
+`processes` and `tests` a workspace declares in `wietty.json`, which are
+supervised commands with a captured log rather than interactive terminals, so
+the surface is read only (list, and read one's recent output or status by its
+id). The id each carries is the same handle the sidebar's "Copy ID for agent"
+row action copies, so a prompt can point an agent straight at another process's
+output.
+
 Tools that omit `project_id` fall back to the workspace set with
 `select_project`. Send a trailing newline in `send_input` text to submit a
 command.
@@ -81,3 +90,11 @@ command exiting, or Wietty quitting. The id then
 resolves to nothing, the app drops or reopens the row, and tools that target it
 report that the session was not found. A client that caches session ids should
 treat "not found" as "re-list", not as a transient error to retry.
+
+A managed process or test id is a different shape:
+`<workspace-id>:process:<name>` or `<workspace-id>:test:<name>`. Unlike a session,
+a managed process has no minted handle. Its identity is the workspace, the kind,
+and the name it has in `wietty.json`, so the id is stable across app restarts (it
+is derived from the file, not from a running instance) and a process and a test may
+share a name without colliding. It stops resolving when the workspace is removed or
+the definition is dropped from `wietty.json`.

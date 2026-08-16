@@ -10,6 +10,10 @@ struct ProcessRowView: View {
     let onRestart: () -> Void
     let onKill: () -> Void
     let onOpenLog: () -> Void
+    /// Copies this process's `ManagedProcessID` so a prompt can point an agent at its
+    /// output through the MCP tools. Defaulted so a caller that never wires it (a
+    /// preview, a render test) can leave it out.
+    var onCopyId: () -> Void = {}
 
     @State private var isHovered = false
 
@@ -44,6 +48,7 @@ struct ProcessRowView: View {
             Button("Kill", action: onKill)
             Divider()
             Button("Open log", action: onOpenLog)
+            Button("Copy ID for agent", action: onCopyId)
         }
     }
 

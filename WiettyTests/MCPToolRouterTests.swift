@@ -291,4 +291,156 @@ import Foundation
             _ = try await router.call("frobnicate", arguments: [:])
         }
     }
+
+    // MARK: - Managed processes and tests
+
+    /// Builds a store whose supervisors use fake launchers (so nothing is spawned),
+    /// with one workspace carrying the given process and test definitions already
+    /// applied. Returns the router, the workspace, and the two fake launchers so a
+    /// test can drive output into a running process.
+    private func makeManagedRouter(
+        processes: [String: ProcessConfig] = [:],
+        tests: [String: TestConfig] = [:]
+    ) -> (router: MCPToolRouter, store: ProjectStore, project: Project, procLauncher: FakeProcessLauncher, testLauncher: FakeProcessLauncher) {
+        let procLauncher = FakeProcessLauncher()
+        let testLauncher = FakeProcessLauncher()
+        let store = ProjectStore(
+            defaults: makeDefaults(), service: FakeTerminalService(),
+            processSupervisor: ProcessSupervisor(launcher: procLauncher),
+            testSupervisor: TestSupervisor(launcher: testLauncher)
+        )
+        store.addProject(url: makeTempFolder(named: "alpha"))
+        let project = store.projects[0]
+        let config = WorkspaceConfig(name: nil, agents: [], terminals: [],
+                                     processes: processes, tests: tests)
+        store.processes.apply(config, projectId: project.id, directory: project.url)
+        store.testSupervisor.apply(config, projectId: project.id, directory: project.url)
+        return (MCPToolRouter(store: store), store, project, procLauncher, testLauncher)
+    }
+
+    @Test func listManagedProcessesReturnsBothProcessesAndTests() async throws {
+        let (router, _, _, _, _) = makeManagedRouter(
+            processes: ["queue": ProcessConfig(command: "run-queue")],
+            tests: ["phpunit": TestConfig(command: "phpunit")]
+        )
+        let result = try await router.call("list_managed_processes", arguments: [:])
+        let items = result["managed_processes"]?.arrayValue ?? []
+        #expect(items.count == 2)
+        let byType = Dictionary(grouping: items) { $0["type"]?.stringValue ?? "" }
+        #expect(byType["process"]?.first?["name"]?.stringValue == "queue")
+        #expect(byType["test"]?.first?["name"]?.stringValue == "phpunit")
+    }
+
+    /// The listed id round-trips through `ManagedProcessID`, so what an agent copies
+    /// out of the list is the same handle the read tools resolve.
+    @Test func listManagedProcessesEmitsResolvableIds() async throws {
+        let (router, _, project, _, _) = makeManagedRouter(
+            processes: ["queue": ProcessConfig(command: "run-queue")]
+        )
+        let result = try await router.call("list_managed_processes", arguments: [:])
+        let id = result["managed_processes"]?.arrayValue?.first?["id"]?.stringValue
+        #expect(ManagedProcessID.parse(id ?? "")
+            == ManagedProcessID.Parsed(projectId: project.id, name: "queue", isTest: false))
+    }
+
+    @Test func listManagedProcessesScopesToOneWorkspace() async throws {
+        // A second workspace with its own process must not show up when scoped.
+        let procLauncher = FakeProcessLauncher()
+        let store = ProjectStore(
+            defaults: makeDefaults(), service: FakeTerminalService(),
+            processSupervisor: ProcessSupervisor(launcher: procLauncher),
+            testSupervisor: TestSupervisor(launcher: FakeProcessLauncher())
+        )
+        store.addProject(url: makeTempFolder(named: "alpha"))
+        store.addProject(url: makeTempFolder(named: "beta"))
+        for project in store.projects {
+            let config = WorkspaceConfig(name: nil, agents: [], terminals: [],
+                                         processes: ["queue": ProcessConfig(command: "run-queue")])
+            store.processes.apply(config, projectId: project.id, directory: project.url)
+        }
+        let router = MCPToolRouter(store: store)
+        let scoped = try await router.call(
+            "list_managed_processes", arguments: ["project_id": .string(store.projects[0].id.uuidString)]
+        )
+        #expect(scoped["managed_processes"]?.arrayValue?.count == 1)
+        let all = try await router.call("list_managed_processes", arguments: [:])
+        #expect(all["managed_processes"]?.arrayValue?.count == 2)
+    }
+
+    @Test func getManagedProcessOutputReturnsRecentLines() async throws {
+        let (router, store, project, procLauncher, _) = makeManagedRouter(
+            processes: ["queue": ProcessConfig(command: "run-queue")]
+        )
+        let process = try #require(store.processes.process(projectId: project.id, name: "queue"))
+        process.start()
+        procLauncher.last.onOutput("line 1\nline 2\n")
+        let id = ManagedProcessID.string(projectId: project.id, name: "queue", isTest: false)
+        let result = try await router.call("get_managed_process_output", arguments: ["id": .string(id)])
+        #expect(result["id"]?.stringValue == id)
+        #expect(result["output"]?.stringValue == "line 1\nline 2")
+    }
+
+    @Test func getManagedProcessOutputHonorsLineCount() async throws {
+        let (router, store, project, procLauncher, _) = makeManagedRouter(
+            processes: ["queue": ProcessConfig(command: "run-queue")]
+        )
+        let process = try #require(store.processes.process(projectId: project.id, name: "queue"))
+        process.start()
+        procLauncher.last.onOutput("a\nb\nc\n")
+        let id = ManagedProcessID.string(projectId: project.id, name: "queue", isTest: false)
+        let result = try await router.call(
+            "get_managed_process_output", arguments: ["id": .string(id), "lines": .int(2)]
+        )
+        #expect(result["output"]?.stringValue == "b\nc")
+    }
+
+    /// A process and a test may share a name; the handle's kind keeps their output
+    /// separate rather than resolving to whichever the supervisor found first.
+    @Test func getManagedProcessOutputSeparatesProcessFromTestOfTheSameName() async throws {
+        let (router, store, project, procLauncher, testLauncher) = makeManagedRouter(
+            processes: ["build": ProcessConfig(command: "build-proc")],
+            tests: ["build": TestConfig(command: "build-test")]
+        )
+        let process = try #require(store.processes.process(projectId: project.id, name: "build"))
+        process.start()
+        procLauncher.last.onOutput("from process\n")
+        store.testSupervisor.run(projectId: project.id, name: "build")
+        testLauncher.last.onOutput("from test\n")
+
+        let processId = ManagedProcessID.string(projectId: project.id, name: "build", isTest: false)
+        let testId = ManagedProcessID.string(projectId: project.id, name: "build", isTest: true)
+        let processOut = try await router.call("get_managed_process_output", arguments: ["id": .string(processId)])
+        let testOut = try await router.call("get_managed_process_output", arguments: ["id": .string(testId)])
+        #expect(processOut["output"]?.stringValue == "from process")
+        #expect(testOut["output"]?.stringValue == "from test")
+    }
+
+    @Test func getManagedProcessStatusReportsAnIdleProcess() async throws {
+        let (router, _, project, _, _) = makeManagedRouter(
+            processes: ["queue": ProcessConfig(command: "run-queue")]
+        )
+        let id = ManagedProcessID.string(projectId: project.id, name: "queue", isTest: false)
+        let result = try await router.call("get_managed_process_status", arguments: ["id": .string(id)])
+        #expect(result["status"]?.stringValue == "idle")
+        #expect(result["running"]?.boolValue == false)
+        #expect(result["type"]?.stringValue == "process")
+    }
+
+    @Test func getManagedProcessOutputForUnknownProcessThrows() async throws {
+        let (router, _, project, _, _) = makeManagedRouter()
+        let id = ManagedProcessID.string(projectId: project.id, name: "ghost", isTest: false)
+        await #expect(throws: MCPToolError.unknownManagedProcess(id)) {
+            _ = try await router.call("get_managed_process_output", arguments: ["id": .string(id)])
+        }
+    }
+
+    @Test func getManagedProcessOutputForMalformedIdThrows() async throws {
+        let (router, _, _, _, _) = makeManagedRouter()
+        await #expect {
+            _ = try await router.call("get_managed_process_output", arguments: ["id": .string("garbage")])
+        } throws: { error in
+            guard case MCPToolError.invalidArgument = error else { return false }
+            return true
+        }
+    }
 }

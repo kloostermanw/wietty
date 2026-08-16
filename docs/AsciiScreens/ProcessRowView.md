@@ -10,7 +10,7 @@ A row is a status dot plus the process name. When the process is `.orphaned`
 (still running but removed from `wietty.json`) an `(orphan)` tag is
 appended. A plain left click is a no-op; hovering lightens the row background
 and reveals action buttons on the trailing edge. Right-clicking opens a context
-menu with Start, Stop, Restart, Kill, and Open log.
+menu with Start, Stop, Restart, Kill, Open log, and Copy ID for agent.
 
 ```
 ● queue                        [◼] [⟳] [▤]    running (hovered)
@@ -43,5 +43,9 @@ Legend:
   - `[◼]` stop (`stop.fill`) → `onStop`, shown when running.
   - `[⟳]` refresh (`arrow.clockwise`) → `onRestart`, shown when running.
   - `[▤]` log (`doc.plaintext`) → `onOpenLog`, always shown.
-- Context menu: Start / Stop / Restart / Kill / Open log, wired to
-  `ManagedProcess.start()/stop()/restart()/kill()` and `onOpenLog`.
+- Context menu: Start / Stop / Restart / Kill / Open log / Copy ID for agent,
+  wired to `ManagedProcess.start()/stop()/restart()/kill()`, `onOpenLog`, and
+  `onCopyId`. "Copy ID for agent" copies the process's `ManagedProcessID`
+  (`<workspace-id>:process:<name>`), which the MCP `get_managed_process_*` tools
+  resolve, so a prompt can point an agent at this process's output. See
+  `docs/mcp.md`.
