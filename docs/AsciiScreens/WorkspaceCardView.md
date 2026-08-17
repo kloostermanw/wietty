@@ -89,6 +89,12 @@ Legend:
   the file to the rows (`WorkspaceCardView.header`, `onApplyConfig`).
 - `(local)`: a row tracked locally but absent from `wietty.json`, kept alive
   after an external removal (`TerminalRowView`, `isLocalOnly`).
+- The card draws no background of its own by default. When it owns the terminal the
+  pane is showing (`isActive`, any of its rows selected) and the user set an "Active
+  workspace background" in Settings › General › Colors, it fills with that colour, and
+  an "Active workspace foreground" colours its text (`WorkspaceHighlight`, read through
+  `EnvironmentValues.sidebarColors`). Both are absent until set, so an untouched
+  install draws the card exactly as before.
 
 ## The workspace header's context menu
 

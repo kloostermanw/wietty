@@ -77,6 +77,7 @@ struct ContentView: View {
                                       remoteWorkspaces: remoteWorkspaces,
                                       bells: bells,
                                       desktopNotifications: terminals.desktopNotifications,
+                                      ghosttyColors: terminals.ghosttyColors,
                                       selection: paneSelection)
                 }
                 .frame(maxWidth: .infinity)
@@ -290,6 +291,13 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 240)
+        // The user's own sidebar colours, set once here and read by every card and
+        // row under it (`EnvironmentValues.sidebarColors`). The background fills the
+        // sidebar when a colour is set and is `Color.clear` otherwise, so an untouched
+        // install keeps the system material.
+        .foregroundStyle(store.sidebarColors.foreground ?? Color.primary)
+        .background(store.sidebarColors.background ?? Color.clear)
+        .environment(\.sidebarColors, store.sidebarColors)
         .disabled(isBusy)
         .overlay {
             if isBusy {

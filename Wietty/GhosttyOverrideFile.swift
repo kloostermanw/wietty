@@ -59,6 +59,37 @@ struct GhosttyOverrideFile {
 
     private static let desktopNotificationsKey = "desktop-notifications"
 
+    // MARK: Terminal colours
+
+    /// The Ghostty colour keys Wietty offers in Settings. They are Ghostty's own
+    /// spelling, since this file is loaded by libghostty; the values are `#RRGGBB`,
+    /// which Ghostty accepts.
+    enum ColorKey {
+        static let background = "background"
+        static let foreground = "foreground"
+        static let cursor = "cursor-color"
+        static let cursorText = "cursor-text"
+        static let selectionBackground = "selection-background"
+        static let selectionForeground = "selection-foreground"
+
+        /// In the order the Settings section draws them.
+        static let all = [background, foreground, cursor, cursorText,
+                          selectionBackground, selectionForeground]
+    }
+
+    /// The raw value this file carries for a colour key, or nil when it sets none and
+    /// libghostty is left to resolve it from the user's own theme.
+    func color(for key: String) -> String? {
+        value(for: key)
+    }
+
+    /// Writes a colour, or removes its line when `hex` is nil. Unlike
+    /// `desktop-notifications`, a colour has a way to unset it here: the Settings row
+    /// offers a reset, and nil is how that reaches the file.
+    func setColor(_ key: String, to hex: String?) throws {
+        try set(key, to: hex)
+    }
+
     // MARK: The format
 
     /// Only as much of Ghostty's config syntax as this type writes: `key = value`
@@ -75,7 +106,10 @@ struct GhosttyOverrideFile {
             .value
     }
 
-    private func set(_ key: String, to value: String) throws {
+    /// A nil value removes the key's line rather than writing one, which is how a
+    /// colour is unset. The managed header and the other lines are handled the same
+    /// either way, so clearing a value leaves the file as tidy as setting one.
+    private func set(_ key: String, to value: String?) throws {
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         var lines = existing.isEmpty
             ? [] : existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
@@ -92,7 +126,7 @@ struct GhosttyOverrideFile {
         while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { lines.removeFirst() }
         while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { lines.removeLast() }
 
-        lines.append("\(key) = \(value)")
+        if let value { lines.append("\(key) = \(value)") }
 
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
