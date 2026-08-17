@@ -5,7 +5,8 @@ so the intended structure stays readable without running the app.
 
 The view is a segmented tab control above a grouped `Form`, and the tab decides
 what the form holds. Five tabs (`SettingsTab`), in this order: "General" (the
-badge toggle and the three interval steppers), "Notifications" (the permission
+badge toggle, the three interval steppers, and the two colour sections),
+"Notifications" (the permission
 state, a test notification, and the sound), "Agents" (the agents a workspace's
 menu can start), "Remote"
 (the LAN toggle, the remote terminal port, the URL and QR, and the list of other
@@ -90,8 +91,59 @@ the whole window can get.
 │    check runs at which tier depends on context     │
 │    (collapsed vs expanded workspace, pending CI,   │
 │    attention). See docs/periodic-checks.md.        │
+│                                                    │
+│  Colors                                           │
+│    Background                    (↺)   [ ▊ ]      │
+│    Foreground                          [ ▊ ]      │
+│    Active workspace background   (↺)   [ ▊ ]      │
+│    Active workspace foreground         [ ▊ ]      │
+│    Active terminal row backgro…  (↺)   [ ▊ ]      │
+│    Active terminal row foregrou…       [ ▊ ]      │
+│    Colours for Wietty's own sidebar. A colour     │
+│    left unset keeps the system default; the       │
+│    reset button beside a colour clears it back.   │
+│                                                    │
+│  Ghostty colors                                   │
+│    Background                    (↺)   [ ▊ ]      │
+│    Foreground                          [ ▊ ]      │
+│    Cursor                              [ ▊ ]      │
+│    Cursor text                         [ ▊ ]      │
+│    Selection background                [ ▊ ]      │
+│    Selection foreground                [ ▊ ]      │
+│    (only after a write failed:)                   │
+│    ⚠ Could not save that: <reason>               │
+│    Written to ~/.config/wietty/ghostty.cfg,       │
+│    which Wietty loads after your own Ghostty      │
+│    config so what is set here wins for Wietty's   │
+│    terminals. Ghostty.app is not affected. A      │
+│    colour left unset keeps your own theme's; the  │
+│    reset button clears one back to that.          │
 └──────────────────────────────────────────────────┘
 ```
+
+The two colour sections are `SettingsView.colorsSection` and
+`terminalColorsSection`. Each row is a `ColorSettingRow`: a label, a reset button
+`(↺)` that appears only once a colour is set, and a native colour well `[ ▊ ]`
+(`ColorPicker`, `labelsHidden`, opacity off). The reset sits between the label and
+the well so a grouped form does not push it past the well.
+
+The first section is Wietty's own sidebar colours, held on `ProjectStore`
+(`SidebarColors`) and persisted to `~/.config/wietty/config` as `color-*` keys (see
+settings-storage.md). A well is empty (drawing the current default) until a colour is
+set; the reset clears it back to nil, which removes the line. The colours reach the
+sidebar through `EnvironmentValues.sidebarColors`, set once on the sidebar in
+`ContentView`: the background and foreground colour the sidebar, the active workspace
+pair colours the card that owns the terminal on screen (`WorkspaceHighlight`), and the
+active terminal row pair colour the selected row, the row background replacing the
+built-in `#292b34` (`SidebarRowBackground.fill(activeRowBackground:)`).
+
+The second section is the terminal's own colours, driven by `GhosttyColorSettings`
+and written to `~/.config/wietty/ghostty.cfg` (`GhosttyOverrideFile`), the same file
+`desktop-notifications` uses. A write reloads the live config, so a colour reaches
+terminals already open. These wells show the value Wietty is forcing in that file, not
+what an untouched terminal resolves from the user's own theme: reading a resolved
+colour back from libghostty is a good deal more work than reading the boolean the
+Notifications tab does, and the caption says as much.
 
 ## Notifications
 

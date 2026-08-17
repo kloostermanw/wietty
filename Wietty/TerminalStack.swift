@@ -26,6 +26,11 @@ struct TerminalStack {
     /// is where the setting and the host it drives are introduced to each other.
     let desktopNotifications: DesktopNotificationSetting
 
+    /// The Settings window's control over the terminal's colours, built here for the
+    /// same reason `desktopNotifications` is: the host it writes through and reloads
+    /// is private to `GhosttyStack`, and the composition root is the one place with it.
+    let ghosttyColors: GhosttyColorSettings
+
     /// What is wrong with the terminal, if anything. With nothing left to fall back
     /// to, this message is all a user whose libghostty failed to start ever gets,
     /// so it has to say what they can do about it.
@@ -57,6 +62,7 @@ struct TerminalStack {
         streamer = stack.hub
         monitor = stack.monitor
         desktopNotifications = DesktopNotificationSetting(host: built.host)
+        ghosttyColors = GhosttyColorSettings(host: built.host)
         // Unconditional, because the sweep answers "is this socket abandoned" itself
         // rather than trusting its caller to be the only Wietty on the machine.
         stack.clearStaleSockets()

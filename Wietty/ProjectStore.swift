@@ -273,6 +273,16 @@ final class ProjectStore {
         }
     }
 
+    /// The sidebar's own colours, each optional (nil leaves the default). Persisted
+    /// as `color-*` scalar keys; the terminal's colours are separate and live in
+    /// `ghostty.cfg` (`GhosttyColorSettings`) because only libghostty can apply them.
+    var sidebarColors: SidebarColors {
+        didSet {
+            guard sidebarColors != oldValue else { return }
+            persistSettings()
+        }
+    }
+
     /// The agents a workspace's context menu offers, in menu order. A preference
     /// like the ports and the bell sound: persisted, and edited in the Agents tab.
     ///
@@ -445,6 +455,7 @@ final class ProjectStore {
             self.mcpPort = Self.port(cfg[SettingsKeys.mcpPort], default: MCPServerHost.defaultPort)
             self.remotePort = Self.port(cfg[SettingsKeys.remotePort], default: RemoteServer.defaultPort)
             self.sidebarWidth = Self.width(cfg[SettingsKeys.sidebarWidth])
+            self.sidebarColors = SidebarColors(from: cfg)
             self.agents = Self.agents(from: cfg)
             self.approvedCommands = Self.approvals(from: cfg)
         } else {
@@ -468,6 +479,9 @@ final class ProjectStore {
             self.sidebarWidth = storedSidebarWidth == 0
                 ? SidebarWidth.default
                 : max(storedSidebarWidth, SidebarWidth.minimum)
+            // Colours are new with the file: no build wrote them to `UserDefaults`,
+            // so a migrating install starts with none and keeps the defaults.
+            self.sidebarColors = SidebarColors()
             self.agents = Self.loadAgents(defaults, key: agentsKey)
             let storedApprovals = defaults.dictionary(forKey: approvedCommandsKey) as? [String: [String]] ?? [:]
             self.approvedCommands = storedApprovals.reduce(into: [UUID: Set<String>]()) {
@@ -1725,6 +1739,7 @@ final class ProjectStore {
             (SettingsKeys.remotePort, String(remotePort)),
             (SettingsKeys.mcpPort, String(mcpPort)),
         ]
+        pairs.append(contentsOf: sidebarColors.pairs)
         for (i, agent) in agents.enumerated() {
             pairs.append(("\(SettingsKeys.agentPrefix)\(i).name", agent.name))
             pairs.append(("\(SettingsKeys.agentPrefix)\(i).command", agent.command))

@@ -37,7 +37,11 @@ Legend:
 - Selected (`isSelected`): the row whose terminal the pane is showing, filled
   #292b34 in dark appearance and with the system's unemphasized row selection in
   light. Exactly one row in the window is ever marked, because the pane holds one
-  terminal.
+  terminal. Both the selected fill and the label colour can be overridden: Settings ›
+  General › Colors carries "Active terminal row background" and "foreground", read here
+  through `EnvironmentValues.sidebarColors`. When the background is set it replaces the
+  #292b34 (`SidebarRowBackground.fill(activeRowBackground:)`); when the foreground is
+  set the label uses it while selected. Both keep their defaults until set.
 
 Selection and hover are both backgrounds and can both apply at once, so which
 one wins is decided by `SidebarRowBackground` (`Wietty/SidebarRowBackground.swift`,
