@@ -180,6 +180,15 @@ handle a `close_surface` binding as well as a command exiting: that binding has 
 `ghostty_init` is called with argc 0 on purpose, and `ghostty_cli_try_action` must never be called;
 either would make this process behave like the `ghostty` CLI rather than like Wietty.
 
+**Wietty's own overlay is loaded after it** (`~/.config/wietty/ghostty.cfg`, `GhosttyOverrideFile`), so a
+setting Wietty offers in its Settings window wins over the user's own config for Wietty's terminals while
+Ghostty.app is untouched. Two things ride on this overlay: `desktop-notifications` (see notifications.md)
+and the terminal's colours (`background`, `foreground`, `cursor-color`, `cursor-text`,
+`selection-background`, `selection-foreground`), which the General tab's "Ghostty colors" section writes
+through `GhosttyColorSettings`. A colour left unset writes no line, so the user's own theme decides it;
+a colour set here overrides that theme. Every write is followed by a reload, so a colour reaches terminals
+already open (see `reloadConfig`).
+
 ## What the terminal asks of the store
 
 Almost nothing. There is no workspace object anywhere to name, because the PTY belongs to the app

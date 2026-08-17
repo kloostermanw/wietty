@@ -20,6 +20,7 @@ import WiettyShared
                             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
                             bells: BellNotifier(sink: FakeNotificationSink()),
                             desktopNotifications: .fake(),
+                            ghosttyColors: GhosttyColorSettings(host: FakeSurfaceHost(), file: .temporary()),
                             tab: .agents)
     }
 

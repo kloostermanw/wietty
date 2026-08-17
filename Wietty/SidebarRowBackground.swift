@@ -29,8 +29,15 @@ enum SidebarRowBackground: Equatable {
     /// cannot change the shape under the pointer.
     static let cornerRadius: Double = 5
 
-    /// What to fill with, and nil for the row that draws nothing.
-    var fill: AnyShapeStyle? {
+    /// What to fill with, and nil for the row that draws nothing. The built-in
+    /// behaviour, with no user override for the selected row's colour.
+    var fill: AnyShapeStyle? { fill(activeRowBackground: nil) }
+
+    /// The fill given the user's optional override for the selected row's background
+    /// (`SidebarColors.activeTerminalRowBackground`). The override replaces the
+    /// built-in `#292b34`/system selected colour; hover and none are untouched, since
+    /// those are not colours the user sets.
+    func fill(activeRowBackground: Color?) -> AnyShapeStyle? {
         switch self {
         case .none:
             return nil
@@ -40,6 +47,9 @@ enum SidebarRowBackground: Equatable {
         case .hovered:
             return AnyShapeStyle(HierarchicalShapeStyle.secondary.opacity(0.12))
         case .selected:
+            if let activeRowBackground {
+                return AnyShapeStyle(activeRowBackground)
+            }
             return AnyShapeStyle(Color(nsColor: Self.selectedFill))
         }
     }

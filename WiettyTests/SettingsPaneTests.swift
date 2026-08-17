@@ -30,6 +30,7 @@ import WiettyShared
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: notifier(),
             desktopNotifications: setting(),
+            ghosttyColors: colors(),
             selection: selection)
     }
 
@@ -42,6 +43,12 @@ import WiettyShared
 
     private func setting(overriding: Bool = false) -> DesktopNotificationSetting {
         .fake(overriding: overriding)
+    }
+
+    /// Colours over a fake host and a temporary file, so a render never reads or
+    /// writes the developer's own `~/.config/wietty/ghostty.cfg`.
+    private func colors() -> GhosttyColorSettings {
+        GhosttyColorSettings(host: FakeSurfaceHost(), file: .temporary())
     }
 
     private func sizeOffered<V: View>(_ view: V, _ size: NSSize) -> NSSize {
@@ -136,10 +143,34 @@ import WiettyShared
                 remoteWorkspaces: RemoteWorkspacesController(connections: connections),
                 bells: notifier(),
                 desktopNotifications: setting(),
+                ghosttyColors: colors(),
                 tab: tab)
             let renderer = ImageRenderer(content: view.frame(width: 600, height: 800))
             #expect(renderer.nsImage != nil, "\(tab.title) failed to render")
         }
+    }
+
+    /// The General tab now carries the two colour sections, and neither is reached by
+    /// an empty store: the app colours draw their reset button only once a colour is
+    /// set, and the terminal colours draw theirs only when the override file carries
+    /// one. Both are set here so the render covers the wells and their reset buttons.
+    @Test func theGeneralTabRendersWithColoursSet() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let connections = RemoteConnectionsStore(defaults: defaults)
+        let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
+        store.sidebarColors.background = ColorHex.color(from: "#303446")
+        store.sidebarColors.activeTerminalRowForeground = ColorHex.color(from: "#c6d0f5")
+        let colours = GhosttyColorSettings(host: FakeSurfaceHost(), file: .temporary())
+        colours.setColor(GhosttyOverrideFile.ColorKey.background, to: ColorHex.color(from: "#303446"))
+        let view = SettingsView(
+            store: store,
+            remoteConnections: connections,
+            remoteWorkspaces: RemoteWorkspacesController(connections: connections),
+            bells: notifier(),
+            desktopNotifications: setting(),
+            ghosttyColors: colours,
+            tab: .general)
+        #expect(ImageRenderer(content: view.frame(width: 600, height: 1200)).nsImage != nil)
     }
 
     /// The Notifications tab draws four different things depending on what the
@@ -240,6 +271,7 @@ import WiettyShared
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: notifier(),
             desktopNotifications: setting(),
+            ghosttyColors: colors(),
             tab: .remote)
         let renderer = ImageRenderer(content: view.frame(width: 600, height: 1200))
         #expect(renderer.nsImage != nil)

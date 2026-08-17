@@ -18,6 +18,16 @@ enum SettingsKeys {
     static let remotePort = "remote-port"
     static let mcpPort = "mcp-port"
 
+    // The sidebar's own colours (`SidebarColors`), each a `#RRGGBB` value. Absent
+    // means "leave the default"; the terminal's colours live in `ghostty.cfg`, not
+    // here, because only libghostty can apply them.
+    static let colorBackground = "color-background"
+    static let colorForeground = "color-foreground"
+    static let colorActiveWorkspaceBackground = "color-active-workspace-background"
+    static let colorActiveWorkspaceForeground = "color-active-workspace-foreground"
+    static let colorActiveTerminalRowBackground = "color-active-terminal-row-background"
+    static let colorActiveTerminalRowForeground = "color-active-terminal-row-foreground"
+
     static let agentPrefix = "agent."
     static let workspacePrefix = "workspace."
     static let approvedPrefix = "approved."
@@ -27,6 +37,9 @@ enum SettingsKeys {
     static let scalars: Set<String> = [
         showWorkspaceBadge, bellSound, checkIntervalFast, checkIntervalNormal,
         checkIntervalSlow, sidebarWidth, remoteEnabled, remotePort, mcpPort,
+        colorBackground, colorForeground,
+        colorActiveWorkspaceBackground, colorActiveWorkspaceForeground,
+        colorActiveTerminalRowBackground, colorActiveTerminalRowForeground,
     ]
 
     /// The list prefixes, so a list that shrank loses its trailing entries.

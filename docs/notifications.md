@@ -44,6 +44,10 @@ deferring to the user's own config the default rather than something to ask for.
 There is no control for going back to it, because there is nothing to go back from
 that deleting the file does not undo.
 
+The same file also carries the terminal's colours, which the General tab writes
+through `GhosttyColorSettings` (see terminal.md). `GhosttyOverrideFile` manages both,
+line by line, so a colour and this toggle coexist without disturbing each other.
+
 It is a file because libghostty has no setter: handing it another file is the only
 way to change a value at all. That also decides how the tab reads. The resolved value
 comes back through `ghostty_config_get` rather than from the file, so the switch shows

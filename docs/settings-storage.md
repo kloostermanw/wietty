@@ -25,6 +25,18 @@ Scalars (one key each):
 | `remote-enabled`         | `true`/`false`, the LAN server toggle |
 | `remote-port`            | the LAN remote terminal port |
 | `mcp-port`               | the loopback MCP server port |
+| `color-background`       | the sidebar background, a `#RRGGBB` colour |
+| `color-foreground`       | the sidebar foreground |
+| `color-active-workspace-background`     | the active workspace card background |
+| `color-active-workspace-foreground`     | the active workspace card foreground |
+| `color-active-terminal-row-background`  | the selected terminal row background |
+| `color-active-terminal-row-foreground`  | the selected terminal row foreground |
+
+Each colour key is present only when that colour is set. An absent key means "leave
+the default", which is what an untouched install has and what deleting the line
+returns to. These are Wietty's own UI colours (`SidebarColors`). The terminal's own
+colours are libghostty's to apply, so they live in `ghostty.cfg` rather than here (see
+"What does not live in the file" below).
 
 Lists are flattened into indexed keys:
 
@@ -51,6 +63,11 @@ The file is plaintext, so no secret is ever written to it.
   connection metadata (`wietty.remote.connections`).
 - **`desktop-notifications`** already lives in `ghostty.cfg`, written by
   `GhosttyOverrideFile`, and is unchanged (see notifications.md).
+- **The terminal's colours** (`background`, `foreground`, `cursor-color`,
+  `cursor-text`, `selection-background`, `selection-foreground`) also live in
+  `ghostty.cfg`, written by the same `GhosttyOverrideFile` and driven by
+  `GhosttyColorSettings`. Only libghostty can apply them, so they go in the file it
+  loads. The `color-*` keys above are the separate set for Wietty's own sidebar.
 
 ## Workspaces are plain paths
 

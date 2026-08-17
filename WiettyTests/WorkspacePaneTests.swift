@@ -103,6 +103,7 @@ import WiettyShared
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: BellNotifier(sink: FakeNotificationSink()),
             desktopNotifications: .fake(),
+            ghosttyColors: GhosttyColorSettings(host: FakeSurfaceHost(), file: .temporary()),
             selection: .workspaceSettings(workspace))
         #expect(ImageRenderer(content: pane.frame(width: 600, height: 800)).nsImage != nil)
     }

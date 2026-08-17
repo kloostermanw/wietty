@@ -56,6 +56,13 @@ struct WorkspaceCardView: View {
     let onTestRunAll: () -> Void
     let onOpenTestLog: (ManagedProcess) -> Void
 
+    @Environment(\.sidebarColors) private var sidebarColors
+
+    /// The card is active when it owns the terminal the pane is showing, which is what
+    /// the active-workspace colours highlight. Derived from the same `isSelected` the
+    /// rows use, so the card and its rows cannot disagree about which is on screen.
+    private var isActive: Bool { project.terminals.contains(where: isSelected) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
@@ -89,8 +96,31 @@ struct WorkspaceCardView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .foregroundStyle(activeForeground)
+        .background(activeBackground)
         .contentShape(Rectangle())
         .animation(.default, value: collapsed)
+    }
+
+    /// The active-workspace background, drawn only when this card owns the selected
+    /// terminal and the user set a colour. `Color.clear` otherwise, so an untouched
+    /// install draws no card background and nothing changes.
+    @ViewBuilder private var activeBackground: some View {
+        if let fill = WorkspaceHighlight.resolve(isActive: isActive)
+            .background(active: sidebarColors.activeWorkspaceBackground) {
+            fill
+        } else {
+            Color.clear
+        }
+    }
+
+    /// The active-workspace foreground, applied the same way. `primary` when it does
+    /// not apply, which is the default a card's text already draws in.
+    private var activeForeground: AnyShapeStyle {
+        if isActive, let foreground = sidebarColors.activeWorkspaceForeground {
+            return AnyShapeStyle(foreground)
+        }
+        return AnyShapeStyle(.primary)
     }
 
     private var header: some View {

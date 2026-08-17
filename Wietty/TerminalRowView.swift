@@ -14,6 +14,7 @@ struct TerminalRowView: View {
     let onRestart: () -> Void
 
     @State private var isHovered = false
+    @Environment(\.sidebarColors) private var sidebarColors
 
     private var iconName: String {
         kind == .claude ? "sparkle" : "terminal"
@@ -32,7 +33,7 @@ struct TerminalRowView: View {
             Text(label)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .foregroundStyle(isExited ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                .foregroundStyle(labelStyle)
             if isLocalOnly {
                 Text("local")
                     .font(.caption2)
@@ -68,11 +69,22 @@ struct TerminalRowView: View {
         }
     }
 
+    /// The label's colour: the user's active-row foreground when this row is the one
+    /// on screen and they set one, otherwise the built-in primary/secondary that
+    /// dims an exited Claude row.
+    private var labelStyle: AnyShapeStyle {
+        if isSelected, let foreground = sidebarColors.activeTerminalRowForeground {
+            return AnyShapeStyle(foreground)
+        }
+        return isExited ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary)
+    }
+
     /// Selected wins over hovered, and which is which is `SidebarRowBackground`'s
-    /// to say rather than this view's.
+    /// to say rather than this view's. The selected fill takes the user's override
+    /// when they set one.
     @ViewBuilder private var highlight: some View {
-        if let fill = SidebarRowBackground.resolve(isSelected: isSelected,
-                                                  isHovered: isHovered).fill {
+        if let fill = SidebarRowBackground.resolve(isSelected: isSelected, isHovered: isHovered)
+            .fill(activeRowBackground: sidebarColors.activeTerminalRowBackground) {
             RoundedRectangle(cornerRadius: SidebarRowBackground.cornerRadius)
                 .fill(fill)
         }

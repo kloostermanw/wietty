@@ -29,6 +29,10 @@ struct RightTerminalView: View {
     /// for the same reason `bells` is: the toggle has to drive the config the live
     /// surfaces are actually running on.
     let desktopNotifications: DesktopNotificationSetting
+    /// Only for `SettingsView`'s General tab, and the app's one instance for the same
+    /// reason `desktopNotifications` is: the colour wells write the file the live
+    /// surfaces reload.
+    let ghosttyColors: GhosttyColorSettings
     let selection: PaneSelection
 
     var body: some View {
@@ -48,7 +52,8 @@ struct RightTerminalView: View {
             // small the window can get depending on what is on screen.
             SettingsView(store: store, remoteConnections: remoteConnections,
                          remoteWorkspaces: remoteWorkspaces, bells: bells,
-                         desktopNotifications: desktopNotifications)
+                         desktopNotifications: desktopNotifications,
+                         ghosttyColors: ghosttyColors)
                 .frame(minWidth: SidebarWidth.paneMinimum,
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)

@@ -12,6 +12,9 @@ struct SettingsView: View {
     /// a toggle reporting a config the live surfaces are not running on would be
     /// worse than no toggle.
     let desktopNotifications: DesktopNotificationSetting
+    /// The terminal's colours, for the same reason: the wells write the file the live
+    /// surfaces reload, so this has to be the app's own instance.
+    let ghosttyColors: GhosttyColorSettings
 
     /// View state, not a preference. The panel is destroyed when the pane shows
     /// anything else, so this resets on the way back in, which is what a user who
@@ -40,12 +43,14 @@ struct SettingsView: View {
          remoteWorkspaces: RemoteWorkspacesController,
          bells: BellNotifier,
          desktopNotifications: DesktopNotificationSetting,
+         ghosttyColors: GhosttyColorSettings,
          tab: SettingsTab = .default) {
         _store = Bindable(wrappedValue: store)
         _remoteConnections = ObservedObject(wrappedValue: remoteConnections)
         _remoteWorkspaces = ObservedObject(wrappedValue: remoteWorkspaces)
         self.bells = bells
         self.desktopNotifications = desktopNotifications
+        self.ghosttyColors = ghosttyColors
         _tab = State(initialValue: tab)
     }
 
@@ -79,7 +84,15 @@ struct SettingsView: View {
             form {
                 badgeSection
                 periodicChecksSection
+                colorsSection
+                terminalColorsSection
             }
+            // Re-read the terminal colours on the way into the tab, the same as the
+            // Notifications tab re-reads its own setting and for the same reason: the
+            // file is an ordinary one the user can edit while the window is open, so a
+            // well showing the launch-time value would be the one place that is wrong
+            // about it.
+            .task { ghosttyColors.refresh() }
         case .notifications:
             form { NotificationSettings(store: store, bells: bells,
                                         desktopNotifications: desktopNotifications) }
@@ -222,6 +235,76 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
+
+    /// Wietty's own UI colours. Each well is empty until it is set, and a set colour
+    /// shows a reset that clears it back to the default. Persisted to
+    /// `~/.config/wietty/config`; the terminal's own colours are the next section.
+    @ViewBuilder private var colorsSection: some View {
+        Section("Colors") {
+            ColorSettingRow("Background", default: Self.defaultBackground,
+                            color: $store.sidebarColors.background)
+            ColorSettingRow("Foreground", default: Self.defaultForeground,
+                            color: $store.sidebarColors.foreground)
+            ColorSettingRow("Active workspace background", default: Self.defaultActiveBackground,
+                            color: $store.sidebarColors.activeWorkspaceBackground)
+            ColorSettingRow("Active workspace foreground", default: Self.defaultForeground,
+                            color: $store.sidebarColors.activeWorkspaceForeground)
+            ColorSettingRow("Active terminal row background", default: Self.defaultActiveRowBackground,
+                            color: $store.sidebarColors.activeTerminalRowBackground)
+            ColorSettingRow("Active terminal row foreground", default: Self.defaultForeground,
+                            color: $store.sidebarColors.activeTerminalRowForeground)
+            Text("Colours for Wietty's own sidebar. A colour left unset keeps the system default; the reset button beside a colour clears it back to that.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// The terminal's colours, written to `ghostty.cfg` and reloaded live. These are
+    /// libghostty's to apply, so they go through `GhosttyColorSettings` rather than
+    /// the store. A row shows the value Wietty is forcing, not what an untouched
+    /// terminal resolves to from the user's own theme.
+    @ViewBuilder private var terminalColorsSection: some View {
+        Section("Ghostty colors") {
+            terminalColorRow("Background", key: GhosttyOverrideFile.ColorKey.background,
+                             default: .black)
+            terminalColorRow("Foreground", key: GhosttyOverrideFile.ColorKey.foreground,
+                             default: .white)
+            terminalColorRow("Cursor", key: GhosttyOverrideFile.ColorKey.cursor,
+                             default: .white)
+            terminalColorRow("Cursor text", key: GhosttyOverrideFile.ColorKey.cursorText,
+                             default: .black)
+            terminalColorRow("Selection background", key: GhosttyOverrideFile.ColorKey.selectionBackground,
+                             default: .gray)
+            terminalColorRow("Selection foreground", key: GhosttyOverrideFile.ColorKey.selectionForeground,
+                             default: .white)
+            if let failure = ghosttyColors.writeFailure {
+                Label("Could not save that: \(failure)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red)
+            }
+            Text("Written to \(ghosttyColors.fileURL.path), which Wietty loads after your own Ghostty config so what is set here wins for Wietty's terminals. Ghostty.app is not affected. A colour left unset keeps your own theme's; the reset button clears one back to that.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// One terminal-colour row. The binding does not write the store: it drives
+    /// `GhosttyColorSettings`, which writes the file and reloads the live config, so a
+    /// plain `@Bindable` binding would skip the reload and leave open terminals stale.
+    private func terminalColorRow(_ title: String, key: String, default fallback: Color) -> some View {
+        ColorSettingRow(title, default: fallback, color: Binding(
+            get: { ghosttyColors.color(for: key) },
+            set: { ghosttyColors.setColor(key, to: $0) }
+        ))
+    }
+
+    // The swatch a well shows before a colour is set. Three are the real current
+    // default, so the well previews what the sidebar draws today: the window
+    // background, the label colour, and the selected row's own `#292b34`. The active
+    // workspace background is the exception, because an unset active card draws no
+    // background at all: its swatch is an indicative starting colour rather than a
+    // preview of a default there is none of.
+    private static let defaultBackground = Color(nsColor: .windowBackgroundColor)
+    private static let defaultForeground = Color(nsColor: .labelColor)
+    private static let defaultActiveBackground = Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
+    private static let defaultActiveRowBackground = Color(nsColor: SidebarRowBackground.selectedFill)
 
     private var newConnectionIsValid: Bool {
         !newName.trimmingCharacters(in: .whitespaces).isEmpty
@@ -516,6 +599,48 @@ private struct NarrowFieldRow<Field: View>: View {
                 .labelsHidden()
                 .frame(width: Self.width)
                 .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+/// One colour row: a label, an optional reset button, and a colour well.
+///
+/// The colour is optional and nil means "no override": the well then previews the
+/// default handed in, and the reset button is hidden because there is nothing to
+/// reset. Picking a colour sets it; the reset button clears it back to nil. The well
+/// is `labelsHidden` with the label drawn separately so the reset button can sit
+/// between them rather than after the well, where a grouped form would push it.
+///
+/// Shared by both colour sections (Wietty's own colours and the terminal's), which
+/// is why it takes a plain `Binding<Color?>`: the app colours bind straight into the
+/// store, while the terminal colours bind through `GhosttyColorSettings` so a write
+/// reloads the live config.
+private struct ColorSettingRow: View {
+    let title: String
+    let defaultColor: Color
+    @Binding var color: Color?
+
+    init(_ title: String, default defaultColor: Color, color: Binding<Color?>) {
+        self.title = title
+        self.defaultColor = defaultColor
+        _color = color
+    }
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            if color != nil {
+                Button { color = nil } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .buttonStyle(.borderless)
+                .help("Reset to default")
+            }
+            ColorPicker("", selection: Binding(get: { color ?? defaultColor },
+                                               set: { color = $0 }),
+                        supportsOpacity: false)
+                .labelsHidden()
         }
     }
 }
