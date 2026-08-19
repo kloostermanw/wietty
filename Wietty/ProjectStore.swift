@@ -619,13 +619,16 @@ final class ProjectStore {
     private static func groups(from cfg: [String: String]) -> [WorkspaceGroup] {
         var result: [WorkspaceGroup] = []
         var index = 0
-        while let id = cfg["\(SettingsKeys.groupPrefix)\(index).id"] {
-            let group = WorkspaceGroup(
-                id: UUID(uuidString: id) ?? UUID(),
-                name: cfg["\(SettingsKeys.groupPrefix)\(index).name"] ?? ""
-            )
-            if group.isValid { result.append(group) }
+        while let stored = cfg["\(SettingsKeys.groupPrefix)\(index).id"] {
+            let name = cfg["\(SettingsKeys.groupPrefix)\(index).name"] ?? ""
             index += 1
+            // A group id is a cross-reference target: a workspace (`Project.groupId`)
+            // and the active selection (`selected-group`) point at it. Minting a fresh
+            // id for an unparseable one would silently detach every workspace filed
+            // under it, so a malformed entry is dropped, the way a blank-named one is.
+            guard let id = UUID(uuidString: stored) else { continue }
+            let group = WorkspaceGroup(id: id, name: name)
+            if group.isValid { result.append(group) }
         }
         return result
     }
