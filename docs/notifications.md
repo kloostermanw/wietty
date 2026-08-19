@@ -187,9 +187,18 @@ one tap that matters most, the one that started the app, is the one that is lost
 Visiting a row takes its notification back out of Notification Center, so bells
 already dealt with do not pile up. The hook is a `didSet` on `attention` rather than
 a call in `activate`, because a dozen paths clear a flag (activating, closing,
-restarting, removing a row, removing a workspace) and the next one added would
-forget to call it. Remote notifications are withdrawn the same way, from the
-watcher's `cleared` set.
+restarting, removing a row, removing a workspace, typing into the terminal) and the
+next one added would forget to call it. Remote notifications are withdrawn the same
+way, from the watcher's `cleared` set.
+
+Typing is one of those paths, and the one that needs no click. A bell can ring while
+Wietty is in the background for a terminal that is already the one the pane shows, so
+coming back and answering it should clear the 🔔 without first clicking its row. The
+surface reports every keystroke through `TerminalSurfaceHosting.onInput`, which
+`GhosttyStack` forwards and `ContentView` points at `ProjectStore.clearAttention(sessionId:)`.
+It is raised unconditionally and by session id, because the surface knows only the
+session it renders; the store no-ops once the flag is down and for a session it does
+not track, so a keystroke into a paneless or already closed terminal changes nothing.
 
 Withdrawing never asks for permission. Asking there would mean the first thing
 someone who has never had a bell sees is a permission prompt caused by clicking a

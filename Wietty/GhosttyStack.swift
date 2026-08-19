@@ -235,6 +235,18 @@ final class GhosttyStack {
         if let terminationObserver { NotificationCenter.default.removeObserver(terminationObserver) }
     }
 
+    /// The pane's own keystrokes, by session, forwarded to the surface host.
+    ///
+    /// Here rather than on the host directly because the host is the seam onto an
+    /// unstable API and this stack is its one owner; the app points this at the
+    /// store, which drops a terminal's attention flag the moment the user types into
+    /// the surface it shows. Free to claim: unlike the host's other callbacks, no
+    /// part of this substrate reads input, so nothing here contends for it.
+    var onInput: (@MainActor (String) -> Void)? {
+        get { host.onInput }
+        set { host.onInput = newValue }
+    }
+
     /// The store facing half of this substrate, bound to this stack.
     ///
     /// The poll does two things, because it is the app's one main actor heartbeat on

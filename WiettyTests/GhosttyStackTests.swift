@@ -332,6 +332,20 @@ private final class Flag: @unchecked Sendable {
         #expect(!vt.contains("before"))
     }
 
+    /// A keystroke into the pane's surface reaches whatever the app wired `onInput`
+    /// to, so the store can drop that terminal's attention flag. Forwarded to the
+    /// host because the host is private to this stack, and unclaimed by the substrate
+    /// itself, which reads only output.
+    @Test func surfaceInputReachesTheWiredHandler() {
+        let host = FakeSurfaceHost()
+        let stack = GhosttyStack(host: host, helperPath: "/usr/bin/true")
+        defer { stack.ghosttyService?.closeAll() }
+        var typed: [String] = []
+        stack.onInput = { session in typed.append(session) }
+        host.emitInput("gt:sess-A")
+        #expect(typed == ["gt:sess-A"])
+    }
+
     /// The job poll the store is handed has to be bound to this stack, or it
     /// answers nothing and every agent's status freezes.
     @Test func theJobPollIsBoundToThisStack() async throws {

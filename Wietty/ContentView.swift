@@ -125,6 +125,11 @@ struct ContentView: View {
                     // override itself for that reason.
                     router.localSelectionChanged(to: session)
                 }
+                // Typing into the pane answers whatever bell the terminal on screen
+                // rang: its attention flag comes down on the first keystroke, so a
+                // notification that arrived while Wietty was in the background clears
+                // as the user starts replying, without a click on the row first.
+                terminals.ghostty.onInput = { session in store.clearAttention(sessionId: session) }
             }
             startBellNotifications()
             terminals.monitor.start { event in store.handle(event) }

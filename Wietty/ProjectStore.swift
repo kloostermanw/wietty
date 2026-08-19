@@ -1083,6 +1083,28 @@ final class ProjectStore {
         attention.remove(ref.id)
     }
 
+    /// Drops a session's attention flag because the user is typing into it.
+    ///
+    /// The pane raises this on every keystroke into the surface it shows, which is
+    /// the terminal the user is looking at and answering: a bell that rang while
+    /// this app was in the background has been dealt with the moment they type, with
+    /// no need to click the row first. By session id rather than row id because the
+    /// surface knows only the session it renders. An untracked or empty id is a
+    /// no-op, so a keystroke into a paneless or already closed session changes
+    /// nothing.
+    ///
+    /// The `contains` guard is what makes this safe to call per keystroke: `attention`
+    /// is observed, and mutating it at all wakes every view that reads it (the whole
+    /// sidebar), so the common case of typing into a terminal with no bell pending
+    /// must not touch the set. It is removed only when a flag is actually up, and the
+    /// `didSet` then withdraws the banner.
+    func clearAttention(sessionId: String) {
+        guard let (p, t) = indexOfSession(sessionId) else { return }
+        let id = projects[p].terminals[t].id
+        guard attention.contains(id) else { return }
+        attention.remove(id)
+    }
+
     /// An empty id matches nothing. Rows that have never opened all carry one,
     /// so a lookup by empty id would answer with whichever paneless row happens
     /// to come first.
