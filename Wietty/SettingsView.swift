@@ -682,13 +682,6 @@ private struct ColorSettingRow: View {
     }
 }
 
-/// One row in the "Agents" section: a summary line with edit and delete buttons,
-/// or (while editing) an inline form for name, command and default arguments.
-///
-/// Internal rather than private, and its `init` takes the editing state, for the
-/// same reason `NotificationSettings.init` takes a permission: the editing half is
-/// never on screen on the way into the tab, so a render of the tab alone would cover
-/// the reading half and look like it covered both.
 /// One row in the "Groups" section: the group's name with edit and delete buttons,
 /// or (while editing) an inline field to rename it. The single-field sibling of
 /// `AgentRow`.
@@ -751,6 +744,13 @@ struct GroupRow: View {
     }
 }
 
+/// One row in the "Agents" section: a summary line with edit and delete buttons,
+/// or (while editing) an inline form for name, command and default arguments.
+///
+/// Internal rather than private, and its `init` takes the editing state, for the
+/// same reason `NotificationSettings.init` takes a permission: the editing half is
+/// never on screen on the way into the tab, so a render of the tab alone would cover
+/// the reading half and look like it covered both.
 struct AgentRow: View {
     let agent: AgentDefinition
     let onUpdate: (AgentDefinition) -> Void

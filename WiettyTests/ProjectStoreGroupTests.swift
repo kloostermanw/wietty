@@ -88,6 +88,19 @@ import Foundation
         #expect(store.projects[0].groupId == nil)
     }
 
+    /// A removed group is gone from a reloaded store, not just from memory: the list
+    /// is written back with its trailing `group.N.*` lines dropped (the `groupPrefix`
+    /// in `SettingsKeys.prefixes`), so a deleted group cannot resurface on relaunch.
+    @Test func aRemovedGroupDoesNotSurviveARelaunch() {
+        let defaults = makeDefaults()
+        let first = store(defaults)
+        first.addGroup(WorkspaceGroup(name: "Work"))
+        first.addGroup(WorkspaceGroup(name: "Private"))
+        first.removeGroup(id: first.groups[0].id)
+
+        #expect(store(defaults).groups.map(\.name) == ["Private"])
+    }
+
     @Test func removingTheActiveGroupClearsTheSelection() {
         let store = store(makeDefaults())
         store.addGroup(WorkspaceGroup(name: "Work"))
