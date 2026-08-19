@@ -60,7 +60,7 @@ struct RightTerminalView: View {
         case let .workspaceSettings(id):
             // The same floor again, so which page is up cannot change how small the
             // window can get.
-            WorkspaceSettingsView(project: store.projects.first { $0.id == id })
+            WorkspaceSettingsView(store: store, project: store.projects.first { $0.id == id })
                 .frame(minWidth: SidebarWidth.paneMinimum,
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)

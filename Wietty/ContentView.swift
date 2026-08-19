@@ -331,9 +331,19 @@ struct ContentView: View {
                  storedCollapsed: sections.isCollapsed("local"))
     }
 
+    /// The workspaces the sidebar shows: every one when no group is active, otherwise
+    /// only those filed under the selected group (unassigned workspaces show only under
+    /// "All"). Computed once so the last-card divider below tests against what is
+    /// actually drawn. Filtering hides rows without removing anything, so a hidden
+    /// workspace's terminal keeps running and the pane is left undisturbed.
+    private var visibleProjects: [Project] {
+        WorkspaceGroupMenu.visible(store.projects, selected: store.selectedGroupId)
+    }
+
     @ViewBuilder
     private var localSection: some View {
         let header = localHeader
+        let visible = visibleProjects
         SidebarSectionHeaderView(
             title: header.title,
             collapsed: header.collapsed,
@@ -341,7 +351,7 @@ struct ContentView: View {
             buttons: localSectionButtons
         )
         if !header.collapsed {
-            ForEach(store.projects) { project in
+            ForEach(visible) { project in
                 WorkspaceCardView(
                     project: project,
                     collapsed: project.collapsed,
@@ -395,7 +405,7 @@ struct ContentView: View {
                     store.move(id: dragged, before: project.id)
                     return true
                 }
-                if project.id != store.projects.last?.id {
+                if project.id != visible.last?.id {
                     Divider()
                 }
             }
