@@ -23,10 +23,16 @@ carrying no payload. One with no title is kept, because `OSC 9;text` supplies on
 body.
 
 Something has to send one before any of this runs, and what decides that is the environment the
-shell was spawned with. A program picks between the bell, `OSC 9` and `OSC 777` by reading
-`TERM_PROGRAM`, so a terminal that leaves it unset is told nothing by an agent that would otherwise
-have announced itself. `RawPTY.spawn` sets it to `Wietty` (`docs/terminal.md`, under "Spawning the
-shell"). Before it did, this whole path was correct and idle.
+shell was spawned with. An agent picks between the bell, `OSC 9` and `OSC 777` by recognising its
+host, and it does that from two variables `RawPTY.spawn` sets: `TERM_PROGRAM`, which it names
+`Wietty`, and `TERM`. Recognition is by an exact value, so the name is load bearing. Claude Code, for
+one, treats a host as Ghostty (and only then sends a desktop notification, as `OSC 777`) when `TERM`
+is `xterm-ghostty`, and answers a host it does not know with a bare bell. So the app ships that
+terminfo entry in its own bundle and hands the child `TERM=xterm-ghostty` (`BundledTerminfo`, and
+`docs/terminal.md` under "Spawning the shell"). Under the `xterm-256color` fallback the same agent
+sees an unknown terminal and stays silent, though this app would have shown the banner. A program that
+keys on `TERM_PROGRAM` instead is the same trap left unset, which is why that is set unconditionally
+too.
 
 One thing that decides whether the action arrives at all is libghostty's rather than
 this app's: it gates `OSC 9` and `OSC 777` behind its own `desktop-notifications`
