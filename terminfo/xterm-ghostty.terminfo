@@ -1,0 +1,16 @@
+# Ghostty terminfo, reduced.
+#
+# Wietty renders with libghostty, so the truthful TERM is xterm-ghostty. This is
+# a small entry that inherits xterm-256color and adds the capabilities that
+# matter in practice (24 bit color, OSC 52 clipboard, styled underlines). It is
+# not Ghostty's full upstream entry; libghostty still renders every sequence,
+# programs just key their behaviour off what is declared here.
+#
+# The primary name must equal TERM for tcell based apps (lazygit, aerc), so keep
+# xterm-ghostty first. Compiled into the app bundle with `tic -x` at build time
+# (see project.yml) and pointed at with TERMINFO_DIRS (see BundledTerminfo).
+xterm-ghostty|ghostty|Ghostty,
+	Tc,
+	Ms=\E]52;%p1%s;%p2%s\007,
+	Smulx=\E[4:%p1%dm,
+	use=xterm-256color,

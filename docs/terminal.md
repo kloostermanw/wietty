@@ -430,15 +430,21 @@ any process on any machine, which reports every terminal's foreground job as unk
 freezes every agent's status in the sidebar.
 
 **The child is told what this terminal is, not what launched it.** `TERM` names what may be drawn
-(above, and `RawPTY.terminalType`), `TERM_PROGRAM` and `TERM_PROGRAM_VERSION` name who is drawing it:
-`Wietty` and the bundle's version. All three are set unconditionally, because the child's environment
-starts as Wietty's own and every one of them would otherwise carry an answer about a different
-terminal. `TERM_PROGRAM` is the variable a program reads to decide what its host supports (iTerm2
-answers `iTerm.app`, Ghostty.app `ghostty`, Apple's Terminal `Apple_Terminal`), and leaving it unset
-is not neutral. An agent choosing between the bell, `OSC 9` and `OSC 777` finds nothing to match and
-emits none of them, so a terminal that handles all three (`docs/notifications.md`) never hears from
-it, and the user sees no 🔔 and no banner. An app launched from the Finder inherits no value at all,
-so the unset case is the ordinary one rather than the exception.
+(above, and `RawPTY.terminalType`, which reads `BundledTerminfo`), `TERM_PROGRAM` and
+`TERM_PROGRAM_VERSION` name who is drawing it: `Wietty` and the bundle's version. All three are set
+unconditionally, because the child's environment starts as Wietty's own and every one of them would
+otherwise carry an answer about a different terminal. Both `TERM` and `TERM_PROGRAM` decide whether an
+agent announces itself, and recognition is by an exact value. A program reads `TERM_PROGRAM` to learn
+what its host is (iTerm2 answers `iTerm.app`, Ghostty.app `ghostty`, Apple's Terminal
+`Apple_Terminal`). Some tools read `TERM` instead: Claude Code treats `TERM` of `xterm-ghostty` as a
+Ghostty terminal and only then emits a desktop notification (`OSC 777`), answering a host it does not
+recognise with a bare bell. That is why the bundled `xterm-ghostty` terminfo matters past rendering
+(`BundledTerminfo`, `docs/notifications.md`): under the `xterm-256color` fallback the agent sees an
+unknown terminal, emits no notification, and the user gets no 🔔 and no banner. An app launched from
+the Finder inherits no value at all, so setting all three is the ordinary case rather than the
+exception. `COLORTERM` is set to `truecolor` for the same reason `TERM` is `xterm-ghostty`: libghostty
+draws 24 bit colour, and a program that reads `COLORTERM` rather than the terminfo capability to decide
+whether to emit truecolor would otherwise fall back to 256.
 
 Everything the child needs is built before the fork, because between fork and exec only
 async-signal-safe calls are legal: the child inherits one thread but every lock the parent held, so
@@ -538,11 +544,12 @@ a socket that then stays silent forever.
   temp directory until the stale sweep reached it.
 - **A remote viewer's first paint is monochrome, its cursor is approximate, and it is up to 300 ms
   stale.** Causes above, under "Serving a remote viewer".
-- **The stream carries whatever `RawPTY.terminalType` resolved**, which is `xterm-ghostty` only when
-  that terminfo entry is installed, and in practice that means Ghostty.app is present. Otherwise it is
-  `xterm-256color`. Since needing no other terminal installed is this substrate's whole point, the
-  fallback is the common case. Either way a remote client may receive sequences it does not implement,
-  because the bytes are the child's own; see `docs/remote-access.md`.
+- **The stream carries whatever `RawPTY.terminalType` resolved**, which is `xterm-ghostty` in the
+  ordinary case: the app compiles that terminfo entry into its own bundle and points the child at it
+  with `TERMINFO_DIRS` (`BundledTerminfo`, and "Spawning the shell" above), so no other terminal has to
+  be installed for the truthful name to be usable. It falls back to `xterm-256color` only when a build
+  did not produce the bundled entry. Either way a remote client may receive sequences it does not
+  implement, because the bytes are the child's own; see `docs/remote-access.md`.
 - **The workspace badge setting does nothing here.** libghostty has no title setter of any kind, so the
   badge travels as the surface's initial title and reaches only the host's own record and the view's
   accessibility label. It is still passed rather than dropped, so that the day the C API grows a setter

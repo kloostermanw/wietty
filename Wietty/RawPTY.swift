@@ -102,31 +102,15 @@ final class RawPTY: @unchecked Sendable {
     /// The TERM to hand the child.
     ///
     /// `xterm-ghostty` is the truthful answer, because Ghostty renders these
-    /// bytes. It is only usable if the terminfo entry exists, and Ghostty installs
-    /// that with Ghostty.app, which this substrate deliberately does not require.
-    /// A TERM naming an entry the database does not hold breaks every ncurses
-    /// program, so the fallback is `xterm-256color`, which every macOS carries.
+    /// bytes. It is usable without Ghostty.app because the app ships the entry
+    /// itself: `BundledTerminfo` resolves to `xterm-ghostty` when that compiled
+    /// entry is present (and `spawn` points the child at it with TERMINFO_DIRS),
+    /// and to `xterm-256color` when it is not, because a TERM naming an entry the
+    /// database does not hold breaks every ncurses program.
     ///
-    /// Resolved once per launch, because `infocmp` forks and this is read on every
-    /// open. Set unconditionally rather than defaulted: inheriting Wietty's own
-    /// TERM would tell the shell it is talking to whatever launched the app.
-    static let terminalType: String = {
-        let probe = Process()
-        probe.executableURL = URL(fileURLWithPath: "/usr/bin/infocmp")
-        probe.arguments = ["xterm-ghostty"]
-        probe.standardOutput = FileHandle.nullDevice
-        probe.standardError = FileHandle.nullDevice
-        do {
-            try probe.run()
-            probe.waitUntilExit()
-            if probe.terminationStatus == 0 { return "xterm-ghostty" }
-        } catch {
-            // Falls through to the safe answer, which is what an unusable probe
-            // and a missing entry both mean.
-        }
-        GhosttyLog.stack.notice("xterm-ghostty terminfo not installed; using xterm-256color")
-        return "xterm-256color"
-    }()
+    /// Set unconditionally rather than defaulted: inheriting Wietty's own TERM
+    /// would tell the shell it is talking to whatever launched the app.
+    static var terminalType: String { BundledTerminfo.term }
 
     /// What names the terminal itself, as against TERM, which names what it can
     /// draw. A program that adapts to its host reads this: iTerm2 answers
@@ -195,6 +179,16 @@ final class RawPTY: @unchecked Sendable {
         var merged = ProcessInfo.processInfo.environment
         for (key, value) in environment { merged[key] = value }
         merged["TERM"] = Self.terminalType
+        // Point the child at the bundled xterm-ghostty entry, prepended so every
+        // other TERM it might look up still resolves. Nil (nothing bundled) leaves
+        // any inherited value untouched, which pairs with the xterm-256color TERM.
+        if let dirs = BundledTerminfo.terminfoDirs(inheriting: merged["TERMINFO_DIRS"]) {
+            merged["TERMINFO_DIRS"] = dirs
+        }
+        // libghostty renders 24 bit colour, so say so the way Ghostty.app does.
+        // Some programs read this rather than the terminfo `Tc`/`RGB` capability
+        // to decide whether to emit truecolor, and would otherwise fall back to 256.
+        merged["COLORTERM"] = "truecolor"
         merged["TERM_PROGRAM"] = Self.programName
         merged["TERM_PROGRAM_VERSION"] = AppVersion.current.description
         merged["PWD"] = directory.path

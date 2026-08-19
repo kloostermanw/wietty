@@ -64,6 +64,27 @@ targets:
         codeSign: false
         copy:
           destination: executables
+    postCompileScripts:
+      # Compile the bundled xterm-ghostty terminfo. Wietty renders with
+      # libghostty, so the truthful TERM is xterm-ghostty, but that name is only
+      # usable if the entry exists in a database the child shell can read, and
+      # this app deliberately does not require Ghostty.app to install one. So the
+      # entry travels in the bundle: tic writes it into Contents/Resources/terminfo
+      # (a hashed layout, e.g. 78/xterm-ghostty), BundledTerminfo finds it there
+      # and points spawned shells at it with TERMINFO_DIRS. Runs before the
+      # implicit code signing, so the compiled entry is sealed with the bundle.
+      # See docs/terminal.md and docs/notifications.md.
+      - name: Compile xterm-ghostty terminfo
+        script: |
+          set -euo pipefail
+          DEST="${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/terminfo"
+          mkdir -p "$DEST"
+          /usr/bin/tic -x -o "$DEST" "${SRCROOT}/terminfo/xterm-ghostty.terminfo"
+        inputFiles:
+          - $(SRCROOT)/terminfo/xterm-ghostty.terminfo
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/terminfo/78/xterm-ghostty
+          - $(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/terminfo/67/ghostty
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.kloosterman.wietty
