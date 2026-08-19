@@ -17,6 +17,9 @@ enum SettingsKeys {
     static let remoteEnabled = "remote-enabled"
     static let remotePort = "remote-port"
     static let mcpPort = "mcp-port"
+    /// The active group's id, or absent for "All". Resolved against the group list on
+    /// load: an id no group answers to reads as "All" rather than hiding everything.
+    static let selectedGroup = "selected-group"
 
     // The sidebar's own colours (`SidebarColors`), each a `#RRGGBB` value. Absent
     // means "leave the default"; the terminal's colours live in `ghostty.cfg`, not
@@ -31,17 +34,19 @@ enum SettingsKeys {
     static let agentPrefix = "agent."
     static let workspacePrefix = "workspace."
     static let approvedPrefix = "approved."
+    static let groupPrefix = "group."
 
     /// The single-key settings, for `WiettyConfigFile.write`: a scalar the store no
     /// longer carries (back at its default) is removed rather than left behind.
     static let scalars: Set<String> = [
         showWorkspaceBadge, bellSound, checkIntervalFast, checkIntervalNormal,
         checkIntervalSlow, sidebarWidth, remoteEnabled, remotePort, mcpPort,
+        selectedGroup,
         colorBackground, colorForeground,
         colorActiveWorkspaceBackground, colorActiveWorkspaceForeground,
         colorActiveTerminalRowBackground, colorActiveTerminalRowForeground,
     ]
 
     /// The list prefixes, so a list that shrank loses its trailing entries.
-    static let prefixes: [String] = [agentPrefix, workspacePrefix, approvedPrefix]
+    static let prefixes: [String] = [agentPrefix, workspacePrefix, approvedPrefix, groupPrefix]
 }

@@ -297,6 +297,20 @@ import WiettyShared
         #expect(items.first?.keyEquivalentModifierMask == .command)
     }
 
+    /// The app menu's Group submenu, which the sidebar filter reads its selection
+    /// from. The same integration check as Settings, and possible for the same reason:
+    /// `WiettyTests` is hosted by the app (`TEST_HOST`), so the real `WiettyApp` has
+    /// installed its menu before this runs. It pins that `GroupCommand` landed one
+    /// "Group" submenu in the menu bar; no pure type can answer for the wiring itself.
+    @Test func theAppMenuOffersAGroupSubmenu() {
+        let items = NSApp.mainMenu?.items
+            .compactMap(\.submenu)
+            .flatMap(\.items)
+            .filter { $0.title == "Group" } ?? []
+        #expect(items.count == 1)
+        #expect(items.first?.submenu != nil)
+    }
+
     /// The bar itself, which this change gave a `Button`, a `ForEach` and a
     /// conditional `foregroundStyle`. Both states, because the tint is the branch.
     @Test func theBarRendersWithAndWithoutTheSettingsPanelUp() {

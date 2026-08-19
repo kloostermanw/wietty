@@ -68,6 +68,14 @@ that uncovers the terminal, because a rule written inside a `.task` closure cann
 asserted in CI, and one of them was wrong for exactly that reason (see below).
 `PaneRouterTests` covers them now.
 
+The Group submenu (`GroupCommand`) is the other `commands` type owned above the
+window for the same reason, but it reaches for the store rather than the router: the
+active group it sets (`store.selectedGroupId`) is read by the sidebar filter below, so
+the menu and the sidebar have to share one app-owned object. Its shape is a pure type
+(`WorkspaceGroupMenu.items`) asserted in CI, and that the wiring landed one "Group"
+submenu in the menu bar is checked by `SettingsPaneTests` against the running app's
+real menu.
+
 The menu item opens or focuses the main window before setting the override, the way a
 tapped bell notification does, since the window can be closed while the app runs and a
 panel in a pane nobody can see is not an answer. There is no `Settings` scene: settings
@@ -255,6 +263,21 @@ Retrying…", "Unauthorized: check the connection's token.") in place of cards
 whenever that connection isn't `.connected`. When a remote action (open,
 restart, or close) is rejected by the server, that section also shows a small
 red caption from `store.lastActionError`, so the failure is visible.
+
+The Local section's cards are filtered by the active group. `ContentView.visibleProjects`
+runs `store.projects` through `WorkspaceGroupMenu.visible(_:selected:)`: with no group
+active (`store.selectedGroupId == nil`, "All") every workspace shows; with one active
+only the workspaces filed under it do, and an unassigned workspace shows only under
+"All". The active group is picked in the app menu's Group submenu (`GroupCommand`),
+which is why the selection lives on `ProjectStore` rather than in this view: a submenu
+declared in the scene's `commands` cannot reach a view's `@State`, the same reason
+`PaneRouter` is app-owned. `visibleProjects` is computed once so the `Divider` between
+cards tests against the last card actually drawn rather than the last in the full list.
+The filter only hides rows: it removes nothing, so a hidden workspace's terminal keeps
+running and, since the pane's selection is tracked apart from the sidebar list (see
+"What the pane shows"), filtering away the card whose terminal is on screen leaves the
+terminal up. Only the Local section is filtered; a Remote section's cards come from a
+connection and are left alone.
 
 The Local header's title is the one thing that comes and goes. It exists to tell
 this Mac's workspaces apart from a connection's, so with no connection configured

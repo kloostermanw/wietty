@@ -33,6 +33,8 @@ struct SettingsView: View {
     @State private var newAgentName = ""
     @State private var newAgentCommand = ""
     @State private var newAgentArguments = ""
+    // And for the group being added on the General tab.
+    @State private var newGroupName = ""
 
     /// - Parameter tab: which tab is up. Defaults to the one the panel opens on;
     ///   only the tests pass anything else, because only one tab's subtree is built
@@ -83,6 +85,7 @@ struct SettingsView: View {
         case .general:
             form {
                 badgeSection
+                groupsSection
                 periodicChecksSection
                 colorsSection
                 terminalColorsSection
@@ -148,6 +151,30 @@ struct SettingsView: View {
                  + "one opens a terminal in that workspace and types the command, "
                  + "followed by its arguments. \"Add Agent with args\" asks for other "
                  + "arguments first, starting from the ones here.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var groupsSection: some View {
+        Section("Groups") {
+            if store.groups.isEmpty {
+                Text("No groups. Every workspace shows under \"All\" in the app menu's "
+                     + "Group submenu until you make one here and file workspaces under it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(store.groups) { group in
+                GroupRow(group: group,
+                         onUpdate: { store.updateGroup($0) },
+                         onDelete: { store.removeGroup(id: group.id) })
+            }
+            HStack {
+                TextField("Name", text: $newGroupName)
+                Button("Add Group", action: addGroup)
+                    .disabled(!newGroup.isValid)
+            }
+            Text("A group is one entry in the app menu's Group submenu. Pick it there to "
+                 + "show only the workspaces filed under it. Assign a workspace to a group "
+                 + "from \"Edit workspace…\" in its menu.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -326,6 +353,16 @@ struct SettingsView: View {
         newAgentName = ""
         newAgentCommand = ""
         newAgentArguments = ""
+    }
+
+    /// The group the name field currently describes, built rather than stored so "is
+    /// this addable" and "what gets added" cannot disagree.
+    private var newGroup: WorkspaceGroup { WorkspaceGroup(name: newGroupName) }
+
+    private func addGroup() {
+        guard newGroup.isValid else { return }
+        store.addGroup(newGroup)
+        newGroupName = ""
     }
 
     private func addConnection() {
@@ -652,6 +689,68 @@ private struct ColorSettingRow: View {
 /// same reason `NotificationSettings.init` takes a permission: the editing half is
 /// never on screen on the way into the tab, so a render of the tab alone would cover
 /// the reading half and look like it covered both.
+/// One row in the "Groups" section: the group's name with edit and delete buttons,
+/// or (while editing) an inline field to rename it. The single-field sibling of
+/// `AgentRow`.
+struct GroupRow: View {
+    let group: WorkspaceGroup
+    let onUpdate: (WorkspaceGroup) -> Void
+    let onDelete: () -> Void
+
+    @State private var isEditing: Bool
+    @State private var name: String
+
+    init(group: WorkspaceGroup, isEditing: Bool = false,
+         onUpdate: @escaping (WorkspaceGroup) -> Void, onDelete: @escaping () -> Void) {
+        self.group = group
+        self.onUpdate = onUpdate
+        self.onDelete = onDelete
+        _isEditing = State(initialValue: isEditing)
+        _name = State(initialValue: group.name)
+    }
+
+    var body: some View {
+        if isEditing {
+            HStack {
+                TextField("Name", text: $name)
+                Button("Cancel") { cancelEditing() }
+                Button("Save") { save() }.disabled(!edited.isValid)
+            }
+        } else {
+            HStack {
+                Text(group.displayName)
+                Spacer()
+                Button(action: { isEditing = true }) {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .help("Edit group")
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove group")
+            }
+        }
+    }
+
+    /// The group the field describes, keeping the id: a rename replaces the entry it
+    /// started from rather than adding a second one, and keeps every workspace filed
+    /// under it.
+    private var edited: WorkspaceGroup { WorkspaceGroup(id: group.id, name: name) }
+
+    private func cancelEditing() {
+        name = group.name
+        isEditing = false
+    }
+
+    private func save() {
+        guard edited.isValid else { return }
+        onUpdate(edited)
+        isEditing = false
+    }
+}
+
 struct AgentRow: View {
     let agent: AgentDefinition
     let onUpdate: (AgentDefinition) -> Void

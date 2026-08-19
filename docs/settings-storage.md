@@ -25,6 +25,7 @@ Scalars (one key each):
 | `remote-enabled`         | `true`/`false`, the LAN server toggle |
 | `remote-port`            | the LAN remote terminal port |
 | `mcp-port`               | the loopback MCP server port |
+| `selected-group`         | the active group's id, or absent for "All" |
 | `color-background`       | the sidebar background, a `#RRGGBB` colour |
 | `color-foreground`       | the sidebar foreground |
 | `color-active-workspace-background`     | the active workspace card background |
@@ -42,9 +43,15 @@ Lists are flattened into indexed keys:
 
 - **Agents** the workspace menu can start: `agent.0.name`, `agent.0.command`,
   `agent.0.args`, then `agent.1.*`, and so on.
+- **Groups** a workspace can be filed under: `group.0.id`, `group.0.name`, then
+  `group.1.*`, and so on. A group is one entry in the app menu's Group submenu, added
+  and renamed in Settings › General. Which group is active is the `selected-group`
+  scalar above, and it is dropped to "All" on load unless a group here still answers to
+  it.
 - **Workspaces** (the open workspace list): `workspace.0.path` (a plain folder path,
   not a security-scoped bookmark), plus `workspace.0.id`, `workspace.0.name` (the
-  in-app rename, present only when set), `workspace.0.collapsed`,
+  in-app rename, present only when set), `workspace.0.group-id` (the group it is filed
+  under, present only when assigned), `workspace.0.collapsed`,
   `workspace.0.terminal-seq`, `workspace.0.claude-seq`, and `workspace.0.window-id`
   (present only when set). Each workspace's rows follow as
   `workspace.0.terminal.0.label`, `.kind`, `.slot`, `.command` (present only when the
@@ -103,7 +110,7 @@ Two things to keep in mind when editing directly:
 
 - **One value per line.** A value cannot contain a line break; Wietty refuses to save
   one rather than write a broken line.
-- **Keep list indices contiguous.** The indexed lists (`agent.N.*`, `workspace.N.*`,
-  and a workspace's `terminal.N.*`) are read in order and stop at the first missing
-  index. Deleting `agent.1` while keeping `agent.2` drops `agent.2` on the next read,
-  so renumber after removing an entry.
+- **Keep list indices contiguous.** The indexed lists (`agent.N.*`, `group.N.*`,
+  `workspace.N.*`, and a workspace's `terminal.N.*`) are read in order and stop at the
+  first missing index. Deleting `agent.1` while keeping `agent.2` drops `agent.2` on
+  the next read, so renumber after removing an entry.
