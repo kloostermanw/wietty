@@ -23,10 +23,16 @@ carrying no payload. One with no title is kept, because `OSC 9;text` supplies on
 body.
 
 Something has to send one before any of this runs, and what decides that is the environment the
-shell was spawned with. A program picks between the bell, `OSC 9` and `OSC 777` by reading
-`TERM_PROGRAM`, so a terminal that leaves it unset is told nothing by an agent that would otherwise
-have announced itself. `RawPTY.spawn` sets it to `Wietty` (`docs/terminal.md`, under "Spawning the
-shell"). Before it did, this whole path was correct and idle.
+shell was spawned with. An agent picks between the bell, `OSC 9` and `OSC 777` by recognising its
+host, and it does that from two variables `RawPTY.spawn` sets: `TERM_PROGRAM`, which it names
+`Wietty`, and `TERM`. Recognition is by an exact value, so the name is load bearing. Claude Code, for
+one, treats a host as Ghostty (and only then sends a desktop notification, as `OSC 777`) when `TERM`
+is `xterm-ghostty`, and answers a host it does not know with a bare bell. So the app ships that
+terminfo entry in its own bundle and hands the child `TERM=xterm-ghostty` (`BundledTerminfo`, and
+`docs/terminal.md` under "Spawning the shell"). Under the `xterm-256color` fallback the same agent
+sees an unknown terminal and stays silent, though this app would have shown the banner. A program that
+keys on `TERM_PROGRAM` instead is the same trap left unset, which is why that is set unconditionally
+too.
 
 One thing that decides whether the action arrives at all is libghostty's rather than
 this app's: it gates `OSC 9` and `OSC 777` behind its own `desktop-notifications`
@@ -181,9 +187,18 @@ one tap that matters most, the one that started the app, is the one that is lost
 Visiting a row takes its notification back out of Notification Center, so bells
 already dealt with do not pile up. The hook is a `didSet` on `attention` rather than
 a call in `activate`, because a dozen paths clear a flag (activating, closing,
-restarting, removing a row, removing a workspace) and the next one added would
-forget to call it. Remote notifications are withdrawn the same way, from the
-watcher's `cleared` set.
+restarting, removing a row, removing a workspace, typing into the terminal) and the
+next one added would forget to call it. Remote notifications are withdrawn the same
+way, from the watcher's `cleared` set.
+
+Typing is one of those paths, and the one that needs no click. A bell can ring while
+Wietty is in the background for a terminal that is already the one the pane shows, so
+coming back and answering it should clear the 🔔 without first clicking its row. The
+surface reports every keystroke through `TerminalSurfaceHosting.onInput`, which
+`GhosttyStack` forwards and `ContentView` points at `ProjectStore.clearAttention(sessionId:)`.
+It is raised unconditionally and by session id, because the surface knows only the
+session it renders; the store no-ops once the flag is down and for a session it does
+not track, so a keystroke into a paneless or already closed terminal changes nothing.
 
 Withdrawing never asks for permission. Asking there would mean the first thing
 someone who has never had a bell sees is a permission prompt caused by clicking a

@@ -120,6 +120,14 @@ protocol TerminalSurfaceHosting: AnyObject {
     /// user reads when something died, and `destroySurface` is reserved for the
     /// row actually being closed. The host frees nothing on this path either.
     var onCloseRequested: (@MainActor (_ id: String) -> Void)? { get set }
+    /// The user typed into a surface: a keystroke reached the view the pane shows.
+    ///
+    /// Raised on every key press rather than filtered, because the one thing it
+    /// drives (dropping the terminal's attention flag) is idempotent and cheap: the
+    /// store no-ops once the flag is down. It is the app's evidence that the user is
+    /// answering a terminal they can see, so a bell that rang while Wietty was in
+    /// the background clears the moment they type, with no click on the row first.
+    var onInput: (@MainActor (_ id: String) -> Void)? { get set }
 
     /// What libghostty resolved for `desktop-notifications`, both as it stands and
     /// as it would stand without Wietty's own overlay
@@ -158,6 +166,7 @@ final class InertSurfaceHost: TerminalSurfaceHosting {
     var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
     var onResized: (@MainActor (String, TerminalSize) -> Void)?
     var onCloseRequested: (@MainActor (String) -> Void)?
+    var onInput: (@MainActor (String) -> Void)?
 
     func createSurface(id: String, command: String, directory: URL, title: String?) throws {
         throw SurfaceHostError.surfaceFailed

@@ -85,12 +85,25 @@ import WiettyShared
         #expect(router.override == log)
     }
 
-    /// The page itself, which is a placeholder and says so. Asserted rather than
-    /// only visible by opening it, the same reason `SettingsTab` is a pure type.
-    @Test func thePageSaysThereAreNoWorkspaceSettingsYet() {
-        #expect(WorkspaceSettingsView.title == "No workspace settings yet")
-        #expect(!WorkspaceSettingsView.message.isEmpty)
+    /// The page carries a Group section now rather than a placeholder. Asserted rather
+    /// than only visible by opening it, the same reason `SettingsTab` is a pure type.
+    @Test func thePageOffersAGroupSection() {
+        #expect(WorkspaceSettingsView.groupSectionTitle == "Group")
+        #expect(!WorkspaceSettingsView.noGroupTitle.isEmpty)
         #expect(!WorkspaceSettingsView.systemImage.isEmpty)
+    }
+
+    /// The picker branch itself (a real workspace, a group to choose), so a wiring
+    /// crash in it surfaces here rather than the first time it is opened. The removed
+    /// branch is what `thePaneRendersTheWorkspacePage` reaches, with an id no workspace
+    /// answers to.
+    @Test func theGroupPickerRenders() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
+        store.addGroup(WorkspaceGroup(name: "Work"))
+        let view = WorkspaceSettingsView(store: store,
+                                         project: project(workspace, named: "wietty"))
+        #expect(ImageRenderer(content: view.frame(width: 600, height: 400)).nsImage != nil)
     }
 
     @Test func thePaneRendersTheWorkspacePage() {

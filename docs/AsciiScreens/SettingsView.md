@@ -5,7 +5,8 @@ so the intended structure stays readable without running the app.
 
 The view is a segmented tab control above a grouped `Form`, and the tab decides
 what the form holds. Five tabs (`SettingsTab`), in this order: "General" (the
-badge toggle, the three interval steppers, and the two colour sections),
+badge toggle, the groups editor, the three interval steppers, and the two colour
+sections),
 "Notifications" (the permission
 state, a test notification, and the sound), "Agents" (the agents a workspace's
 menu can start), "Remote"
@@ -83,6 +84,15 @@ the whole window can get.
 │    libghostty exposes no way to set a surface's    │
 │    title.                                          │
 │                                                    │
+│  Groups                                           │
+│    Work                                (✎) (🗑)   │
+│    Private                             (✎) (🗑)   │
+│    Name  [________________ ]  [ Add Group ]        │
+│    A group is one entry in the app menu's Group    │
+│    submenu. Pick it there to show only the         │
+│    workspaces filed under it. Assign a workspace   │
+│    to a group from "Edit workspace…" in its menu.  │
+│                                                    │
 │  Periodic checks                                  │
 │    Fast                          15 s   [－][＋]   │
 │    Normal                        60 s   [－][＋]   │
@@ -120,6 +130,19 @@ the whole window can get.
 │    reset button clears one back to that.          │
 └──────────────────────────────────────────────────┘
 ```
+
+The Groups section (`SettingsView.groupsSection`) is one row per `store.groups`
+(`GroupRow`): the group's name with an edit `(✎)` and delete `(🗑)` button. Editing
+swaps the row for an inline Name field with Cancel and Save; Save is disabled until
+the name is non-blank (`WorkspaceGroup.isValid`). The Name field below the list adds
+one, and "Add Group" is disabled by the same rule. With the list empty the section
+says so. A group is the same preference the agents are: held on `ProjectStore`,
+persisted to `~/.config/wietty/config` as `group.0.id`/`.name` (see
+settings-storage.md), and never seeded, so an install with no groups shows every
+workspace under "All". Deleting a group unfiles the workspaces that were in it and
+clears the active selection if it was that group. Which group is active drives the app
+menu's Group submenu and the sidebar filter (see ContentView.md); assigning a
+workspace to one is done on its own page (see WorkspaceSettingsView.md).
 
 The two colour sections are `SettingsView.colorsSection` and
 `terminalColorsSection`. Each row is a `ColorSettingRow`: a label, a reset button

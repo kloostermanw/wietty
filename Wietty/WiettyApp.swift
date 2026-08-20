@@ -60,6 +60,7 @@ struct WiettyApp: App {
                 }
             }
             SettingsCommand(router: router)
+            GroupCommand(store: store)
         }
         // No `Settings` scene. There is one window, and settings is one of the things
         // its pane can show, so a second window would be the only part of the app that
@@ -97,6 +98,41 @@ struct SettingsCommand: Commands {
                 router.show(.settings)
             }
             .keyboardShortcut(",", modifiers: .command)
+        }
+    }
+}
+
+/// The app menu's Group submenu, which picks the active group and so filters the
+/// sidebar to the workspaces filed under it. "All" clears the filter.
+///
+/// A `Commands` type of its own, like `SettingsCommand`, so it can hold the app-owned
+/// store: a submenu declared in `.commands` cannot reach a view's `@State`, so the
+/// state it shares with the sidebar is owned above the window. Its body re-reads the
+/// observable store, so a group added in Settings appears here without a relaunch.
+struct GroupCommand: Commands {
+    let store: ProjectStore
+
+    var body: some Commands {
+        // After the Settings item, where the issue's menu shows it. The submenu is
+        // present even with no groups yet: it then offers only "All", which points at
+        // where groups are made.
+        CommandGroup(after: .appSettings) {
+            Menu("Group") {
+                ForEach(WorkspaceGroupMenu.items(groups: store.groups,
+                                                 selected: store.selectedGroupId)) { item in
+                    Button {
+                        store.selectedGroupId = item.id
+                    } label: {
+                        // The checkmark marks the active group. Driven by the tested
+                        // `isSelected` rather than a second comparison here.
+                        if item.isSelected {
+                            Label(item.title, systemImage: "checkmark")
+                        } else {
+                            Text(item.title)
+                        }
+                    }
+                }
+            }
         }
     }
 }

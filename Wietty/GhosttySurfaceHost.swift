@@ -63,6 +63,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting {
     var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
     var onResized: (@MainActor (String, TerminalSize) -> Void)?
     var onCloseRequested: (@MainActor (String) -> Void)?
+    var onInput: (@MainActor (String) -> Void)?
 
     /// The action and wakeup callbacks are C function pointers and cannot
     /// capture, so the one host is reached through this. Weak on purpose: a
@@ -842,6 +843,11 @@ final class GhosttySurfaceView: NSView {
     /// libghostty knows what byte each key means in the mode the terminal is in.
     override func keyDown(with event: NSEvent) {
         guard surface != nil else { return }
+        // The user is typing into the terminal they can see, which answers any bell
+        // it rang while the app was in the background. Reported before the key is
+        // encoded, and unconditionally: the store drops the flag once and no-ops
+        // after, so gating on which key it was would buy nothing.
+        host?.onInput?(id)
         let action: ghostty_input_action_e =
             event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         let composingBefore = marked.isComposing

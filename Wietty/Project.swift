@@ -10,6 +10,12 @@ struct Project: Identifiable, Equatable {
     /// travel to another machine. Sharing a name is what `wietty.json` is for.
     var displayName: String?
     var windowId: String?
+    /// The group this workspace is filed under (`WorkspaceGroup.id`), or nil for one
+    /// that belongs to no group. Local like `displayName`: which group a workspace is
+    /// in is this machine's organization of the sidebar, not something to write into
+    /// the git tree, so it persists to `~/.config/wietty/config` and never travels in
+    /// `wietty.json`.
+    var groupId: UUID?
     var terminalSeq: Int
     var claudeSeq: Int
     var collapsed: Bool
@@ -44,6 +50,7 @@ struct Project: Identifiable, Equatable {
         terminals: [TerminalRef] = [],
         displayName: String? = nil,
         windowId: String? = nil,
+        groupId: UUID? = nil,
         terminalSeq: Int = 0,
         claudeSeq: Int = 0,
         collapsed: Bool = false,
@@ -57,6 +64,7 @@ struct Project: Identifiable, Equatable {
         self.terminals = terminals
         self.displayName = displayName
         self.windowId = windowId
+        self.groupId = groupId
         self.terminalSeq = terminalSeq
         self.claudeSeq = claudeSeq
         self.collapsed = collapsed

@@ -12,24 +12,31 @@ other page goes.
 ┌─ pane ───────────────────────────────────────────┐
 │ wietty settings                              ⚙   │  NavBarView
 │ ────────────────────────────────────────────────  │
-│                                                    │
-│                    ≡                               │
-│         No workspace settings yet                  │
-│    Settings for this workspace will appear         │
-│    here. Its terminals, agents and processes       │
-│    are on the card in the sidebar.                 │
+│  Group                                            │
+│    [ Work            ▾ ]                          │
+│    Pick the group this workspace belongs to.      │
+│    Choose it in the app menu's Group submenu to   │
+│    show only its workspaces.                      │
 │                                                    │
 └──────────────────────────────────────────────────┘
 ```
 
-Empty on purpose. The workspace things worth a page (the rows, the name, the
-`wietty.json` the card already syncs) are each reachable from the card itself
-today, so the page exists ahead of the settings that will move here rather than
-alongside a half of them. It says so, because a page that drew nothing would read
-as a page that failed to load. The strings are statics on the view
-(`WorkspaceSettingsView.title`, `.message`, `.systemImage`) for the same reason
-`SettingsTab` is a pure type: what a screen says is a fact about the app, and a
-fact about the app belongs in CI (`WorkspacePaneTests`).
+The page holds one thing today: the workspace's group. The picker
+(`WorkspaceSettingsView.groupBinding`) lists "None" and then one entry per
+`store.groups`, and choosing one calls `store.assignGroup`, which saves the
+assignment to `~/.config/wietty/config` as `workspace.N.group-id` (see
+settings-storage.md). "None" leaves the workspace in no group, so it shows only under
+"All" in the app menu's Group submenu; picking a real group is what the submenu
+filters the sidebar down to (see ContentView.md). The group list is made and renamed
+in Settings › General (see SettingsView.md); when it is empty the picker offers only
+"None" and a caption points there. Which group a workspace is in is local to this
+machine, like its in-app name, so it is set here rather than written into the
+workspace's `wietty.json`.
+
+The section title and the "None" label are statics on the view
+(`WorkspaceSettingsView.groupSectionTitle`, `.noGroupTitle`, `.systemImage`) for the
+same reason `SettingsTab` is a pure type: what a screen says is a fact about the app,
+and a fact about the app belongs in CI (`WorkspacePaneTests`).
 
 ## The bar above it
 

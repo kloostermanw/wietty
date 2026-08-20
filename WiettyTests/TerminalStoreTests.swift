@@ -573,6 +573,39 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(!store.attention.contains(ref.id))
     }
 
+    @Test func typingIntoTheSessionClearsItsAttention() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+        let ref = store.projects[0].terminals[0]
+
+        store.handle(.bell(sessionId: "sess-A"))
+        #expect(store.attention.contains(ref.id))
+
+        // The signal the pane's surface raises on every keystroke: the user is
+        // looking at this terminal and answering it, so its bell has been dealt with.
+        store.clearAttention(sessionId: "sess-A")
+        #expect(!store.attention.contains(ref.id))
+    }
+
+    @Test func typingIntoAnUnknownSessionIsHarmless() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+        let ref = store.projects[0].terminals[0]
+
+        store.handle(.bell(sessionId: "sess-A"))
+        // A keystroke reported for a session the store does not track (an empty id
+        // from a paneless row, a session already closed) leaves every flag alone.
+        store.clearAttention(sessionId: "other")
+        store.clearAttention(sessionId: "")
+        #expect(store.attention.contains(ref.id))
+    }
+
     @Test func jobEventDrivesRunState() async {
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]

@@ -37,6 +37,7 @@ final class FakeSurfaceHost: TerminalSurfaceHosting {
     var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
     var onResized: (@MainActor (String, TerminalSize) -> Void)?
     var onCloseRequested: (@MainActor (String) -> Void)?
+    var onInput: (@MainActor (String) -> Void)?
 
     func createSurface(id: String, command: String, directory: URL, title: String?) throws {
         if failNextCreate {
@@ -103,6 +104,7 @@ final class FakeSurfaceHost: TerminalSurfaceHosting {
         sizes[id] = size
         onResized?(id, size)
     }
+    func emitInput(_ id: String) { onInput?(id) }
 }
 
 extension DesktopNotificationSetting {

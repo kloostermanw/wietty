@@ -315,6 +315,60 @@ final class ProjectStore {
         agents.removeAll { $0.id == id }
     }
 
+    /// The groups a workspace can be filed under, in the order they are shown. A
+    /// machine-local preference like the agents: persisted, and edited in Settings ›
+    /// General. Empty on a fresh install and never seeded, so the sidebar shows every
+    /// workspace until the user makes a group.
+    var groups: [WorkspaceGroup] {
+        didSet {
+            guard groups != oldValue else { return }
+            persistSettings()
+        }
+    }
+
+    /// The group whose workspaces the sidebar is showing, or nil for "All". Persisted
+    /// so the choice survives a relaunch; resolved against `groups` on load so an id
+    /// no group answers to reads as "All".
+    var selectedGroupId: UUID? {
+        didSet {
+            guard selectedGroupId != oldValue else { return }
+            persistSettings()
+        }
+    }
+
+    /// Appends a group to the end of the list.
+    func addGroup(_ group: WorkspaceGroup) {
+        groups.append(group)
+    }
+
+    /// Replaces the group with the same id, and does nothing when there is none: the
+    /// Settings row is on screen while the list can change under it, and an edit of a
+    /// deleted group must not put it back.
+    func updateGroup(_ group: WorkspaceGroup) {
+        guard let index = groups.firstIndex(where: { $0.id == group.id }) else { return }
+        groups[index] = group
+    }
+
+    /// Removes a group and unfiles every workspace that was in it, so no workspace
+    /// keeps an id no group answers to. Clears the active selection too when it was
+    /// this group, rather than filtering every workspace away against one that is gone.
+    func removeGroup(id: UUID) {
+        groups.removeAll { $0.id == id }
+        for index in projects.indices where projects[index].groupId == id {
+            projects[index].groupId = nil
+        }
+        if selectedGroupId == id { selectedGroupId = nil }
+        save()
+    }
+
+    /// Files a workspace under a group, or unfiles it when `groupId` is nil.
+    func assignGroup(_ project: Project, to groupId: UUID?) {
+        guard let index = projects.firstIndex(where: { $0.id == project.id }) else { return }
+        guard projects[index].groupId != groupId else { return }
+        projects[index].groupId = groupId
+        save()
+    }
+
     /// The stored list, or the seed when nothing has ever been stored.
     ///
     /// The distinction matters: seeding on an empty list rather than on an absent
@@ -458,6 +512,9 @@ final class ProjectStore {
             self.sidebarColors = SidebarColors(from: cfg)
             self.agents = Self.agents(from: cfg)
             self.approvedCommands = Self.approvals(from: cfg)
+            let loadedGroups = Self.groups(from: cfg)
+            self.groups = loadedGroups
+            self.selectedGroupId = Self.selectedGroup(from: cfg, groups: loadedGroups)
         } else {
             self.showWorkspaceBadge = defaults.bool(forKey: badgeKey)
             // No stored value reads as "", which `BellSound` maps to the system
@@ -488,6 +545,10 @@ final class ProjectStore {
                 guard let id = UUID(uuidString: $1.key) else { return }
                 $0[id] = Set($1.value)
             }
+            // Groups arrive with the config file: no build wrote them to `UserDefaults`,
+            // so a migrating install starts with none and no active group.
+            self.groups = []
+            self.selectedGroupId = nil
         }
 
         // Loads workspaces (from the file, or by migrating the old bookmarks) and
@@ -550,6 +611,36 @@ final class ProjectStore {
             index += 1
         }
         return result
+    }
+
+    /// The `group.N.*` entries, in index order, keeping only the ones with a name to
+    /// show. Like the agents, no seed: a file that exists is a full snapshot, so no
+    /// entries means the list is empty on purpose.
+    private static func groups(from cfg: [String: String]) -> [WorkspaceGroup] {
+        var result: [WorkspaceGroup] = []
+        var index = 0
+        while let stored = cfg["\(SettingsKeys.groupPrefix)\(index).id"] {
+            let name = cfg["\(SettingsKeys.groupPrefix)\(index).name"] ?? ""
+            index += 1
+            // A group id is a cross-reference target: a workspace (`Project.groupId`)
+            // and the active selection (`selected-group`) point at it. Minting a fresh
+            // id for an unparseable one would silently detach every workspace filed
+            // under it, so a malformed entry is dropped, the way a blank-named one is.
+            guard let id = UUID(uuidString: stored) else { continue }
+            let group = WorkspaceGroup(id: id, name: name)
+            if group.isValid { result.append(group) }
+        }
+        return result
+    }
+
+    /// The stored active group, dropped to nil unless a group in `groups` still
+    /// answers to it. A hand-edited file, or a group an older build removed, must not
+    /// leave the sidebar filtering against an id nothing matches.
+    private static func selectedGroup(from cfg: [String: String],
+                                      groups: [WorkspaceGroup]) -> UUID? {
+        guard let stored = cfg[SettingsKeys.selectedGroup].flatMap({ UUID(uuidString: $0) }),
+              groups.contains(where: { $0.id == stored }) else { return nil }
+        return stored
     }
 
     /// The `approved.<uuid>.N` entries, grouped back by workspace id. The key after
@@ -990,6 +1081,28 @@ final class ProjectStore {
 
     func clearAttention(_ ref: TerminalRef) {
         attention.remove(ref.id)
+    }
+
+    /// Drops a session's attention flag because the user is typing into it.
+    ///
+    /// The pane raises this on every keystroke into the surface it shows, which is
+    /// the terminal the user is looking at and answering: a bell that rang while
+    /// this app was in the background has been dealt with the moment they type, with
+    /// no need to click the row first. By session id rather than row id because the
+    /// surface knows only the session it renders. An untracked or empty id is a
+    /// no-op, so a keystroke into a paneless or already closed session changes
+    /// nothing.
+    ///
+    /// The `contains` guard is what makes this safe to call per keystroke: `attention`
+    /// is observed, and mutating it at all wakes every view that reads it (the whole
+    /// sidebar), so the common case of typing into a terminal with no bell pending
+    /// must not touch the set. It is removed only when a flag is actually up, and the
+    /// `didSet` then withdraws the banner.
+    func clearAttention(sessionId: String) {
+        guard let (p, t) = indexOfSession(sessionId) else { return }
+        let id = projects[p].terminals[t].id
+        guard attention.contains(id) else { return }
+        attention.remove(id)
     }
 
     /// An empty id matches nothing. Rows that have never opened all carry one,
@@ -1685,6 +1798,7 @@ final class ProjectStore {
                 terminals: terminals,
                 displayName: cfg["\(base).name"],
                 windowId: cfg["\(base).window-id"],
+                groupId: cfg["\(base).group-id"].flatMap { UUID(uuidString: $0) },
                 terminalSeq: cfg["\(base).terminal-seq"].flatMap(Int.init) ?? 0,
                 claudeSeq: cfg["\(base).claude-seq"].flatMap(Int.init) ?? 0,
                 collapsed: cfg["\(base).collapsed"] == "true"
@@ -1745,6 +1859,13 @@ final class ProjectStore {
             pairs.append(("\(SettingsKeys.agentPrefix)\(i).command", agent.command))
             pairs.append(("\(SettingsKeys.agentPrefix)\(i).args", agent.defaultArguments))
         }
+        for (i, group) in groups.enumerated() {
+            pairs.append(("\(SettingsKeys.groupPrefix)\(i).id", group.id.uuidString))
+            pairs.append(("\(SettingsKeys.groupPrefix)\(i).name", group.name))
+        }
+        if let selectedGroupId {
+            pairs.append((SettingsKeys.selectedGroup, selectedGroupId.uuidString))
+        }
         // Sorted so the file is stable: an unordered set would reshuffle the lines on
         // every write and read as a change to anyone diffing the file.
         for (id, commands) in approvedCommands.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
@@ -1776,6 +1897,7 @@ final class ProjectStore {
         ]
         if let name = project.displayName { pairs.append(("\(base).name", name)) }
         if let windowId = project.windowId { pairs.append(("\(base).window-id", windowId)) }
+        if let groupId = project.groupId { pairs.append(("\(base).group-id", groupId.uuidString)) }
         for (t, ref) in project.terminals.enumerated() {
             let tk = "\(base).terminal.\(t)"
             pairs.append(("\(tk).id", ref.id.uuidString))
