@@ -35,7 +35,7 @@ struct ProcessRowView: View {
                 actionButtons
             }
         }
-        .padding(.horizontal, 6)
+        .padding(.trailing, 6)
         .padding(.vertical, 2)
         .contentShape(Rectangle())
         .background(highlight)
@@ -81,6 +81,9 @@ struct ProcessRowView: View {
         Image(systemName: dot.fill == .filled ? "circle.fill" : "circle")
             .font(.system(size: 9))
             .foregroundStyle(color)
+            // A fixed slot the width of the header chevron, so the dot sits in the
+            // same left gutter and the process name lines up with the project name.
+            .frame(width: 12, alignment: .center)
     }
 
     private var color: Color {

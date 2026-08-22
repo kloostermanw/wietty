@@ -22,12 +22,12 @@ default branch (`origin/develop`), the upstream row against the branch upstream
 │   (Issue #15)  (PR #16)                                             │
 │   1 failing, 1 successfull checks                                   │
 │   [phpunit] [feature-tests]                    [All]  (border=pass) │
-│   │  ● queue          (filled green = running)                      │
-│   │  ○ phpunit        (open green = passed)                         │
-│   │  ○ npm            (open red = crashed)                          │
-│   │  > Terminal 1                                                   │
-│   │  ✦ Claude Code (Python")                                        │
-│   │  ✦ old-agent                                     (local)        │
+│ ● queue             (filled green = running)                        │
+│ ○ phpunit           (open green = passed)                           │
+│ ○ npm               (open red = crashed)                            │
+│ > Terminal 1                                                        │
+│ ✦ Claude Code (Python")                                             │
+│ ✦ old-agent                                        (local)          │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,11 +63,13 @@ Legend:
   offers Run, Cancel (while running), Open log (`onOpenTestLog`, opens a
   the pane with a `ProcessLogRef` carrying `isTest: true`), and Copy ID for agent.
   See `TestProcessesLineView.md`.
-- `│`: the leading rule that groups the process and terminal rows
-  (`WorkspaceCardView.children`).
 - `●` / `○`: process status dot (`ProcessRowView`). Filled = running, open =
   not running; green = success/healthy, red = failed, gray = neutral.
 - `>`: terminal row glyph. `✦`: Claude row glyph (`TerminalRowView`).
+- Each row's leading glyph sits in a fixed width slot the size of the header
+  chevron's, so it lines up in the same left gutter as `▾` and the row's label
+  aligns with the project name and the pills, checks, and test lines above it.
+  There is no leading rule grouping the rows.
 - Hovering a row reveals trailing action buttons (play / stop / refresh, plus a
   log button on process rows). A plain click on a process row is a no-op, while a
   plain click on a terminal or Claude row activates it (`onActivate`), which shows

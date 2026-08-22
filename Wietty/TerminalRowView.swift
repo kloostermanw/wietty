@@ -30,6 +30,9 @@ struct TerminalRowView: View {
             Image(systemName: iconName)
                 .foregroundStyle(isExited ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
                 .opacity(isExited ? 0.6 : 1)
+                // A fixed slot the width of the header chevron, so the icon sits in the
+                // same left gutter and the label lines up with the project name.
+                .frame(width: 12, alignment: .center)
             Text(label)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -50,7 +53,7 @@ struct TerminalRowView: View {
                 actionButtons
             }
         }
-        .padding(.horizontal, 6)
+        .padding(.trailing, 6)
         .padding(.vertical, 2)
         .contentShape(Rectangle())
         .background(highlight)
