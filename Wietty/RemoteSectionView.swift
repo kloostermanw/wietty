@@ -81,6 +81,9 @@ struct RemoteSectionView: View {
             collapsed: isCardCollapsed(project.id),
             gitInfo: decoded.gitInfo[project.id],
             runState: { decoded.runStates[$0.id] ?? .exited },
+            // The served side reports each session's run state authoritatively, so
+            // a green glyph follows it directly rather than the optimistic local rule.
+            isRunning: { decoded.runStates[$0.id] == .running },
             needsAttention: { decoded.attention.contains($0.id) },
             syncEnabled: true,
             configChanged: false,

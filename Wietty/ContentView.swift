@@ -407,6 +407,7 @@ struct ContentView: View {
                     collapsed: project.collapsed,
                     gitInfo: store.gitInfo[project.id],
                     runState: { store.runState(for: $0) },
+                    isRunning: { store.isSessionRunning($0) },
                     needsAttention: { store.attention.contains($0.id) },
                     syncEnabled: store.isSyncEnabled(project),
                     configChanged: store.configChangedOnDisk.contains(project.id),
