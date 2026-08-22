@@ -33,6 +33,9 @@ struct RightTerminalView: View {
     /// reason `desktopNotifications` is: the colour wells write the file the live
     /// surfaces reload.
     let ghosttyColors: GhosttyColorSettings
+    /// Only for `SettingsView`'s Prompt templates tab, and the app's one instance for
+    /// the same reason the others are: the popup lists what that tab edits.
+    let promptTemplates: PromptTemplateStore
     let selection: PaneSelection
 
     var body: some View {
@@ -53,7 +56,8 @@ struct RightTerminalView: View {
             SettingsView(store: store, remoteConnections: remoteConnections,
                          remoteWorkspaces: remoteWorkspaces, bells: bells,
                          desktopNotifications: desktopNotifications,
-                         ghosttyColors: ghosttyColors)
+                         ghosttyColors: ghosttyColors,
+                         promptTemplates: promptTemplates)
                 .frame(minWidth: SidebarWidth.paneMinimum,
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)

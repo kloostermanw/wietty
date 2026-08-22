@@ -17,6 +17,15 @@ struct WiettyApp: App {
     @State private var bells = BellNotifier(sink: SystemNotificationSink())
     /// What the window's pane is showing over its terminal. See `PaneRouter`.
     @State private var router = PaneRouter()
+    /// The prompt templates the settings page edits and the popup lists. Built here
+    /// rather than in `ContentView` for the same reason `router` is: ⌘P and the app
+    /// menu item are declared in the scene's `commands`, which cannot reach a view's
+    /// `@State`, so the store they read has to live above the window.
+    @State private var promptTemplates = PromptTemplateStore()
+    /// Whether the prompt-template popup is up. Owned here for the same reason
+    /// `promptTemplates` is: ⌘P and the app-menu item that flip it are declared in
+    /// `commands` below, which cannot reach a view's `@State`.
+    @State private var promptTemplatePresentation = PromptTemplatePresentation()
 
     /// The main window's scene id, shared by the three places that reopen or focus it.
     /// A literal repeated per site fails silently at runtime when one of them is
@@ -39,7 +48,8 @@ struct WiettyApp: App {
         Window("Wietty", id: Self.mainWindowID) {
             ContentView(store: store, terminals: terminals,
                         remoteConnections: remoteConnections, remoteWorkspaces: remoteWorkspaces,
-                        bells: bells, router: router)
+                        bells: bells, router: router, promptTemplates: promptTemplates,
+                        promptTemplatePresentation: promptTemplatePresentation)
                 .preferredColorScheme(.dark)
                 .updateAlerts(updates)
                 .task {
@@ -60,6 +70,10 @@ struct WiettyApp: App {
                 }
             }
             SettingsCommand(router: router)
+            // Declared between Settings and Group, and anchored `after: .appSettings`
+            // like Group, so SwiftUI stacks the three same-anchor groups in this
+            // order: the item lands between them, where the issue's menu shows it.
+            PromptTemplatesCommand(presentation: promptTemplatePresentation)
             GroupCommand(store: store)
         }
         // No `Settings` scene. There is one window, and settings is one of the things
@@ -98,6 +112,30 @@ struct SettingsCommand: Commands {
                 router.show(.settings)
             }
             .keyboardShortcut(",", modifiers: .command)
+        }
+    }
+}
+
+/// The app menu's "Prompt templates" item and its ⌘P, which open the picker over the
+/// window's pane.
+///
+/// A `Commands` type of its own, like `SettingsCommand`, so it can read `openWindow`
+/// and hold the app-owned presentation flag: the item is declared in `commands`, which
+/// cannot reach a view's `@State`, so the flag it flips lives above the window. Opening
+/// reuses the same reopen-then-activate the Settings item does, because the popup is a
+/// sheet on the main window and there has to be a main window to put it on.
+struct PromptTemplatesCommand: Commands {
+    let presentation: PromptTemplatePresentation
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(after: .appSettings) {
+            Button("Prompt templates") {
+                openWindow(id: WiettyApp.mainWindowID)
+                NSApp.activate()
+                presentation.show()
+            }
+            .keyboardShortcut("p", modifiers: .command)
         }
     }
 }

@@ -117,6 +117,7 @@ import WiettyShared
             bells: BellNotifier(sink: FakeNotificationSink()),
             desktopNotifications: .fake(),
             ghosttyColors: GhosttyColorSettings(host: FakeSurfaceHost(), file: .temporary()),
+            promptTemplates: PromptTemplateStore(file: .temporary()),
             selection: .workspaceSettings(workspace))
         #expect(ImageRenderer(content: pane.frame(width: 600, height: 800)).nsImage != nil)
     }

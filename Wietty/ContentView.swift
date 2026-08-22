@@ -12,6 +12,11 @@ struct ContentView: View {
     /// it. See `PaneRouter`, which is where both live and why it is the app that owns
     /// them.
     let router: PaneRouter
+    /// The prompt templates the settings page edits and the popup lists. Owned by the
+    /// app, like `router`, because the popup is opened from the app menu and ⌘P.
+    let promptTemplates: PromptTemplateStore
+    /// Whether the prompt-template popup is up. Owned by the app for the same reason.
+    let promptTemplatePresentation: PromptTemplatePresentation
     @Environment(\.openWindow) private var openWindow
     @State private var mcpHost: MCPServerHost?
     @State private var remoteServer: RemoteServer?
@@ -78,6 +83,7 @@ struct ContentView: View {
                                       bells: bells,
                                       desktopNotifications: terminals.desktopNotifications,
                                       ghosttyColors: terminals.ghosttyColors,
+                                      promptTemplates: promptTemplates,
                                       selection: paneSelection)
                 }
                 .frame(maxWidth: .infinity)
@@ -222,6 +228,42 @@ struct ContentView: View {
                 onRun: { store.approvePendingConfig() },
                 onCancel: { store.declinePendingConfig() }
             )
+        }
+        // The prompt-template popup, opened by ⌘P and the app menu. Re-reads the
+        // directory as it appears so a file added or edited outside the app is offered
+        // without a relaunch.
+        .sheet(isPresented: Binding(
+            get: { promptTemplatePresentation.isPresented },
+            set: { promptTemplatePresentation.isPresented = $0 }
+        )) {
+            PromptTemplatePickerView(
+                store: promptTemplates,
+                onInject: { injectTemplate($0) },
+                onCancel: { promptTemplatePresentation.isPresented = false }
+            )
+            .onAppear { promptTemplates.reload() }
+        }
+    }
+
+    /// Types a rendered template into the focused terminal, the same write path a
+    /// pasted keystroke takes (`GhosttyService.send`). No trailing newline: the cursor
+    /// is left in the prompt so the text can be edited before it is sent to the agent.
+    ///
+    /// With no local terminal selected there is nowhere to type it, so this says so
+    /// rather than dropping the text: the popup is reachable from the app menu even when
+    /// the pane is showing settings or a remote session.
+    private func injectTemplate(_ text: String) {
+        promptTemplatePresentation.isPresented = false
+        guard let session = selectedTerminal else {
+            store.lastError = "Select one of this Mac's terminals first, then pick a prompt template."
+            return
+        }
+        Task {
+            do {
+                try await terminals.service.send(sessionId: session, text: text)
+            } catch {
+                store.lastError = error.localizedDescription
+            }
         }
     }
 
