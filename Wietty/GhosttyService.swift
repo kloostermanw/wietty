@@ -462,6 +462,14 @@ final class GhosttyService: TerminalService {
         tearDown(sessionId)
     }
 
+    /// Stops the child but keeps the row: `reap` terminates the pty and marks the
+    /// entry exited while leaving its surface and last screen in place, the same
+    /// path a command that exits on its own takes, so the row dims and can be
+    /// reopened rather than disappearing the way `close` makes it.
+    func stop(sessionId: String) async {
+        reap(sessionId)
+    }
+
     /// Frees what a terminal whose id `focus` has just reported gone is still
     /// holding, so the replacement the caller is about to open does not leave the
     /// old surface behind.

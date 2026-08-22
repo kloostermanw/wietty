@@ -407,6 +407,7 @@ struct ContentView: View {
                     collapsed: project.collapsed,
                     gitInfo: store.gitInfo[project.id],
                     runState: { store.runState(for: $0) },
+                    isRunning: { store.isSessionRunning($0) },
                     needsAttention: { store.attention.contains($0.id) },
                     syncEnabled: store.isSyncEnabled(project),
                     configChanged: store.configChangedOnDisk.contains(project.id),
@@ -424,6 +425,7 @@ struct ContentView: View {
                     agents: store.agents,
                     onActivate: { activate($0, in: project) },
                     onRestartTerminal: { restartTerminal($0, in: project) },
+                    onStopTerminal: { stopTerminal($0, in: project) },
                     onRenameTerminal: { startRename($0, in: project) },
                     onRemoveTerminal: { store.removeTerminal($0, in: project) },
                     onCloseTerminal: { closeTerminal($0, in: project) },
@@ -590,6 +592,14 @@ struct ContentView: View {
         Task {
             isBusy = true
             await store.restartTerminal(sessionId: ref.sessionId)
+            isBusy = false
+        }
+    }
+
+    private func stopTerminal(_ ref: TerminalRef, in project: Project) {
+        Task {
+            isBusy = true
+            await store.stopTerminal(ref, in: project)
             isBusy = false
         }
     }
