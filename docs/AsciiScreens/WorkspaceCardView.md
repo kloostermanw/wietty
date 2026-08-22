@@ -77,19 +77,24 @@ Legend:
   An exited row dims, and a row that is neither yet (unspawned, or before the first
   job poll) stays neutral rather than claiming to run. This is a positive signal,
   unlike `runState`, which stays optimistically "running" when it has no job info.
-- Hovering a row reveals trailing action buttons (play / stop / refresh, plus a
-  log button on process rows). A plain click on a process row is a no-op, while a
-  plain click on a terminal or Claude row activates it (`onActivate`), which shows
-  it in the terminal pane beside the sidebar. `ContentView.activate` returns after
-  the store call, because selecting the session is what puts its surface in the
-  pane and nothing else has to happen.
+- Hovering a row reveals trailing action buttons. A live terminal or Claude row
+  shows stop (■) and restart (↻); an exited one shows play (▶) in their place. Either
+  way it ends with a trash (🗑) button, and a process row adds a log button. A plain
+  click on a process row is a no-op, while a plain click on a terminal or Claude row
+  activates it (`onActivate`), which shows it in the terminal pane beside the sidebar.
+  `ContentView.activate` returns after the store call, because selecting the session
+  is what puts its surface in the pane and nothing else has to happen.
 
   A click on a row whose terminal has stopped reopens it. The service answers that
   itself, because its record of a dead terminal survives so the last screen stays
   readable; see `docs/terminal.md`.
-  Terminal buttons are wired here to `onActivate` (play), `onCloseTerminal`
-  (stop), and `onRestartTerminal` (refresh). See `ProcessRowView.md` and
-  `TerminalRowView.md`.
+  Terminal buttons are wired here to `onActivate` (play), `onStopTerminal` (stop),
+  `onRestartTerminal` (restart), and `onCloseTerminal` (trash). Stop and close are
+  deliberately distinct: stop terminates the session but leaves the row so it can be
+  reopened (`ProjectStore.stopTerminal` via the service's `stop`, which keeps the last
+  screen), while trash removes the row and its terminal (`closeTerminal`). A remote
+  card offers no stop button (`canStopTerminal` is false): the LAN protocol has only
+  restart and close. See `ProcessRowView.md` and `TerminalRowView.md`.
 - A terminal or Claude row's context menu offers "Rename" (terminal rows only),
   "Copy ID for agent", "Remove", and "Close terminal". Its items come from
   `TerminalRowMenu.items(kind:)`, a pure type, so which of them a row offers is

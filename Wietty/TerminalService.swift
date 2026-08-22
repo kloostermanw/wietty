@@ -76,8 +76,17 @@ protocol TerminalService: Sendable {
     /// left stays readable, and this is what frees it at the one moment that screen
     /// is finished with.
     func discard(sessionId: String) async
+
+    /// Stops a running terminal's child without retiring the row: the child is
+    /// terminated and its last screen kept readable, exactly as when a command exits
+    /// on its own, so the row can be reopened. Unlike `close`, the surface and the
+    /// record survive, and unlike `discard` it acts on a live session. Cannot fail:
+    /// stopping an already-exited or absent session is a no-op, and so is stopping on
+    /// a substrate whose terminals live in another process.
+    func stop(sessionId: String) async
 }
 
 extension TerminalService {
     func discard(sessionId: String) async {}
+    func stop(sessionId: String) async {}
 }
