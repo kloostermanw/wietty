@@ -100,6 +100,24 @@ struct FakeCommandRunner: CommandRunning {
         #expect(checks?.hasFailures == true)
     }
 
+    @Test func ciChecksForBranchQueriesHeadCommitCheckRuns() async {
+        // The branch-head fallback runs `gh api .../commits/<branch>/check-runs`
+        // and parses the check-runs shape (not the `gh pr checks` bucket shape).
+        let svc = service { _, args in
+            if args.contains("api"),
+               args.contains(where: { $0.contains("commits/feature/issue-30/check-runs") }) {
+                return CommandResult(
+                    stdout: #"{"total_count":2,"check_runs":[{"status":"completed","conclusion":"success"},{"status":"in_progress","conclusion":null}]}"#,
+                    stderr: "", status: 0
+                )
+            }
+            return CommandResult(stdout: "", stderr: "", status: 1)
+        }
+        let checks = await svc.ciChecks(for: URL(fileURLWithPath: "/tmp/x"), branch: "feature/issue-30")
+        #expect(checks?.passing == 1)
+        #expect(checks?.pending == 1)
+    }
+
     @Test func fingerprintStableForSameTreeState() async {
         let svc = service { _, args in
             if args.contains("--is-inside-work-tree") { return CommandResult(stdout: "true\n", stderr: "", status: 0) }

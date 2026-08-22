@@ -45,7 +45,11 @@ Legend:
 - `1 failing, 1 successfull checks`: `ChecksLineView`, wording from
   `ChecksSummary.summaryText`. The line color follows `ChecksSummary.status`:
   red on failures, yellow while checks are still pending (nothing failed yet),
-  green when everything completed without failures.
+  green when everything completed without failures. When the branch has an open
+  pull request the summary comes from `gh pr checks`; when it does not, it comes
+  from the branch head commit's checks instead (`gh api .../commits/<branch>/check-runs`),
+  so a pushed branch surfaces its CI before a PR exists. The line stays hidden
+  only when there are no checks at all.
 - `[phpunit] [feature-tests] ... [All]`: `TestProcessesLineView`, the test
   buttons flowing and wrapping on the left with an `All` button pinned to the
   top right. Rendered only when the workspace defines at least one test

@@ -73,6 +73,42 @@ import Foundation
         #expect(GitParsing.checksSummary(fromBucketJSON: "[]") == nil)
     }
 
+    @Test func checksSummaryFromCheckRunsMapsStatusAndConclusion() {
+        let json = """
+        {"total_count":8,"check_runs":[
+          {"status":"completed","conclusion":"success"},
+          {"status":"completed","conclusion":"neutral"},
+          {"status":"completed","conclusion":"failure"},
+          {"status":"completed","conclusion":"timed_out"},
+          {"status":"completed","conclusion":"cancelled"},
+          {"status":"completed","conclusion":"skipped"},
+          {"status":"in_progress","conclusion":null},
+          {"status":"queued","conclusion":null}
+        ]}
+        """
+        let s = GitParsing.checksSummary(fromCheckRunsJSON: json)
+        #expect(s?.passing == 2)   // success + neutral
+        #expect(s?.failing == 2)   // failure + timed_out
+        #expect(s?.cancelled == 1)
+        #expect(s?.skipped == 1)
+        #expect(s?.pending == 2)   // in_progress + queued
+    }
+
+    @Test func checksSummaryFromCheckRunsNilOnEmptyOrInvalid() {
+        #expect(GitParsing.checksSummary(fromCheckRunsJSON: "") == nil)
+        #expect(GitParsing.checksSummary(fromCheckRunsJSON: "not json") == nil)
+        #expect(GitParsing.checksSummary(fromCheckRunsJSON: #"{"total_count":0,"check_runs":[]}"#) == nil)
+    }
+
+    @Test func checksSummaryFromCheckRunsIgnoresUnknownCompletedConclusion() {
+        // A completed run with an unrecognized (or null) conclusion is not
+        // counted in any bucket, matching the bucket parser's default-skip.
+        let json = #"{"total_count":1,"check_runs":[{"status":"completed","conclusion":"stale"},{"status":"completed","conclusion":null}]}"#
+        let s = GitParsing.checksSummary(fromCheckRunsJSON: json)
+        #expect(s?.failing == 1)   // stale maps to failing
+        #expect(s?.total == 1)     // the null-conclusion run is ignored
+    }
+
     @Test func checksSummaryTextListsNonzeroCategories() {
         let failing = ChecksSummary(passing: 291, failing: 11, cancelled: 3, skipped: 3, pending: 0)
         #expect(failing.summaryText == "11 failing, 3 cancelled, 3 skipped, 291 successfull checks")
