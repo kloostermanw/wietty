@@ -35,6 +35,26 @@ import Foundation
         }
     }
 
+    // A provider with no open PR whose branch head has checks, to test the
+    // no-PR fallback. The PR-scoped `ciChecks` returns a distinct summary that
+    // must not be used, proving the store took the branch path.
+    final class BranchChecksProvider: GitInfoProviding, @unchecked Sendable {
+        var branchCalls = 0
+        func gitSync(for folder: URL) async -> GitSync? {
+            GitSync(branch: "feature/issue-30", behind: 0, ahead: 0, hasUpstream: true,
+                    upstreamRef: "origin/feature/issue-30", baseAhead: 0, baseBehind: 0,
+                    hasBase: false, baseRef: nil, owner: "o", repo: "r", issueNumber: 30)
+        }
+        func pullRequestNumber(for folder: URL, branch: String) async -> Int? { nil }
+        func ciChecks(for folder: URL, prNumber: Int) async -> ChecksSummary? {
+            ChecksSummary(passing: 9, failing: 9, cancelled: 9, skipped: 9, pending: 9)
+        }
+        func ciChecks(for folder: URL, branch: String) async -> ChecksSummary? {
+            branchCalls += 1
+            return ChecksSummary(passing: 2, failing: 1, cancelled: 0, skipped: 0, pending: 0)
+        }
+    }
+
     private func makeStore(_ provider: GitInfoProviding) -> ProjectStore {
         ProjectStore(defaults: UserDefaults(suiteName: UUID().uuidString)!,
                      service: FakeTerminalService(), gitProvider: provider)
@@ -57,6 +77,18 @@ import Foundation
         #expect(provider.gitSyncCalls == 1)
         #expect(store.gitInfo[project.id]?.prNumber == 7)
         #expect(store.gitInfo[project.id]?.checks?.passing == 1)
+    }
+
+    @Test func branchWithoutPullRequestShowsChecksFromHead() async {
+        let provider = BranchChecksProvider()
+        let store = makeStore(provider)
+        store.addProject(url: makeTempDir())
+        let project = store.projects[0]
+        await store.runDueChecks(now: Date(timeIntervalSince1970: 1000))
+        #expect(store.gitInfo[project.id]?.prNumber == nil)
+        #expect(store.gitInfo[project.id]?.checks?.passing == 2)   // branch source, not the PR-scoped 9s
+        #expect(store.gitInfo[project.id]?.checks?.failing == 1)
+        #expect(provider.branchCalls == 1)
     }
 
     @Test func checksNotRerunBeforeTheirIntervalElapses() async {

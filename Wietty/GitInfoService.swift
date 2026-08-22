@@ -5,10 +5,12 @@ protocol GitInfoProviding: Sendable {
     func gitSync(for folder: URL) async -> GitSync?
     func pullRequestNumber(for folder: URL, branch: String) async -> Int?
     func ciChecks(for folder: URL, prNumber: Int) async -> ChecksSummary?
+    func ciChecks(for folder: URL, branch: String) async -> ChecksSummary?
     func workingTreeFingerprint(for folder: URL) async -> String?
 }
 
 extension GitInfoProviding {
+    func ciChecks(for folder: URL, branch: String) async -> ChecksSummary? { nil }
     func workingTreeFingerprint(for folder: URL) async -> String? { nil }
 }
 
@@ -88,6 +90,27 @@ struct GitInfoService: GitInfoProviding {
             ghPath, ["pr", "checks", "\(prNumber)", "--json", "bucket"], workingDirectory: folder
         )
         return GitParsing.checksSummary(fromBucketJSON: result.stdout)
+    }
+
+    /// Checks for a branch head that has no pull request: the checks GitHub ran
+    /// on the pushed commit. `gh pr checks` is PR scoped, so this sources the
+    /// same `ChecksSummary` from the commit's check-runs instead. `gh` fills the
+    /// `{owner}`/`{repo}` placeholders from the folder's remote, and the branch
+    /// name is the ref (GitHub resolves it to the remote head, so the line
+    /// reflects the push; an unpushed branch 404s and yields nil). `per_page=100`
+    /// keeps the response a single JSON object (rather than the invalid
+    /// concatenation `--paginate` produces for object endpoints); a branch with
+    /// more than 100 checks would see only the first page, which no real branch
+    /// reaches.
+    func ciChecks(for folder: URL, branch: String) async -> ChecksSummary? {
+        guard let ghPath, !branch.isEmpty else { return nil }
+        let result = runner.run(
+            ghPath,
+            ["api", "repos/{owner}/{repo}/commits/\(branch)/check-runs?per_page=100"],
+            workingDirectory: folder
+        )
+        guard result.status == 0 else { return nil }
+        return GitParsing.checksSummary(fromCheckRunsJSON: result.stdout)
     }
 
     /// A hash of the working tree's dirty state: `git status --porcelain` (which

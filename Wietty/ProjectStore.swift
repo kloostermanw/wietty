@@ -1491,11 +1491,17 @@ final class ProjectStore {
             info.prNumber = pr
             let or = ownerRepo[key.projectId]
             info.prURL = Self.prURL(owner: or?.0, repo: or?.1, pr: pr)
-            if pr == nil { info.checks = nil }
             gitInfo[key.projectId] = info
         case .ciChecks:
-            guard var info = gitInfo[key.projectId], let pr = info.prNumber else { return }
-            info.checks = await gitProvider.ciChecks(for: url, prNumber: pr)
+            // Sole owner of `info.checks`: a PR sources it from `gh pr checks`,
+            // and a PR-less pushed branch sources the same summary from the
+            // branch head commit's checks (nil when there is neither).
+            guard var info = gitInfo[key.projectId], !info.branch.isEmpty else { return }
+            if let pr = info.prNumber {
+                info.checks = await gitProvider.ciChecks(for: url, prNumber: pr)
+            } else {
+                info.checks = await gitProvider.ciChecks(for: url, branch: info.branch)
+            }
             gitInfo[key.projectId] = info
         case .processStatus:
             processes.refreshStatusesForWorkspace(key.projectId)
