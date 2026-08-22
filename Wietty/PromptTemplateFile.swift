@@ -22,20 +22,40 @@ struct PromptTemplateFile {
         self.directory = directory
     }
 
+    /// The outcome of reading the directory: the templates that parsed, and the `.md`
+    /// files that could not be read at all. The two are kept apart on purpose. A file
+    /// with no frontmatter or malformed frontmatter still parses, so it belongs in
+    /// `templates`; a file that cannot be read as UTF-8, or that a permission or I/O
+    /// error blocks, is a different failure the store must surface rather than let the
+    /// template vanish with no trace of which file or why.
+    struct Listing {
+        var templates: [PromptTemplate] = []
+        var unreadable: [URL] = []
+    }
+
     /// Every readable template, sorted by display name so the list and the popup show
-    /// a stable order rather than the file system's. An absent directory lists empty,
-    /// the way an absent config file reads empty: it is the first launch, not an error.
-    func list() throws -> [PromptTemplate] {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+    /// a stable order rather than the file system's, alongside the `.md` files that
+    /// could not be read. An absent directory lists empty, the way an absent config file
+    /// reads empty: it is the first launch, not an error.
+    func list() throws -> Listing {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return Listing() }
         let urls = try FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil)
-        return urls
-            .filter { $0.pathExtension.lowercased() == "md" }
-            .compactMap { url -> PromptTemplate? in
-                guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-                return PromptTemplate.parse(contents: contents, fileURL: url)
+        var listing = Listing()
+        for url in urls where url.pathExtension.lowercased() == "md" {
+            // A read failure (bad encoding, a permission problem, a broken symlink, a
+            // file deleted since the directory scan) is recorded against the file rather
+            // than dropped, so the store can tell the user the file is being ignored.
+            guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
+                listing.unreadable.append(url)
+                continue
             }
-            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            listing.templates.append(PromptTemplate.parse(contents: contents, fileURL: url))
+        }
+        listing.templates.sort {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+        return listing
     }
 
     /// Writes the template to its `fileURL`, creating the directory when absent. Saving

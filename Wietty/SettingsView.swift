@@ -216,7 +216,10 @@ struct SettingsView: View {
                     .disabled(!newTemplate.isValid)
             }
             if let error = promptTemplates.lastError {
-                Label("Could not save that: \(error)", systemImage: "exclamationmark.triangle.fill")
+                // Neutral wording: `lastError` carries both write failures (a save that
+                // could not reach disk) and read failures (a file that could not be
+                // listed or read), so it must not name only one of them.
+                Label("Prompt templates: \(error)", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.red)
             }
             Text("Each template is a prompt the popup types into the focused terminal, "

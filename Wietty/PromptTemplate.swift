@@ -83,14 +83,24 @@ struct PromptTemplate: Identifiable, Equatable {
     /// space, with no gap for an index the body never used.
     func render(arguments: [Int: String]) -> String {
         let all = arguments.keys.sorted().map { arguments[$0] ?? "" }.joined(separator: " ")
-        var result = body.replacingOccurrences(of: "$ARGUMENTS", with: all)
-        // Scanning the body, not `result`, so a value that itself contains `$1` is not
-        // substituted into again. Highest index first so replacing `$1` never eats the
-        // `$1` inside `$10`.
-        for index in Self.positionalIndices(in: body).sorted(by: >) {
-            result = result.replacingOccurrences(of: "$\(index)", with: arguments[index] ?? "")
+        let result = NSMutableString(string: body)
+        let range = NSRange(location: 0, length: result.length)
+        // One pass over the original body, applied back to front so each earlier match
+        // keeps its range as the string changes length. Matching only the body, never
+        // the growing result, is what actually stops re-substitution: a value that
+        // itself contains `$1`, and the text `$ARGUMENTS` expands to, are written in
+        // as-is and never scanned again. A single greedy match per placeholder also
+        // means `$1` can never eat the `$1` inside `$10`.
+        for match in Self.placeholder.matches(in: body, range: range).reversed() {
+            let replacement: String
+            if let r = Range(match.range(at: 1), in: body), let index = Int(body[r]) {
+                replacement = arguments[index] ?? ""
+            } else {
+                replacement = all
+            }
+            result.replaceCharacters(in: match.range, with: replacement)
         }
-        return result
+        return result as String
     }
 
     /// The trimmed display name, for the same reason `AgentDefinition.displayName` is
@@ -103,12 +113,19 @@ struct PromptTemplate: Identifiable, Equatable {
 
     // MARK: Parsing helpers
 
-    /// The distinct `$N` indices referenced in `text`.
+    /// `$ARGUMENTS` or a 1-based `$N`. `$0` is deliberately not a placeholder: index 0
+    /// has no argument field (the fields are 1-based), so a hand-edited body that writes
+    /// `$0` keeps it literal rather than driving the argument step to a `-1` index and
+    /// crashing. Compiled once from a constant pattern, so `try!` cannot fire, and shared
+    /// by `render` and `positionalIndices` so both agree on what a placeholder is.
+    private static let placeholder = try! NSRegularExpression(pattern: "\\$ARGUMENTS|\\$([1-9][0-9]*)")
+
+    /// The distinct `$N` indices referenced in `text`. `$ARGUMENTS` matches have no
+    /// capture group, so `Range(_:in:)` returns nil for them and they are skipped.
     private static func positionalIndices(in text: String) -> Set<Int> {
-        guard let regex = try? NSRegularExpression(pattern: "\\$([0-9]+)") else { return [] }
         let range = NSRange(text.startIndex..., in: text)
         var indices: Set<Int> = []
-        for match in regex.matches(in: text, range: range) {
+        for match in placeholder.matches(in: text, range: range) {
             if let r = Range(match.range(at: 1), in: text), let n = Int(text[r]) {
                 indices.insert(n)
             }

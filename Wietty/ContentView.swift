@@ -245,16 +245,19 @@ struct ContentView: View {
         }
     }
 
-    /// Types a rendered template into the focused terminal, the same write path a
-    /// pasted keystroke takes (`GhosttyService.send`). No trailing newline: the cursor
-    /// is left in the prompt so the text can be edited before it is sent to the agent.
+    /// Types a rendered template into the local terminal on screen, the write path used
+    /// by MCP `send_input` and remote keystrokes (`GhosttyService.send`). No trailing
+    /// newline: the cursor is left in the prompt so the text can be edited before it is
+    /// sent to the agent.
     ///
-    /// With no local terminal selected there is nowhere to type it, so this says so
-    /// rather than dropping the text: the popup is reachable from the app menu even when
-    /// the pane is showing settings or a remote session.
+    /// Gated on the terminal actually being on screen, not merely selected: the popup is
+    /// reachable from the app menu while the pane shows settings, a remote session or a
+    /// log, and `GhosttyService.selected` still names a local terminal underneath that
+    /// cover. Typing into a terminal the user cannot see would drop the text out of
+    /// sight, so this says to bring one forward rather than writing to the hidden one.
     private func injectTemplate(_ text: String) {
         promptTemplatePresentation.isPresented = false
-        guard let session = selectedTerminal else {
+        guard let session = paneSelection.localSession else {
             store.lastError = "Select one of this Mac's terminals first, then pick a prompt template."
             return
         }

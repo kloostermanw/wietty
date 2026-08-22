@@ -64,11 +64,12 @@ the name and description; the arrow keys move the highlight and Return chooses i
 template with placeholders then asks for their values; one without is typed in straight
 away.
 
-The rendered body is written into the focused local terminal through
-`GhosttyService.send`, the same write path a pasted keystroke takes. No trailing newline
-is sent: the cursor is left in the prompt so the text can be edited before it is sent to
-the agent. With no local terminal selected there is nowhere to type it, so Wietty says
-so rather than dropping the text.
+The rendered body is written into the local terminal on screen through
+`GhosttyService.send`, the write path MCP `send_input` and remote keystrokes use. No
+trailing newline is sent: the cursor is left in the prompt so the text can be edited
+before it is sent to the agent. With no local terminal on screen (the pane is showing
+settings, a remote session, or a log) there is nowhere the user can see it typed, so
+Wietty asks for a terminal to be brought forward rather than writing to the hidden one.
 
 See AsciiScreens/PromptTemplatePickerView.md for the popup and AsciiScreens/SettingsView.md
 for the Settings › Prompts tab that creates, edits, and deletes templates.
