@@ -107,7 +107,15 @@ struct PromptTemplatePickerView: View {
 
     @ViewBuilder private var emptyState: some View {
         VStack(spacing: 6) {
-            if store.templates.isEmpty {
+            if let error = store.lastError {
+                // A load failure and a genuinely empty directory both leave `templates`
+                // empty, so without this they would render alike and a user whose files
+                // failed to read would be told to go create templates they already have.
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text("Fix it in Settings › Prompts.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if store.templates.isEmpty {
                 Text("No prompt templates yet.")
                 Text("Create one in Settings › Prompts.")
                     .font(.caption).foregroundStyle(.secondary)

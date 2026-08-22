@@ -102,6 +102,16 @@ import Foundation
         #expect(template.hasArguments == false)
     }
 
+    /// The review's crash: a hand-edited body with `$0` once drove the argument step to
+    /// a `-1` index. `$0` is not a placeholder (the fields are 1-based), so it asks for
+    /// no argument, and rendering leaves it literal rather than crashing.
+    @Test func zeroIsNotAPlaceholder() {
+        let template = PromptTemplate.parse(contents: "Run step $0 now.", fileURL: url("t.md"))
+        #expect(template.argumentFields.isEmpty)
+        #expect(template.hasArguments == false)
+        #expect(template.render(arguments: [:]) == "Run step $0 now.")
+    }
+
     // MARK: Rendering
 
     @Test func rendersPositionalAndAllArguments() {
@@ -147,5 +157,20 @@ import Foundation
         let template = PromptTemplate.parse(contents: "$2 $1 all: $ARGUMENTS",
                                             fileURL: url("t.md"))
         #expect(template.render(arguments: [1: "a", 2: "b"]) == "b a all: a b")
+    }
+
+    /// A value that itself contains a placeholder is written in as-is, not substituted
+    /// into again: rendering scans the original body, never the growing result. Here
+    /// $2's value is the text "$1", which must survive rather than becoming $1's value.
+    @Test func aValueContainingAPlaceholderIsNotSubstitutedAgain() {
+        let template = PromptTemplate.parse(contents: "$1 $2", fileURL: url("t.md"))
+        #expect(template.render(arguments: [1: "X", 2: "$1"]) == "X $1")
+    }
+
+    /// The `$ARGUMENTS` expansion is not re-scanned either: a `$1` inside one of the
+    /// typed values is part of the expansion, not a placeholder to fill again.
+    @Test func argumentsExpansionIsNotReScanned() {
+        let template = PromptTemplate.parse(contents: "All: $ARGUMENTS", fileURL: url("t.md"))
+        #expect(template.render(arguments: [1: "$2 kept", 2: "two"]) == "All: $2 kept two")
     }
 }

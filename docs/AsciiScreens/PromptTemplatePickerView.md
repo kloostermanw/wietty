@@ -79,14 +79,16 @@ left blank.
 
 The view knows nothing about terminals: it hands the rendered text to `onInject` and
 lets `ContentView` decide where it goes. `ContentView.injectTemplate` dismisses the
-sheet, then writes the text to the focused local terminal through
-`GhosttyService.send(sessionId:text:)`, the same write path a pasted keystroke takes.
-No trailing newline is sent, so the cursor is left in the prompt and the text can be
-edited before it is sent to the agent.
+sheet, then writes the text to the local terminal on screen through
+`GhosttyService.send(sessionId:text:)`, the write path MCP `send_input` and remote
+keystrokes use. No trailing newline is sent, so the cursor is left in the prompt and the
+text can be edited before it is sent to the agent.
 
-With no local terminal selected there is nowhere to type it, so `ContentView` reports
-that through `store.lastError` rather than dropping the text: the popup is reachable
-from the app menu even when the pane is showing settings or a remote session.
+The write is gated on the terminal being on screen, not merely selected: the popup is
+reachable from the app menu while the pane shows settings, a remote session, or a log,
+and the local selection still names a terminal underneath that cover. Rather than typing
+into a terminal the user cannot see, `ContentView` reports through `store.lastError` that
+a terminal has to be brought forward first.
 
 Legend:
 

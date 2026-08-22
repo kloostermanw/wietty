@@ -35,10 +35,20 @@ final class PromptTemplateStore {
     }
 
     /// Re-reads the directory. Called on the way into the popup and the settings page,
-    /// so a file added or edited outside the app shows without a relaunch.
+    /// so a file added or edited outside the app shows without a relaunch. Clears
+    /// `lastError` on a clean read, the way `perform` does after a write, so a transient
+    /// failure does not linger once it is gone. A file that could not be read is named
+    /// rather than silently dropped, so the user knows a template is being ignored.
     func reload() {
         do {
-            templates = try file.list()
+            let listing = try file.list()
+            templates = listing.templates
+            if listing.unreadable.isEmpty {
+                lastError = nil
+            } else {
+                let names = listing.unreadable.map(\.lastPathComponent).joined(separator: ", ")
+                lastError = "Could not read \(names). Check the file's encoding and permissions."
+            }
         } catch {
             templates = []
             lastError = error.localizedDescription

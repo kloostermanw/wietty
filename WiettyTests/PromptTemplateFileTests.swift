@@ -16,7 +16,7 @@ import Foundation
     }
 
     @Test func anAbsentDirectoryListsEmpty() throws {
-        #expect(try store().list().isEmpty)
+        #expect(try store().list().templates.isEmpty)
     }
 
     @Test func aSavedTemplateReadsBack() throws {
@@ -25,7 +25,7 @@ import Foundation
                              body: "Investigate bug $1.", in: file)
         try file.save(saved)
 
-        let listed = try file.list()
+        let listed = try file.list().templates
         #expect(listed.count == 1)
         #expect(listed.first?.name == "Fix bug")
         #expect(listed.first?.summary == "Investigate")
@@ -47,8 +47,24 @@ import Foundation
         try "not a template".write(to: file.directory.appendingPathComponent("notes.txt"),
                                    atomically: true, encoding: .utf8)
 
-        let listed = try file.list()
+        let listed = try file.list().templates
         #expect(listed.map(\.name) == ["Real"])
+    }
+
+    @Test func aFileThatCannotBeReadIsKeptApartNotDropped() throws {
+        let file = store()
+        try file.save(template(name: "Real", body: "Body.", in: file))
+        // Bytes that are not valid UTF-8, so reading the file throws rather than parsing.
+        let broken = file.directory.appendingPathComponent("broken.md")
+        try Data([0xFF, 0xFE, 0xFD]).write(to: broken)
+
+        let listed = try file.list()
+        // The readable template is still listed; the unreadable one is surfaced by URL
+        // rather than silently omitted, so the store can tell the user it is ignored.
+        // Compared by filename because `contentsOfDirectory` resolves the temp path's
+        // `/var` symlink to `/private/var`, which the constructed URL does not.
+        #expect(listed.templates.map(\.name) == ["Real"])
+        #expect(listed.unreadable.map(\.lastPathComponent) == [broken.lastPathComponent])
     }
 
     @Test func listingToleratesAFileWithNoFrontmatter() throws {
@@ -57,7 +73,7 @@ import Foundation
         try "Just a body.".write(to: file.directory.appendingPathComponent("hand-made.md"),
                                  atomically: true, encoding: .utf8)
 
-        let listed = try file.list()
+        let listed = try file.list().templates
         #expect(listed.map(\.name) == ["hand-made"])
         #expect(listed.first?.body == "Just a body.")
     }
@@ -67,7 +83,7 @@ import Foundation
         try file.save(template(name: "zebra", body: "b", in: file))
         try file.save(template(name: "Apple", body: "b", in: file))
         try file.save(template(name: "banana", body: "b", in: file))
-        #expect(try file.list().map(\.name) == ["Apple", "banana", "zebra"])
+        #expect(try file.list().templates.map(\.name) == ["Apple", "banana", "zebra"])
     }
 
     @Test func savingReplacesTheSameFileRatherThanAddingASecond() throws {
@@ -77,7 +93,7 @@ import Foundation
         t.body = "Second."
         try file.save(t)
 
-        let listed = try file.list()
+        let listed = try file.list().templates
         #expect(listed.count == 1)
         #expect(listed.first?.body == "Second.")
     }
@@ -87,7 +103,7 @@ import Foundation
         let t = template(name: "Fix bug", body: "Body.", in: file)
         try file.save(t)
         try file.delete(t)
-        #expect(try file.list().isEmpty)
+        #expect(try file.list().templates.isEmpty)
     }
 
     // MARK: Naming

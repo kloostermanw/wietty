@@ -60,4 +60,21 @@ import Foundation
         store.reload()
         #expect(store.templates.map(\.name) == ["hand-made"])
     }
+
+    /// A file that cannot be read surfaces as `lastError` rather than vanishing, and a
+    /// later clean reload clears it, so a fixed file does not leave the warning behind.
+    @Test func reloadReportsAnUnreadableFileThenClearsWhenGone() throws {
+        let store = store()
+        try FileManager.default.createDirectory(at: store.file.directory,
+                                                withIntermediateDirectories: true)
+        let broken = store.file.directory.appendingPathComponent("broken.md")
+        try Data([0xFF, 0xFE, 0xFD]).write(to: broken)
+
+        store.reload()
+        #expect(store.lastError != nil)
+
+        try FileManager.default.removeItem(at: broken)
+        store.reload()
+        #expect(store.lastError == nil)
+    }
 }

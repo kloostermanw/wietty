@@ -87,7 +87,7 @@ import WiettyShared
         #expect(Double(size.height) == SidebarWidth.paneMinimumHeight)
     }
 
-    /// Five segments across a 480 point pane is about 90 points each, and
+    /// Six segments across a 480 point pane is about 80 points each, and
     /// "Notifications" does not fit in that, so the control has to give up label
     /// text rather than width. If it ever asks for its ideal width instead, the pane
     /// floor moves and the window's minimum width moves with it, which is a change
@@ -127,8 +127,8 @@ import WiettyShared
         #expect(renderer.nsImage != nil)
     }
 
-    /// The tabs split the panel into five subtrees and only the one that is up gets
-    /// built, so the render above now covers a fifth of it. Every tab is rendered
+    /// The tabs split the panel into six subtrees and only the one that is up gets
+    /// built, so the render above now covers a sixth of it. Every tab is rendered
     /// here instead, which is what keeps a crash in a tab nobody opened during
     /// development from waiting for a user to find it.
     ///
