@@ -5,6 +5,11 @@ struct WorkspaceCardView: View {
     let collapsed: Bool
     let gitInfo: GitInfo?
     let runState: (TerminalRef) -> ClaudeRunState
+    /// Whether a row's terminal is running right now, which tints its glyph green.
+    /// A positive signal rather than `runState`'s optimism, so an unspawned row is
+    /// not painted as active. Defaulted so a caller that never marks a row can leave
+    /// it out.
+    var isRunning: (TerminalRef) -> Bool = { _ in false }
     let needsAttention: (TerminalRef) -> Bool
     let syncEnabled: Bool
     let configChanged: Bool
@@ -267,6 +272,7 @@ struct WorkspaceCardView: View {
                     label: ref.label,
                     kind: ref.kind,
                     isExited: ref.kind == .claude && runState(ref) == .exited,
+                    isRunning: isRunning(ref),
                     needsAttention: needsAttention(ref),
                     isLocalOnly: isLocalOnly(ref),
                     isSelected: isSelected(ref),

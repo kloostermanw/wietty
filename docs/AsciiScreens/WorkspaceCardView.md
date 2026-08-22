@@ -70,6 +70,13 @@ Legend:
   chevron's, so it lines up in the same left gutter as `▾` and the row's label
   aligns with the project name and the pills, checks, and test lines above it.
   There is no leading rule grouping the rows.
+- The `>` and `✦` glyph is green while its terminal or agent is actually running
+  (`ProjectStore.isSessionRunning`: a plain terminal while its shell is live, an
+  agent while its foreground job is the agent rather than the shell), so a live
+  session stays identifiable even when another row is the one selected in the pane.
+  An exited row dims, and a row that is neither yet (unspawned, or before the first
+  job poll) stays neutral rather than claiming to run. This is a positive signal,
+  unlike `runState`, which stays optimistically "running" when it has no job info.
 - Hovering a row reveals trailing action buttons (play / stop / refresh, plus a
   log button on process rows). A plain click on a process row is a no-op, while a
   plain click on a terminal or Claude row activates it (`onActivate`), which shows

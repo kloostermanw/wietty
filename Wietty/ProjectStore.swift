@@ -1064,6 +1064,17 @@ final class ProjectStore {
         return claudeIsRunning(jobName: job) ? .running : .exited
     }
 
+    /// Whether this row's terminal is running right now, used to tint its sidebar
+    /// glyph green. Unlike `runState`, a row with no job info yet counts as not
+    /// running rather than optimistically running, so a freshly launched app does
+    /// not paint every row as active. A plain terminal is running whenever its
+    /// shell is live (any non-empty job); an agent only while its foreground job is
+    /// the agent rather than that shell. A terminated row reports an empty job.
+    func isSessionRunning(_ ref: TerminalRef) -> Bool {
+        guard let job = jobNames[ref.id], !job.isEmpty else { return false }
+        return ref.kind == .claude ? claudeIsRunning(jobName: job) : true
+    }
+
     /// The workspace and row with this row id.
     ///
     /// By row id rather than session id because it answers a notification tap, and a
