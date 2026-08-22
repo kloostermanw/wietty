@@ -36,9 +36,10 @@ Legend:
   separate marker glyph, only the reduced emphasis.
 - Click: activates the terminal (`onActivate`), unchanged from before.
 - Hover: the background lightens (rounded `.secondary.opacity(0.12)` fill) and
-  the trailing action buttons appear. Running is `!isExited` (plain terminals
-  never report an exited state, so they are always running; Claude rows use
-  `isExited`).
+  the trailing action buttons appear. Which buttons is gated on `isRunning`, the
+  same positive signal the glyph colour uses (`ProjectStore.isSessionRunning`), so
+  a stopped row shows play rather than a dead stop button. This is deliberately not
+  `!isExited`, which is false for every plain terminal.
 - Selected (`isSelected`): the row whose terminal the pane is showing, filled
   #292b34 in dark appearance and with the system's unemphasized row selection in
   light. Exactly one row in the window is ever marked, because the pane holds one
@@ -57,12 +58,12 @@ Hovering a selected row is still visible, because the action buttons appear
 either way. Both fills share one corner radius, so the shape under the pointer
 does not change.
 - Action buttons (visible on hover only):
-  - `[◼]` stop (`stop.fill`) → `onStop`, shown when running and `canStop` is true.
+  - `[◼]` stop (`stop.fill`) → `onStop`, shown when `isRunning` and `canStop` is true.
     Stops the running session but leaves the row in place so it can be reopened,
     distinct from the trash button. Absent on a remote row (`canStop` false).
   - `[⟳]` restart (`arrow.clockwise`) → `onRestart` (restart session), shown when
-    running.
+    `isRunning`.
   - `[▶]` play (`play.fill`) → `onPlay` (activate / relaunch), shown instead of stop
-    and restart when the row has exited.
+    and restart whenever the row is not running (stopped, exited, or not yet spawned).
   - `[🗑]` trash (`trash`) → `onClose` (close terminal), always shown. Removes the
     row and its terminal, so this is the delete action, kept separate from stop.

@@ -89,6 +89,14 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         discardCalls.append(sessionId)
         discardAndOpenOrder.append("discard")
     }
+
+    var stopCalls: [String] = []
+    /// Recorded rather than inherited from the protocol's default, for the same
+    /// reason as `discard`: `stopTerminal` calling it (and leaving the row in place)
+    /// is the claim, so the test needs to see the call.
+    func stop(sessionId: String) async {
+        stopCalls.append(sessionId)
+    }
 }
 
 @Suite @MainActor struct TerminalStoreTests {
@@ -621,6 +629,58 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(store.runState(for: ref) == .exited)
         store.handle(.job(sessionId: "sess-A", jobName: "")) // bare shell, no shell integration
         #expect(store.runState(for: ref) == .exited)
+    }
+
+    @Test func isSessionRunningNeedsConfirmedJobForClaudeRow() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+        let ref = store.projects[0].terminals[0]
+
+        // No job info: unlike runState, which stays optimistically running, this is
+        // false so a freshly launched app does not paint every row as active.
+        #expect(store.runState(for: ref) == .running)
+        #expect(store.isSessionRunning(ref) == false)
+        store.handle(.job(sessionId: "sess-A", jobName: "2.1.203")) // agent foreground job
+        #expect(store.isSessionRunning(ref) == true)
+        store.handle(.job(sessionId: "sess-A", jobName: "zsh")) // back to the shell
+        #expect(store.isSessionRunning(ref) == false)
+        store.handle(.job(sessionId: "sess-A", jobName: "")) // terminated
+        #expect(store.isSessionRunning(ref) == false)
+    }
+
+    @Test func isSessionRunningTreatsLiveShellAsRunningForPlainTerminal() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+        let ref = store.projects[0].terminals[0]
+
+        #expect(store.isSessionRunning(ref) == false) // no job info yet
+        // The asymmetry that matters: a live shell means running for a plain terminal
+        // but not for a Claude row, where the shell is the agent having exited.
+        store.handle(.job(sessionId: "sess-A", jobName: "zsh"))
+        #expect(store.isSessionRunning(ref) == true)
+        store.handle(.job(sessionId: "sess-A", jobName: "")) // terminated
+        #expect(store.isSessionRunning(ref) == false)
+    }
+
+    @Test func stopTerminalStopsSessionButKeepsRow() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+
+        await store.stopTerminal(store.projects[0].terminals[0], in: store.projects[0])
+        #expect(fake.stopCalls == ["sess-A"])
+        // The whole point, and what regresses if the stop and close paths are unified:
+        // the row stays, unlike closeTerminal which forgets it.
+        #expect(store.projects[0].terminals.count == 1)
+        #expect(fake.closeCalls.isEmpty)
     }
 
     @Test func titleEventWithUnchangedNameSkipsUpdateButLaterChangeApplies() async {
