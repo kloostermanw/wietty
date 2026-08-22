@@ -118,6 +118,30 @@ struct FakeCommandRunner: CommandRunning {
         #expect(checks?.pending == 1)
     }
 
+    @Test func ciChecksForBranchMergesCheckRunsWithLegacyStatuses() async {
+        // Some CI (e.g. CircleCI) reports via the legacy commit-status API, not
+        // check-runs. The branch fallback must merge both, the way the commit's
+        // status-details page and `gh pr checks` do.
+        let svc = service { _, args in
+            if args.contains("api"), args.contains(where: { $0.contains("/check-runs") }) {
+                return CommandResult(
+                    stdout: #"{"total_count":1,"check_runs":[{"status":"completed","conclusion":"success"}]}"#,
+                    stderr: "", status: 0
+                )
+            }
+            if args.contains("api"), args.contains(where: { $0.contains("/status?") }) {
+                return CommandResult(
+                    stdout: #"{"state":"success","statuses":[{"context":"ci/circleci: build","state":"success"}]}"#,
+                    stderr: "", status: 0
+                )
+            }
+            return CommandResult(stdout: "", stderr: "", status: 1)
+        }
+        let checks = await svc.ciChecks(for: URL(fileURLWithPath: "/tmp/x"), branch: "feature/issue-30")
+        #expect(checks?.passing == 2)   // one check-run + one CircleCI status
+        #expect(checks?.total == 2)
+    }
+
     @Test func fingerprintStableForSameTreeState() async {
         let svc = service { _, args in
             if args.contains("--is-inside-work-tree") { return CommandResult(stdout: "true\n", stderr: "", status: 0) }

@@ -101,4 +101,29 @@ enum GitParsing {
         }
         return summary.total > 0 ? summary : nil
     }
+
+    /// Tallies `gh api repos/{owner}/{repo}/commits/{ref}/status` (the legacy
+    /// combined commit status, one entry per context) into a ChecksSummary.
+    /// This is where status-based CI such as CircleCI reports, separate from
+    /// check-runs. Returns nil when the JSON is empty, invalid, or has no
+    /// statuses.
+    static func checksSummary(fromCombinedStatusJSON json: String) -> ChecksSummary? {
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
+        struct Payload: Decodable {
+            struct Status: Decodable { let state: String? }
+            let statuses: [Status]
+        }
+        guard let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
+        var summary = ChecksSummary(passing: 0, failing: 0, cancelled: 0, skipped: 0, pending: 0)
+        for status in payload.statuses {
+            switch status.state {
+            case "success": summary.passing += 1
+            case "pending": summary.pending += 1
+            case "failure", "error": summary.failing += 1
+            default: break
+            }
+        }
+        return summary.total > 0 ? summary : nil
+    }
 }

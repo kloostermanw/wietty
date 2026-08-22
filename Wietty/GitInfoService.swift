@@ -94,23 +94,35 @@ struct GitInfoService: GitInfoProviding {
 
     /// Checks for a branch head that has no pull request: the checks GitHub ran
     /// on the pushed commit. `gh pr checks` is PR scoped, so this sources the
-    /// same `ChecksSummary` from the commit's check-runs instead. `gh` fills the
-    /// `{owner}`/`{repo}` placeholders from the folder's remote, and the branch
-    /// name is the ref (GitHub resolves it to the remote head, so the line
-    /// reflects the push; an unpushed branch 404s and yields nil). `per_page=100`
-    /// keeps the response a single JSON object (rather than the invalid
-    /// concatenation `--paginate` produces for object endpoints); a branch with
-    /// more than 100 checks would see only the first page, which no real branch
-    /// reaches.
+    /// same `ChecksSummary` from the commit head instead, merging its two check
+    /// systems the way the commit's status-details page does: check-runs (GitHub
+    /// Actions and GitHub-App integrations) and the legacy combined commit status
+    /// (status-based CI such as CircleCI). The two are distinct contexts, so the
+    /// summaries simply add; the line stays hidden only when both are empty.
+    ///
+    /// `gh` fills the `{owner}`/`{repo}` placeholders from the folder's remote,
+    /// and the branch name is the ref (GitHub resolves it to the remote head, so
+    /// the line reflects the push; an unpushed branch 4xxs and yields nil).
+    /// `per_page=100` keeps the check-runs response a single JSON object (rather
+    /// than the invalid concatenation `--paginate` produces for object
+    /// endpoints); a branch with more than 100 checks would see only the first
+    /// page, which no real branch reaches.
     func ciChecks(for folder: URL, branch: String) async -> ChecksSummary? {
         guard let ghPath, !branch.isEmpty else { return nil }
-        let result = runner.run(
-            ghPath,
-            ["api", "repos/{owner}/{repo}/commits/\(branch)/check-runs?per_page=100"],
-            workingDirectory: folder
-        )
-        guard result.status == 0 else { return nil }
-        return GitParsing.checksSummary(fromCheckRunsJSON: result.stdout)
+        func fetch(_ path: String, _ parse: (String) -> ChecksSummary?) -> ChecksSummary? {
+            let result = runner.run(ghPath, ["api", path], workingDirectory: folder)
+            return result.status == 0 ? parse(result.stdout) : nil
+        }
+        let runs = fetch("repos/{owner}/{repo}/commits/\(branch)/check-runs?per_page=100",
+                         GitParsing.checksSummary(fromCheckRunsJSON:))
+        let statuses = fetch("repos/{owner}/{repo}/commits/\(branch)/status?per_page=100",
+                             GitParsing.checksSummary(fromCombinedStatusJSON:))
+        switch (runs, statuses) {
+        case (nil, nil): return nil
+        case let (runs?, nil): return runs
+        case let (nil, statuses?): return statuses
+        case let (runs?, statuses?): return runs.adding(statuses)
+        }
     }
 
     /// A hash of the working tree's dirty state: `git status --porcelain` (which

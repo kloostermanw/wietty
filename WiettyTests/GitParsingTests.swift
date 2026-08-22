@@ -100,6 +100,42 @@ import Foundation
         #expect(GitParsing.checksSummary(fromCheckRunsJSON: #"{"total_count":0,"check_runs":[]}"#) == nil)
     }
 
+    @Test func checksSummaryAddingSumsFieldwise() {
+        let runs = ChecksSummary(passing: 1, failing: 0, cancelled: 0, skipped: 1, pending: 0)
+        let statuses = ChecksSummary(passing: 1, failing: 2, cancelled: 0, skipped: 0, pending: 1)
+        let merged = runs.adding(statuses)
+        #expect(merged.passing == 2)
+        #expect(merged.failing == 2)
+        #expect(merged.skipped == 1)
+        #expect(merged.pending == 1)
+        #expect(merged.total == 6)
+    }
+
+    @Test func checksSummaryFromCombinedStatusMapsStates() {
+        // The legacy commit-status API (what CircleCI and other status-based
+        // integrations post) has a flat `state` per context, no conclusion.
+        let json = """
+        {"state":"failure","total_count":5,"statuses":[
+          {"context":"ci/circleci: build","state":"success"},
+          {"context":"coverage","state":"pending"},
+          {"context":"lint","state":"failure"},
+          {"context":"deploy","state":"error"},
+          {"context":"unknown","state":"weird"}
+        ]}
+        """
+        let s = GitParsing.checksSummary(fromCombinedStatusJSON: json)
+        #expect(s?.passing == 1)
+        #expect(s?.pending == 1)
+        #expect(s?.failing == 2)   // failure + error
+        #expect(s?.total == 4)     // the unrecognized state is ignored
+    }
+
+    @Test func checksSummaryFromCombinedStatusNilOnEmptyOrInvalid() {
+        #expect(GitParsing.checksSummary(fromCombinedStatusJSON: "") == nil)
+        #expect(GitParsing.checksSummary(fromCombinedStatusJSON: "not json") == nil)
+        #expect(GitParsing.checksSummary(fromCombinedStatusJSON: #"{"state":"pending","statuses":[]}"#) == nil)
+    }
+
     @Test func checksSummaryFromCheckRunsIgnoresUnknownCompletedConclusion() {
         // A completed run with an unrecognized (or null) conclusion is not
         // counted in any bucket, matching the bucket parser's default-skip.
