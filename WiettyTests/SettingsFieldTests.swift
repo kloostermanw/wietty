@@ -27,6 +27,7 @@ import WiettyShared
                             bells: BellNotifier(sink: FakeNotificationSink()),
                             desktopNotifications: .fake(),
                             ghosttyColors: GhosttyColorSettings(host: FakeSurfaceHost(), file: .temporary()),
+                            promptTemplates: PromptTemplateStore(file: .temporary()),
                             tab: tab)
     }
 
@@ -75,6 +76,27 @@ import WiettyShared
         let view = Form {
             AgentRow(agent: AgentDefinition(name: long, command: long, defaultArguments: long),
                      isEditing: true, onUpdate: { _ in }, onDelete: {})
+        }
+        .formStyle(.grouped)
+        #expect(widthAtPaneFloor(view) == SidebarWidth.paneMinimum)
+    }
+
+    /// The Prompts tab carries a multi-line body editor and the longest captions in
+    /// the panel, so it is the tab most likely to ask for more than the pane's floor.
+    @Test func thePromptsTabFitsThePaneFloor() {
+        #expect(widthAtPaneFloor(settings(.promptTemplates)) == SidebarWidth.paneMinimum)
+    }
+
+    /// A template row being edited is the state with the most fields on screen, and it
+    /// holds a `TextEditor`, whose job is to keep a long body inside its own bounds
+    /// rather than grow the row to fit it.
+    @Test func aPromptTemplateRowBeingEditedFitsThePaneFloor() {
+        let long = String(repeating: "123456789abcdefghijklmnopq", count: 8)
+        let template = PromptTemplate(name: long, summary: long, argumentHint: long,
+                                      body: long, fileURL: URL(fileURLWithPath: "/t.md"))
+        let view = Form {
+            PromptTemplateRow(template: template, isEditing: true,
+                              onUpdate: { _ in }, onDelete: {})
         }
         .formStyle(.grouped)
         #expect(widthAtPaneFloor(view) == SidebarWidth.paneMinimum)

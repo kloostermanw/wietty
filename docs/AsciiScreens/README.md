@@ -18,10 +18,16 @@ WiettyApp  (@main App)
     ├── ContentView                            → ContentView.md
     └── .commands                              a modifier on this scene
         ├── Check for Updates…                 CommandGroup(after: .appInfo)
-        └── SettingsCommand                    CommandGroup(replacing: .appSettings)
-                                               "Settings…" plus ⌘,, which put
-                                               SettingsView in the window's pane
-                                               → SettingsView.md
+        ├── SettingsCommand                    CommandGroup(replacing: .appSettings)
+        │                                      "Settings…" plus ⌘,, which put
+        │                                      SettingsView in the window's pane
+        │                                      → SettingsView.md
+        ├── PromptTemplatesCommand             CommandGroup(after: .appSettings)
+        │                                      "Prompt templates" plus ⌘P, which
+        │                                      open the picker sheet on the window
+        │                                      → PromptTemplatePickerView.md
+        └── GroupCommand                       CommandGroup(after: .appSettings)
+                                               the "Group" submenu → ContentView.md
 ```
 
 One scene, and it is the app. Everything the user looks at (a local terminal, a
@@ -148,7 +154,8 @@ Every view type, and where its layout is documented.
 | `NavBarView` | `NavBarView.swift` | `NavBarView.md`. What it says is `NavBarTitle.swift`, which is not a view |
 | `SidebarDivider` | `SidebarDivider.swift` | `ContentView.md`, under "Who gets the surplus, and where the divider is". Its arithmetic is `SidebarWidth.swift`, which is not a view |
 | `RemoteTerminalView` | `RemoteTerminalView.swift` | `ContentView.md`, under "What the pane shows" |
-| `SettingsView`, `AgentRow`, `RemoteConnectionRow` | `SettingsView.swift` | `SettingsView.md`. Drawn in the pane, and reached through `PaneRouter.swift` and `SettingsCommand` (in `WiettyApp.swift`), neither of which is a view |
+| `SettingsView`, `AgentRow`, `GroupRow`, `PromptTemplateRow`, `RemoteConnectionRow` | `SettingsView.swift` | `SettingsView.md`. Drawn in the pane, and reached through `PaneRouter.swift` and `SettingsCommand` (in `WiettyApp.swift`), neither of which is a view |
+| `PromptTemplatePickerView` | `PromptTemplatePickerView.swift` | `PromptTemplatePickerView.md`. A sheet over the main window, opened by ⌘P and `PromptTemplatesCommand` (in `WiettyApp.swift`), whose flag is `PromptTemplatePresentation.swift`; neither is a view |
 | `WorkspaceSettingsView` | `WorkspaceSettingsView.swift` | `WorkspaceSettingsView.md`. Drawn in the same pane, reached from a card's "Edit workspace…" |
 | `ConfigApprovalView` | `ConfigApprovalView.swift` | `ConfigApprovalView.md`. A sheet over the main window, shown when a workspace's `wietty.json` asks to run a line nobody has agreed to. What counts as one is `ConfigTrust.swift`, which is not a view |
 | `UpdateAlertModifier` | `UpdateAlertModifier.swift` | `UpdateAlertModifier.md` |
