@@ -4,12 +4,13 @@ ASCII reference layout for `SettingsView`, kept in sync with the SwiftUI view
 so the intended structure stays readable without running the app.
 
 The view is a segmented tab control above a grouped `Form`, and the tab decides
-what the form holds. Five tabs (`SettingsTab`), in this order: "General" (the
+what the form holds. Six tabs (`SettingsTab`), in this order: "General" (the
 badge toggle, the groups editor, the three interval steppers, and the two colour
 sections),
 "Notifications" (the permission
 state, a test notification, and the sound), "Agents" (the agents a workspace's
-menu can start), "Remote"
+menu can start), "Prompts" (the prompt templates the ⌘P popup lists),
+"Remote"
 (the LAN toggle, the remote terminal port, the URL and QR, and the list of other
 Wietty instances this one connects to), and "MCP"
 (the MCP server port). The panel opens on "General" (`SettingsTab.default`),
@@ -62,20 +63,27 @@ the sections rather than clipping them. The tab control is outside the form and
 does not scroll with it: a control that scrolled away would be gone exactly when
 a user who has read to the bottom of one tab wants the next.
 
-Five segments across a 480 point pane is roughly 90 points each, which "Notifications"
+Six segments across a 480 point pane is roughly 80 points each, which "Notifications"
 does not fit in, so the control truncates its labels rather than asking for a width
 the pane cannot give. `SettingsPaneTests.theTabControlDoesNotWidenThePaneFloor`
 pins that: if the control ever demanded its ideal width, the pane floor would move
 and `SidebarWidth.windowMinimumWidth` with it, so one panel would change how small
 the whole window can get.
 
+The prompt-templates tab is labelled "Prompts", not "Prompt templates", for the
+same reason: the six segments share the floor width, so the longer label there would
+push the floor, and the whole window's minimum, wider. `SettingsFieldTests` measures
+the panel unframed at the floor and `theTabControlDoesNotWidenThePaneFloor` measures
+it through the pane, and both pin the floor at 480. The section header and the app
+menu spell the feature out in full.
+
 ## General (the tab the panel opens on)
 
 ```
 ┌─ pane ───────────────────────────────────────────┐
-│ ┌─────────┬─────────┬────────┬────────┬───────┐   │
-│ │ General │ Notifi… │ Agents │ Remote │  MCP  │   │
-│ └─────────┴─────────┴────────┴────────┴───────┘   │
+│ ┌───────┬───────┬───────┬───────┬───────┬─────┐   │
+│ │General│Notifi…│Agents │Prompts│Remote │ MCP │   │
+│ └───────┴───────┴───────┴───────┴───────┴─────┘   │
 │ ────────────────────────────────────────────────  │
 │  ☑ Show workspace name as terminal badge           │
 │    Marks each terminal Wietty opens with its       │
@@ -181,9 +189,9 @@ so the section that controls it sits above the test button rather than below.
 
 ```
 ┌─ pane ───────────────────────────────────────────┐
-│ ┌─────────┬─────────┬────────┬────────┬───────┐   │
-│ │ General │ Notifi… │ Agents │ Remote │  MCP  │   │
-│ └─────────┴─────────┴────────┴────────┴───────┘   │
+│ ┌───────┬───────┬───────┬───────┬───────┬─────┐   │
+│ │General│Notifi…│Agents │Prompts│Remote │ MCP │   │
+│ └───────┴───────┴───────┴───────┴───────┴─────┘   │
 │ ────────────────────────────────────────────────  │
 │  System notifications                             │
 │    Permission                        ✓ Allowed    │
@@ -260,9 +268,9 @@ holds settings of its own.
 
 ```
 ┌─ pane ───────────────────────────────────────────┐
-│ ┌─────────┬─────────┬────────┬────────┬───────┐   │
-│ │ General │ Notifi… │ Agents │ Remote │  MCP  │   │
-│ └─────────┴─────────┴────────┴────────┴───────┘   │
+│ ┌───────┬───────┬───────┬───────┬───────┬─────┐   │
+│ │General│Notifi…│Agents │Prompts│Remote │ MCP │   │
+│ └───────┴───────┴───────┴───────┴───────┴─────┘   │
 │ ────────────────────────────────────────────────  │
 │  Agents                                           │
 │    Claude                              (✎) (🗑)   │
@@ -298,13 +306,68 @@ install that never stored a list, never on an empty file, so deleting the last a
 sticks across a relaunch. With the list empty the section says so, and each "Add
 Agent" submenu holds one disabled line pointing back here.
 
+## Prompts
+
+The prompt templates the ⌘P popup lists and types into the focused terminal. Each is
+a markdown file in `~/.config/wietty/prompt_templates/` (see prompt-templates.md and
+PromptTemplatePickerView.md). The tab reads that directory on the way in, so a file
+added or edited outside the app shows without a relaunch.
+
+```
+┌─ pane ───────────────────────────────────────────┐
+│ ┌───────┬───────┬───────┬───────┬───────┬─────┐   │
+│ │General│Notifi…│Agents │Prompts│Remote │ MCP │   │
+│ └───────┴───────┴───────┴───────┴───────┴─────┘   │
+│ ────────────────────────────────────────────────  │
+│  Prompt templates                                 │
+│    Fix bug                             (✎) (🗑)   │
+│    Investigate and propose a fix                  │
+│    Refactor helper                     (✎) (🗑)   │
+│    Reduce nesting                                 │
+│    Name         [________________ ]               │
+│    Description  [________________ ]               │
+│    Argument hint (for example <ticket-id> <area>) │
+│                 [________________ ]               │
+│    ┌────────────────────────────────┐             │
+│    │ Body: Investigate bug $1 and…  │             │
+│    │                                │             │
+│    └────────────────────────────────┘             │
+│    [ Add Template ]                                │
+│    (only after a write failed:)                   │
+│    ⚠ Could not save that: <reason>               │
+│    Each template is a prompt the popup types into │
+│    the focused terminal, leaving the cursor there │
+│    so you can edit before sending it. Use $1, $2  │
+│    for values the popup asks for, and $ARGUMENTS  │
+│    for all of them. Templates are markdown files  │
+│    in ~/.config/wietty/prompt_templates.          │
+└──────────────────────────────────────────────────┘
+```
+
+One row per `promptTemplates.templates` (`PromptTemplateRow`), each showing the
+template's display name and, under it in secondary text, its description (or the
+argument hint when there is no description). Editing (✎) swaps the row for an inline
+Name / Description / Argument hint form plus a `PromptBodyEditor` (a `TextEditor`
+with its own border and height, because the grouped form's `.roundedBorder` field
+style reaches `TextField` and `SecureField` but not `TextEditor`) and Cancel / Save;
+Save is disabled until the name is non-blank (`PromptTemplate.isValid`). The form
+below the list adds one, and "Add Template" is disabled by the same rule. With the
+list empty the section says so.
+
+Unlike the groups and agents, a template is not a flat-config list on `ProjectStore`:
+it is one markdown file, so it has its own store (`PromptTemplateStore`) over a
+directory of files (`PromptTemplateFile`), and it never touches
+`~/.config/wietty/config`. Adding writes a new file named from a slug of the name,
+disambiguated on collision; editing rewrites the same file (identity is the file
+URL); deleting removes it. See settings-storage.md and prompt-templates.md.
+
 ## Remote
 
 ```
 ┌─ pane ───────────────────────────────────────────┐
-│ ┌─────────┬─────────┬────────┬────────┬───────┐   │
-│ │ General │ Notifi… │ Agents │ Remote │  MCP  │   │
-│ └─────────┴─────────┴────────┴────────┴───────┘   │
+│ ┌───────┬───────┬───────┬───────┬───────┬─────┐   │
+│ │General│Notifi…│Agents │Prompts│Remote │ MCP │   │
+│ └───────┴───────┴───────┴───────┴───────┴─────┘   │
 │ ────────────────────────────────────────────────  │
 │  Remote access (experimental)                     │
 │    ☐ Enable LAN remote terminal                    │
@@ -343,9 +406,9 @@ Agent" submenu holds one disabled line pointing back here.
 
 ```
 ┌─ pane ───────────────────────────────────────────┐
-│ ┌─────────┬─────────┬────────┬────────┬───────┐   │
-│ │ General │ Notifi… │ Agents │ Remote │  MCP  │   │
-│ └─────────┴─────────┴────────┴────────┴───────┘   │
+│ ┌───────┬───────┬───────┬───────┬───────┬─────┐   │
+│ │General│Notifi…│Agents │Prompts│Remote │ MCP │   │
+│ └───────┴───────┴───────┴───────┴───────┴─────┘   │
 │ ────────────────────────────────────────────────  │
 │    MCP server                        [  7433 ]    │
 │    (if the MCP server failed to start:)           │
@@ -367,8 +430,8 @@ Legend:
   opening the panel. It is the same reason `NavBarView.trailingButtons` is a static
   function.
 - Only the selected tab's subtree is built, so a render test that does not name a
-  tab covers one fifth of the panel. `SettingsPaneTests.everyTabRenders` renders
-  all five, and `SettingsView`'s `init` takes a `tab:` for that.
+  tab covers one sixth of the panel. `SettingsPaneTests.everyTabRenders` renders
+  all six, and `SettingsView`'s `init` takes a `tab:` for that.
 - `☑`: `Toggle("Show workspace name as terminal badge", isOn: $store.showWorkspaceBadge)`.
   When on, `ProjectStore` passes the workspace name as `badge:` to
   `TerminalService.open`. It has no effect today: libghostty exposes no way to

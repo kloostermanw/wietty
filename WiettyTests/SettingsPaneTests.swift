@@ -31,6 +31,7 @@ import WiettyShared
             bells: notifier(),
             desktopNotifications: setting(),
             ghosttyColors: colors(),
+            promptTemplates: PromptTemplateStore(file: .temporary()),
             selection: selection)
     }
 
@@ -86,7 +87,7 @@ import WiettyShared
         #expect(Double(size.height) == SidebarWidth.paneMinimumHeight)
     }
 
-    /// Five segments across a 480 point pane is about 90 points each, and
+    /// Six segments across a 480 point pane is about 80 points each, and
     /// "Notifications" does not fit in that, so the control has to give up label
     /// text rather than width. If it ever asks for its ideal width instead, the pane
     /// floor moves and the window's minimum width moves with it, which is a change
@@ -126,8 +127,8 @@ import WiettyShared
         #expect(renderer.nsImage != nil)
     }
 
-    /// The tabs split the panel into five subtrees and only the one that is up gets
-    /// built, so the render above now covers a fifth of it. Every tab is rendered
+    /// The tabs split the panel into six subtrees and only the one that is up gets
+    /// built, so the render above now covers a sixth of it. Every tab is rendered
     /// here instead, which is what keeps a crash in a tab nobody opened during
     /// development from waiting for a user to find it.
     ///
@@ -144,6 +145,7 @@ import WiettyShared
                 bells: notifier(),
                 desktopNotifications: setting(),
                 ghosttyColors: colors(),
+                promptTemplates: PromptTemplateStore(file: .temporary()),
                 tab: tab)
             let renderer = ImageRenderer(content: view.frame(width: 600, height: 800))
             #expect(renderer.nsImage != nil, "\(tab.title) failed to render")
@@ -169,6 +171,7 @@ import WiettyShared
             bells: notifier(),
             desktopNotifications: setting(),
             ghosttyColors: colours,
+            promptTemplates: PromptTemplateStore(file: .temporary()),
             tab: .general)
         #expect(ImageRenderer(content: view.frame(width: 600, height: 1200)).nsImage != nil)
     }
@@ -272,6 +275,7 @@ import WiettyShared
             bells: notifier(),
             desktopNotifications: setting(),
             ghosttyColors: colors(),
+            promptTemplates: PromptTemplateStore(file: .temporary()),
             tab: .remote)
         let renderer = ImageRenderer(content: view.frame(width: 600, height: 1200))
         #expect(renderer.nsImage != nil)
@@ -309,6 +313,40 @@ import WiettyShared
             .filter { $0.title == "Group" } ?? []
         #expect(items.count == 1)
         #expect(items.first?.submenu != nil)
+    }
+
+    /// The app menu's "Prompt templates" item, which opens the picker. The same
+    /// integration check as Settings and Group, and possible for the same reason: the
+    /// real `WiettyApp` has installed its menu before this runs. It pins that the
+    /// command landed one item and that it kept ⌘P. It cannot press it: the test has no
+    /// handle on the app's own presentation state, like the Settings item.
+    @Test func theAppMenuOffersPromptTemplatesOnCommandP() {
+        let items = NSApp.mainMenu?.items
+            .compactMap(\.submenu)
+            .flatMap(\.items)
+            .filter { $0.title == "Prompt templates" } ?? []
+        #expect(items.count == 1)
+        #expect(items.first?.keyEquivalent == "p")
+        #expect(items.first?.keyEquivalentModifierMask == .command)
+    }
+
+    /// The item sits between Settings and Group, where the issue's menu shows it. All
+    /// three are in the app menu (the one that also holds "Settings…"), so their order
+    /// there is a fact worth pinning: a later change that re-anchored one of the
+    /// commands could shuffle them without failing anything else.
+    @Test func promptTemplatesSitsBetweenSettingsAndGroup() {
+        let appMenu = NSApp.mainMenu?.items
+            .compactMap(\.submenu)
+            .first { menu in menu.items.contains { $0.title == "Settings…" } }
+        let titles = appMenu?.items.map(\.title) ?? []
+        let settings = titles.firstIndex(of: "Settings…")
+        let prompts = titles.firstIndex(of: "Prompt templates")
+        let group = titles.firstIndex(of: "Group")
+        #expect(settings != nil && prompts != nil && group != nil)
+        if let settings, let prompts, let group {
+            #expect(settings < prompts)
+            #expect(prompts < group)
+        }
     }
 
     /// The bar itself, which this change gave a `Button`, a `ForEach` and a

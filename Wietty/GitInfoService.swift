@@ -5,10 +5,12 @@ protocol GitInfoProviding: Sendable {
     func gitSync(for folder: URL) async -> GitSync?
     func pullRequestNumber(for folder: URL, branch: String) async -> Int?
     func ciChecks(for folder: URL, prNumber: Int) async -> ChecksSummary?
+    func ciChecks(for folder: URL, branch: String) async -> ChecksSummary?
     func workingTreeFingerprint(for folder: URL) async -> String?
 }
 
 extension GitInfoProviding {
+    func ciChecks(for folder: URL, branch: String) async -> ChecksSummary? { nil }
     func workingTreeFingerprint(for folder: URL) async -> String? { nil }
 }
 
@@ -88,6 +90,51 @@ struct GitInfoService: GitInfoProviding {
             ghPath, ["pr", "checks", "\(prNumber)", "--json", "bucket"], workingDirectory: folder
         )
         return GitParsing.checksSummary(fromBucketJSON: result.stdout)
+    }
+
+    /// Checks for a branch head that has no pull request: the checks GitHub ran
+    /// on the pushed commit. `gh pr checks` is PR scoped, so this sources the
+    /// same `ChecksSummary` from the commit head instead, merging its two check
+    /// systems the way the commit's status-details page does: check-runs (GitHub
+    /// Actions and GitHub-App integrations) and the legacy combined commit status
+    /// (status-based CI such as CircleCI). The two are normally reported by
+    /// different providers, so the summaries are added rather than deduped; a
+    /// provider that posted to both systems for one check would be counted
+    /// twice. The line stays hidden when both systems are empty (and, see below,
+    /// when either request fails).
+    ///
+    /// `gh` fills the `{owner}`/`{repo}` placeholders from the folder's remote,
+    /// and the branch name is the ref (GitHub resolves it to the remote head, so
+    /// the line reflects the push; an unpushed branch 4xxs and yields nil).
+    /// `per_page=100` fetches a single page rather than `--paginate` (which
+    /// concatenates the per-page objects into invalid JSON for these object
+    /// endpoints); 100 is enough that no real branch needs a second page.
+    ///
+    /// Both requests must succeed for the merged count to be trustworthy. On a
+    /// valid pushed commit both endpoints return 200 (an empty array when that
+    /// system has no checks), and an unpushed ref 404s both, so a non-zero exit
+    /// on exactly one side means a transient or auth error, not "legitimately
+    /// empty". Surfacing only the surviving side there would show a smaller
+    /// count that looks complete, so instead the line hides until the next poll.
+    /// `fetch` distinguishes the two: `nil` (outer) is an HTTP failure, `.some`
+    /// wraps a successful call whose parse is `nil` only when that system is empty.
+    func ciChecks(for folder: URL, branch: String) async -> ChecksSummary? {
+        guard let ghPath, !branch.isEmpty else { return nil }
+        func fetch(_ path: String, _ parse: (String) -> ChecksSummary?) -> ChecksSummary?? {
+            let result = runner.run(ghPath, ["api", path], workingDirectory: folder)
+            return result.status == 0 ? .some(parse(result.stdout)) : .none
+        }
+        let runs = fetch("repos/{owner}/{repo}/commits/\(branch)/check-runs?per_page=100",
+                         GitParsing.checksSummary(fromCheckRunsJSON:))
+        let statuses = fetch("repos/{owner}/{repo}/commits/\(branch)/status?per_page=100",
+                             GitParsing.checksSummary(fromCombinedStatusJSON:))
+        guard let runs, let statuses else { return nil }
+        switch (runs, statuses) {
+        case (nil, nil): return nil
+        case let (runs?, nil): return runs
+        case let (nil, statuses?): return statuses
+        case let (runs?, statuses?): return runs.adding(statuses)
+        }
     }
 
     /// A hash of the working tree's dirty state: `git status --porcelain` (which

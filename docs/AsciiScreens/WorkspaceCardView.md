@@ -22,12 +22,12 @@ default branch (`origin/develop`), the upstream row against the branch upstream
 │   (Issue #15)  (PR #16)                                             │
 │   1 failing, 1 successfull checks                                   │
 │   [phpunit] [feature-tests]                    [All]  (border=pass) │
-│   │  ● queue          (filled green = running)                      │
-│   │  ○ phpunit        (open green = passed)                         │
-│   │  ○ npm            (open red = crashed)                          │
-│   │  > Terminal 1                                                   │
-│   │  ✦ Claude Code (Python")                                        │
-│   │  ✦ old-agent                                     (local)        │
+│ ● queue             (filled green = running)                        │
+│ ○ phpunit           (open green = passed)                           │
+│ ○ npm               (open red = crashed)                            │
+│ > Terminal 1                                                        │
+│ ✦ Claude Code (Python")                                             │
+│ ✦ old-agent                                        (local)          │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -45,7 +45,14 @@ Legend:
 - `1 failing, 1 successfull checks`: `ChecksLineView`, wording from
   `ChecksSummary.summaryText`. The line color follows `ChecksSummary.status`:
   red on failures, yellow while checks are still pending (nothing failed yet),
-  green when everything completed without failures.
+  green when everything completed without failures. When the branch has an open
+  pull request the summary comes from `gh pr checks`; when it does not, it comes
+  from the branch head commit instead, so a pushed branch surfaces its CI before
+  a PR exists. The branch source merges the commit's two check systems the way
+  its status-details page does: check-runs (`gh api .../commits/<branch>/check-runs`,
+  GitHub Actions and GitHub-App integrations) and the legacy combined commit
+  status (`gh api .../commits/<branch>/status`, status-based CI such as
+  CircleCI). The line stays hidden only when there are no checks at all.
 - `[phpunit] [feature-tests] ... [All]`: `TestProcessesLineView`, the test
   buttons flowing and wrapping on the left with an `All` button pinned to the
   top right. Rendered only when the workspace defines at least one test
@@ -56,24 +63,40 @@ Legend:
   offers Run, Cancel (while running), Open log (`onOpenTestLog`, opens a
   the pane with a `ProcessLogRef` carrying `isTest: true`), and Copy ID for agent.
   See `TestProcessesLineView.md`.
-- `│`: the leading rule that groups the process and terminal rows
-  (`WorkspaceCardView.children`).
 - `●` / `○`: process status dot (`ProcessRowView`). Filled = running, open =
   not running; green = success/healthy, red = failed, gray = neutral.
 - `>`: terminal row glyph. `✦`: Claude row glyph (`TerminalRowView`).
-- Hovering a row reveals trailing action buttons (play / stop / refresh, plus a
-  log button on process rows). A plain click on a process row is a no-op, while a
-  plain click on a terminal or Claude row activates it (`onActivate`), which shows
-  it in the terminal pane beside the sidebar. `ContentView.activate` returns after
-  the store call, because selecting the session is what puts its surface in the
-  pane and nothing else has to happen.
+- Each row's leading glyph sits in a fixed width slot the size of the header
+  chevron's, so it lines up in the same left gutter as `▾` and the row's label
+  aligns with the project name and the pills, checks, and test lines above it.
+  There is no leading rule grouping the rows.
+- The `>` and `✦` glyph is green while its terminal or agent is actually running
+  (`ProjectStore.isSessionRunning`: a plain terminal while its shell is live, an
+  agent while its foreground job is the agent rather than the shell), so a live
+  session stays identifiable even when another row is the one selected in the pane.
+  An exited row dims, and a row that is neither yet (unspawned, or before the first
+  job poll) stays neutral rather than claiming to run. This is a positive signal,
+  unlike `runState`, which stays optimistically "running" when it has no job info.
+- Hovering a row reveals trailing action buttons. A running terminal or Claude row
+  shows stop (■) and restart (↻); one that is not running shows play (▶) in their
+  place. Either way a terminal or Claude row ends with a trash (🗑) button. A process
+  row is different: it never has a trash button, and instead adds a log button to its
+  start/stop/restart set (see `ProcessRowView.md`). A plain
+  click on a process row is a no-op, while a plain click on a terminal or Claude row
+  activates it (`onActivate`), which shows it in the terminal pane beside the sidebar.
+  `ContentView.activate` returns after the store call, because selecting the session
+  is what puts its surface in the pane and nothing else has to happen.
 
   A click on a row whose terminal has stopped reopens it. The service answers that
   itself, because its record of a dead terminal survives so the last screen stays
   readable; see `docs/terminal.md`.
-  Terminal buttons are wired here to `onActivate` (play), `onCloseTerminal`
-  (stop), and `onRestartTerminal` (refresh). See `ProcessRowView.md` and
-  `TerminalRowView.md`.
+  Terminal buttons are wired here to `onActivate` (play), `onStopTerminal` (stop),
+  `onRestartTerminal` (restart), and `onCloseTerminal` (trash). Stop and close are
+  deliberately distinct: stop terminates the session but leaves the row so it can be
+  reopened (`ProjectStore.stopTerminal` via the service's `stop`, which keeps the last
+  screen), while trash removes the row and its terminal (`closeTerminal`). A remote
+  card offers no stop button (`canStopTerminal` is false): the LAN protocol has only
+  restart and close. See `ProcessRowView.md` and `TerminalRowView.md`.
 - A terminal or Claude row's context menu offers "Rename" (terminal rows only),
   "Copy ID for agent", "Remove", and "Close terminal". Its items come from
   `TerminalRowMenu.items(kind:)`, a pure type, so which of them a row offers is

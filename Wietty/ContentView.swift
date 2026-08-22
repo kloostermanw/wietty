@@ -12,6 +12,11 @@ struct ContentView: View {
     /// it. See `PaneRouter`, which is where both live and why it is the app that owns
     /// them.
     let router: PaneRouter
+    /// The prompt templates the settings page edits and the popup lists. Owned by the
+    /// app, like `router`, because the popup is opened from the app menu and ⌘P.
+    let promptTemplates: PromptTemplateStore
+    /// Whether the prompt-template popup is up. Owned by the app for the same reason.
+    let promptTemplatePresentation: PromptTemplatePresentation
     @Environment(\.openWindow) private var openWindow
     @State private var mcpHost: MCPServerHost?
     @State private var remoteServer: RemoteServer?
@@ -78,6 +83,7 @@ struct ContentView: View {
                                       bells: bells,
                                       desktopNotifications: terminals.desktopNotifications,
                                       ghosttyColors: terminals.ghosttyColors,
+                                      promptTemplates: promptTemplates,
                                       selection: paneSelection)
                 }
                 .frame(maxWidth: .infinity)
@@ -223,6 +229,45 @@ struct ContentView: View {
                 onCancel: { store.declinePendingConfig() }
             )
         }
+        // The prompt-template popup, opened by ⌘P and the app menu. Re-reads the
+        // directory as it appears so a file added or edited outside the app is offered
+        // without a relaunch.
+        .sheet(isPresented: Binding(
+            get: { promptTemplatePresentation.isPresented },
+            set: { promptTemplatePresentation.isPresented = $0 }
+        )) {
+            PromptTemplatePickerView(
+                store: promptTemplates,
+                onInject: { injectTemplate($0) },
+                onCancel: { promptTemplatePresentation.isPresented = false }
+            )
+            .onAppear { promptTemplates.reload() }
+        }
+    }
+
+    /// Types a rendered template into the local terminal on screen, the write path used
+    /// by MCP `send_input` and remote keystrokes (`GhosttyService.send`). No trailing
+    /// newline: the cursor is left in the prompt so the text can be edited before it is
+    /// sent to the agent.
+    ///
+    /// Gated on the terminal actually being on screen, not merely selected: the popup is
+    /// reachable from the app menu while the pane shows settings, a remote session or a
+    /// log, and `GhosttyService.selected` still names a local terminal underneath that
+    /// cover. Typing into a terminal the user cannot see would drop the text out of
+    /// sight, so this says to bring one forward rather than writing to the hidden one.
+    private func injectTemplate(_ text: String) {
+        promptTemplatePresentation.isPresented = false
+        guard let session = paneSelection.localSession else {
+            store.lastError = "Select one of this Mac's terminals first, then pick a prompt template."
+            return
+        }
+        Task {
+            do {
+                try await terminals.service.send(sessionId: session, text: text)
+            } catch {
+                store.lastError = error.localizedDescription
+            }
+        }
     }
 
     /// What the pane shows and which row is marked, from the two pieces of state that
@@ -362,6 +407,7 @@ struct ContentView: View {
                     collapsed: project.collapsed,
                     gitInfo: store.gitInfo[project.id],
                     runState: { store.runState(for: $0) },
+                    isRunning: { store.isSessionRunning($0) },
                     needsAttention: { store.attention.contains($0.id) },
                     syncEnabled: store.isSyncEnabled(project),
                     configChanged: store.configChangedOnDisk.contains(project.id),
@@ -379,6 +425,7 @@ struct ContentView: View {
                     agents: store.agents,
                     onActivate: { activate($0, in: project) },
                     onRestartTerminal: { restartTerminal($0, in: project) },
+                    onStopTerminal: { stopTerminal($0, in: project) },
                     onRenameTerminal: { startRename($0, in: project) },
                     onRemoveTerminal: { store.removeTerminal($0, in: project) },
                     onCloseTerminal: { closeTerminal($0, in: project) },
@@ -545,6 +592,14 @@ struct ContentView: View {
         Task {
             isBusy = true
             await store.restartTerminal(sessionId: ref.sessionId)
+            isBusy = false
+        }
+    }
+
+    private func stopTerminal(_ ref: TerminalRef, in project: Project) {
+        Task {
+            isBusy = true
+            await store.stopTerminal(ref, in: project)
             isBusy = false
         }
     }

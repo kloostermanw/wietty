@@ -6,13 +6,14 @@ import Testing
 /// is a static function: the set of things a bar shows is a fact about the app, and
 /// a fact about the app belongs in CI.
 @Suite struct SettingsTabTests {
-    @Test func theFiveTabsAreOfferedInOrder() {
-        #expect(SettingsTab.allCases == [.general, .notifications, .agents, .remote, .mcp])
+    @Test func theSixTabsAreOfferedInOrder() {
+        #expect(SettingsTab.allCases
+            == [.general, .notifications, .agents, .promptTemplates, .remote, .mcp])
     }
 
     @Test func everyTabIsTitled() {
         #expect(SettingsTab.allCases.map(\.title)
-            == ["General", "Notifications", "Agents", "Remote", "MCP"])
+            == ["General", "Notifications", "Agents", "Prompts", "Remote", "MCP"])
     }
 
     /// The panel opens here. Asserted against `.general` by name rather than against

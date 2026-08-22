@@ -5,6 +5,11 @@ struct WorkspaceCardView: View {
     let collapsed: Bool
     let gitInfo: GitInfo?
     let runState: (TerminalRef) -> ClaudeRunState
+    /// Whether a row's terminal is running right now, which tints its glyph green.
+    /// A positive signal rather than `runState`'s optimism, so an unspawned row is
+    /// not painted as active. Defaulted so a caller that never marks a row can leave
+    /// it out.
+    var isRunning: (TerminalRef) -> Bool = { _ in false }
     let needsAttention: (TerminalRef) -> Bool
     let syncEnabled: Bool
     let configChanged: Bool
@@ -22,6 +27,13 @@ struct WorkspaceCardView: View {
     /// A tap on a row, which shows that terminal in the pane.
     let onActivate: (TerminalRef) -> Void
     let onRestartTerminal: (TerminalRef) -> Void
+    /// Stops a row's running session without removing the row (the stop button).
+    /// Defaulted so a caller that does not offer it, such as a remote card, can
+    /// leave it out.
+    var onStopTerminal: (TerminalRef) -> Void = { _ in }
+    /// Whether rows offer the stop button. False on a remote card, whose LAN protocol
+    /// has no stop that keeps the row.
+    var canStopTerminal: Bool = true
     let onRenameTerminal: (TerminalRef) -> Void
     let onRemoveTerminal: (TerminalRef) -> Void
     let onCloseTerminal: (TerminalRef) -> Void
@@ -75,11 +87,11 @@ struct WorkspaceCardView: View {
                         prNumber: gitInfo.prNumber,
                         prURL: gitInfo.prURL
                     )
-                    .padding(.leading, 24)
+                    .padding(.leading, 18)
                 }
                 if let checks = gitInfo?.checks {
                     ChecksLineView(summary: checks)
-                        .padding(.leading, 24)
+                        .padding(.leading, 18)
                 }
                 if !tests.isEmpty {
                     TestProcessesLineView(
@@ -89,8 +101,12 @@ struct WorkspaceCardView: View {
                         onOpenLog: onOpenTestLog,
                         onCopyId: { copyManagedProcessId($0, isTest: true) }
                     )
-                    .padding(.leading, 24)
+                    .padding(.leading, 18)
                 }
+                // No leading inset: each row carries its status glyph in a fixed 12pt
+                // slot that mirrors the header chevron, so the glyph sits in the same
+                // left gutter as `▾` and the row label lines up with the project name
+                // and the pills/checks/test lines above (all at leading 18).
                 children
             }
         }
@@ -243,47 +259,43 @@ struct WorkspaceCardView: View {
     }
 
     private var children: some View {
-        HStack(alignment: .top, spacing: 0) {
-            Rectangle()
-                .fill(.secondary.opacity(0.25))
-                .frame(width: 1)
-                .padding(.leading, 7)
-                .padding(.trailing, 12)
-            VStack(alignment: .leading, spacing: 2) {
-                if !processes.isEmpty {
-                    ForEach(processes) { process in
-                        ProcessRowView(
-                            process: process,
-                            isSelected: isProcessSelected(process.name),
-                            onStart: { onProcessStart(process) },
-                            onStop: { onProcessStop(process) },
-                            onRestart: { onProcessRestart(process) },
-                            onKill: { onProcessKill(process) },
-                            onOpenLog: { onOpenProcessLog(process) },
-                            onCopyId: { copyManagedProcessId(process, isTest: false) }
-                        )
-                    }
-                }
-                ForEach(project.terminals) { ref in
-                    TerminalRowView(
-                        label: ref.label,
-                        kind: ref.kind,
-                        isExited: ref.kind == .claude && runState(ref) == .exited,
-                        needsAttention: needsAttention(ref),
-                        isLocalOnly: isLocalOnly(ref),
-                        isSelected: isSelected(ref),
-                        onPlay: { onActivate(ref) },
-                        onStop: { onCloseTerminal(ref) },
-                        onRestart: { onRestartTerminal(ref) }
+        VStack(alignment: .leading, spacing: 2) {
+            if !processes.isEmpty {
+                ForEach(processes) { process in
+                    ProcessRowView(
+                        process: process,
+                        isSelected: isProcessSelected(process.name),
+                        onStart: { onProcessStart(process) },
+                        onStop: { onProcessStop(process) },
+                        onRestart: { onProcessRestart(process) },
+                        onKill: { onProcessKill(process) },
+                        onOpenLog: { onOpenProcessLog(process) },
+                        onCopyId: { copyManagedProcessId(process, isTest: false) }
                     )
-                    .onTapGesture { onActivate(ref) }
-                    .contextMenu {
-                        // Built from `TerminalRowMenu` rather than written out here, so
-                        // which items a row offers is asserted in CI (`TerminalRowMenuTests`)
-                        // rather than only by right clicking one, the same as the header menu.
-                        ForEach(TerminalRowMenu.items(kind: ref.kind)) { item in
-                            terminalRowMenuItem(item, ref: ref)
-                        }
+                }
+            }
+            ForEach(project.terminals) { ref in
+                TerminalRowView(
+                    label: ref.label,
+                    kind: ref.kind,
+                    isExited: ref.kind == .claude && runState(ref) == .exited,
+                    isRunning: isRunning(ref),
+                    needsAttention: needsAttention(ref),
+                    isLocalOnly: isLocalOnly(ref),
+                    isSelected: isSelected(ref),
+                    onPlay: { onActivate(ref) },
+                    onStop: { onStopTerminal(ref) },
+                    onRestart: { onRestartTerminal(ref) },
+                    onClose: { onCloseTerminal(ref) },
+                    canStop: canStopTerminal
+                )
+                .onTapGesture { onActivate(ref) }
+                .contextMenu {
+                    // Built from `TerminalRowMenu` rather than written out here, so
+                    // which items a row offers is asserted in CI (`TerminalRowMenuTests`)
+                    // rather than only by right clicking one, the same as the header menu.
+                    ForEach(TerminalRowMenu.items(kind: ref.kind)) { item in
+                        terminalRowMenuItem(item, ref: ref)
                     }
                 }
             }

@@ -93,7 +93,7 @@ import SwiftUI
         let row = TerminalRowView(label: "Terminal 1",
                                   kind: .terminal,
                                   isSelected: isSelected,
-                                  onPlay: {}, onStop: {}, onRestart: {})
+                                  onPlay: {}, onStop: {}, onRestart: {}, onClose: {})
         let host = NSHostingView(rootView: row)
         host.appearance = NSAppearance(named: .darkAqua)
         host.frame = NSRect(x: 0, y: 0, width: 200, height: 24)

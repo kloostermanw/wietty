@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// The parts of the terminal registry `PaneStreamHub` reads, behind a lock rather
 /// than the main actor.
@@ -88,6 +89,8 @@ final class SnapshotBacklog: @unchecked Sendable {
 /// output to the main actor would put a shell's output behind the UI's work.
 @MainActor
 final class GhosttyService: TerminalService {
+    private static let log = Logger(subsystem: "eu.kloosterman.wietty", category: "terminal-service")
+
     private struct Terminal {
         let pty: RawPTY
         let relay: TerminalRelay
@@ -460,6 +463,23 @@ final class GhosttyService: TerminalService {
 
     func close(sessionId: String) async throws {
         tearDown(sessionId)
+    }
+
+    /// Stops the child but keeps the row: `reap` terminates the pty and marks the
+    /// entry exited while leaving its surface and last screen in place, the same
+    /// path a command that exits on its own takes, so the row dims and can be
+    /// reopened rather than disappearing the way `close` makes it.
+    ///
+    /// Stopping an already-exited entry is a legitimate no-op (`reap` guards it), but
+    /// stopping one the service has never heard of means a store row is pointing at a
+    /// session this side has already torn down: a desync worth a log rather than a
+    /// silent return, since every throwing API treats an unknown id as an error.
+    func stop(sessionId: String) async {
+        if terminals[sessionId] == nil {
+            Self.log.error("stop: no terminal named \(sessionId, privacy: .public)")
+            return
+        }
+        reap(sessionId)
     }
 
     /// Frees what a terminal whose id `focus` has just reported gone is still

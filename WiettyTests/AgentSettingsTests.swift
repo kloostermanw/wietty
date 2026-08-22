@@ -21,6 +21,7 @@ import WiettyShared
                             bells: BellNotifier(sink: FakeNotificationSink()),
                             desktopNotifications: .fake(),
                             ghosttyColors: GhosttyColorSettings(host: FakeSurfaceHost(), file: .temporary()),
+                            promptTemplates: PromptTemplateStore(file: .temporary()),
                             tab: .agents)
     }
 
@@ -56,6 +57,6 @@ import WiettyShared
     /// space it was holding.
     @Test func theAgentsTabIsNoLongerAPlaceholder() {
         #expect(SettingsTab.agents.title == "Agents")
-        #expect(SettingsTab.allCases.count == 5)
+        #expect(SettingsTab.allCases.count == 6)
     }
 }

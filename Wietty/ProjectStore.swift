@@ -1064,6 +1064,17 @@ final class ProjectStore {
         return claudeIsRunning(jobName: job) ? .running : .exited
     }
 
+    /// Whether this row's terminal is running right now, used to tint its sidebar
+    /// glyph green. Unlike `runState`, a row with no job info yet counts as not
+    /// running rather than optimistically running, so a freshly launched app does
+    /// not paint every row as active. A plain terminal is running whenever its
+    /// shell is live (any non-empty job); an agent only while its foreground job is
+    /// the agent rather than that shell. A terminated row reports an empty job.
+    func isSessionRunning(_ ref: TerminalRef) -> Bool {
+        guard let job = jobNames[ref.id], !job.isEmpty else { return false }
+        return ref.kind == .claude ? claudeIsRunning(jobName: job) : true
+    }
+
     /// The workspace and row with this row id.
     ///
     /// By row id rather than session id because it answers a notification tap, and a
@@ -1347,6 +1358,18 @@ final class ProjectStore {
         }
     }
 
+    /// Stops a row's running session without removing the row. Unlike
+    /// `closeTerminal`, the terminal's last screen stays readable and the row remains
+    /// so it can be reopened; the child is terminated and the row dims to exited. A
+    /// no-op for a row that was never opened.
+    func stopTerminal(_ ref: TerminalRef, in project: Project) async {
+        guard let pIndex = projects.firstIndex(where: { $0.id == project.id }),
+              let tIndex = projects[pIndex].terminals.firstIndex(where: { $0.id == ref.id }) else { return }
+        let sessionId = projects[pIndex].terminals[tIndex].sessionId
+        guard !sessionId.isEmpty else { return }
+        await service.stop(sessionId: sessionId)
+    }
+
     // MARK: - MCP helpers
 
     /// Sends raw text to a known session by its session id. Throws
@@ -1491,11 +1514,17 @@ final class ProjectStore {
             info.prNumber = pr
             let or = ownerRepo[key.projectId]
             info.prURL = Self.prURL(owner: or?.0, repo: or?.1, pr: pr)
-            if pr == nil { info.checks = nil }
             gitInfo[key.projectId] = info
         case .ciChecks:
-            guard var info = gitInfo[key.projectId], let pr = info.prNumber else { return }
-            info.checks = await gitProvider.ciChecks(for: url, prNumber: pr)
+            // Sole owner of `info.checks`: a PR sources it from `gh pr checks`,
+            // and a PR-less pushed branch sources the same summary from the
+            // branch head commit's checks (nil when there is neither).
+            guard var info = gitInfo[key.projectId], !info.branch.isEmpty else { return }
+            if let pr = info.prNumber {
+                info.checks = await gitProvider.ciChecks(for: url, prNumber: pr)
+            } else {
+                info.checks = await gitProvider.ciChecks(for: url, branch: info.branch)
+            }
             gitInfo[key.projectId] = info
         case .processStatus:
             processes.refreshStatusesForWorkspace(key.projectId)

@@ -74,4 +74,56 @@ enum GitParsing {
         }
         return summary.total > 0 ? summary : nil
     }
+
+    /// Tallies `gh api repos/{owner}/{repo}/commits/{ref}/check-runs` output into
+    /// a ChecksSummary, for a branch head that has no pull request. Maps each
+    /// run's `status`/`conclusion` onto the same buckets `gh pr checks` uses: a
+    /// run that has not completed is pending; a completed run is bucketed by its
+    /// conclusion. Returns nil when the JSON is empty, invalid, or has no runs.
+    static func checksSummary(fromCheckRunsJSON json: String) -> ChecksSummary? {
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
+        struct Payload: Decodable {
+            struct Run: Decodable { let status: String?; let conclusion: String? }
+            let check_runs: [Run]
+        }
+        guard let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
+        var summary = ChecksSummary(passing: 0, failing: 0, cancelled: 0, skipped: 0, pending: 0)
+        for run in payload.check_runs {
+            guard run.status == "completed" else { summary.pending += 1; continue }
+            switch run.conclusion {
+            case "success", "neutral": summary.passing += 1
+            case "failure", "timed_out", "action_required", "startup_failure", "stale": summary.failing += 1
+            case "cancelled": summary.cancelled += 1
+            case "skipped": summary.skipped += 1
+            default: break
+            }
+        }
+        return summary.total > 0 ? summary : nil
+    }
+
+    /// Tallies `gh api repos/{owner}/{repo}/commits/{ref}/status` (the legacy
+    /// combined commit status, one entry per context) into a ChecksSummary.
+    /// This is where status-based CI such as CircleCI reports, separate from
+    /// check-runs. Returns nil when the JSON is empty, invalid, or has no
+    /// statuses.
+    static func checksSummary(fromCombinedStatusJSON json: String) -> ChecksSummary? {
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
+        struct Payload: Decodable {
+            struct Status: Decodable { let state: String? }
+            let statuses: [Status]
+        }
+        guard let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
+        var summary = ChecksSummary(passing: 0, failing: 0, cancelled: 0, skipped: 0, pending: 0)
+        for status in payload.statuses {
+            switch status.state {
+            case "success": summary.passing += 1
+            case "pending": summary.pending += 1
+            case "failure", "error": summary.failing += 1
+            default: break
+            }
+        }
+        return summary.total > 0 ? summary : nil
+    }
 }

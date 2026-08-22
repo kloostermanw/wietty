@@ -15,6 +15,9 @@ struct SettingsView: View {
     /// The terminal's colours, for the same reason: the wells write the file the live
     /// surfaces reload, so this has to be the app's own instance.
     let ghosttyColors: GhosttyColorSettings
+    /// The prompt templates, the app's own store for the same reason the others are:
+    /// the popup lists what this page edits, so both must read the one store.
+    let promptTemplates: PromptTemplateStore
 
     /// View state, not a preference. The panel is destroyed when the pane shows
     /// anything else, so this resets on the way back in, which is what a user who
@@ -35,6 +38,11 @@ struct SettingsView: View {
     @State private var newAgentArguments = ""
     // And for the group being added on the General tab.
     @State private var newGroupName = ""
+    // And for the template being added on the Prompt templates tab.
+    @State private var newTemplateName = ""
+    @State private var newTemplateSummary = ""
+    @State private var newTemplateHint = ""
+    @State private var newTemplateBody = ""
 
     /// - Parameter tab: which tab is up. Defaults to the one the panel opens on;
     ///   only the tests pass anything else, because only one tab's subtree is built
@@ -46,6 +54,7 @@ struct SettingsView: View {
          bells: BellNotifier,
          desktopNotifications: DesktopNotificationSetting,
          ghosttyColors: GhosttyColorSettings,
+         promptTemplates: PromptTemplateStore,
          tab: SettingsTab = .default) {
         _store = Bindable(wrappedValue: store)
         _remoteConnections = ObservedObject(wrappedValue: remoteConnections)
@@ -53,6 +62,7 @@ struct SettingsView: View {
         self.bells = bells
         self.desktopNotifications = desktopNotifications
         self.ghosttyColors = ghosttyColors
+        self.promptTemplates = promptTemplates
         _tab = State(initialValue: tab)
     }
 
@@ -101,6 +111,12 @@ struct SettingsView: View {
                                         desktopNotifications: desktopNotifications) }
         case .agents:
             form { agentsSection }
+        case .promptTemplates:
+            form { promptTemplatesSection }
+                // Re-read the directory on the way into the tab, the same as the
+                // terminal colours are re-read, and for the same reason: the files are
+                // the user's to add or edit outside the app while the window is open.
+                .task { promptTemplates.reload() }
         case .remote:
             form {
                 remoteAccessSection
@@ -175,6 +191,41 @@ struct SettingsView: View {
             Text("A group is one entry in the app menu's Group submenu. Pick it there to "
                  + "show only the workspaces filed under it. Assign a workspace to a group "
                  + "from \"Edit workspace…\" in its menu.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var promptTemplatesSection: some View {
+        Section("Prompt templates") {
+            if promptTemplates.templates.isEmpty {
+                Text("No prompt templates. The popup (⌘P, or \"Prompt templates\" in the "
+                     + "app menu) has nothing to offer until you add one here.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(promptTemplates.templates) { template in
+                PromptTemplateRow(template: template,
+                                  onUpdate: { promptTemplates.update($0) },
+                                  onDelete: { promptTemplates.remove(template) })
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("Name", text: $newTemplateName)
+                TextField("Description", text: $newTemplateSummary)
+                TextField("Argument hint (for example <ticket-id> <area>)", text: $newTemplateHint)
+                PromptBodyEditor(text: $newTemplateBody)
+                Button("Add Template", action: addTemplate)
+                    .disabled(!newTemplate.isValid)
+            }
+            if let error = promptTemplates.lastError {
+                // Neutral wording: `lastError` carries both write failures (a save that
+                // could not reach disk) and read failures (a file that could not be
+                // listed or read), so it must not name only one of them.
+                Label("Prompt templates: \(error)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red)
+            }
+            Text("Each template is a prompt the popup types into the focused terminal, "
+                 + "leaving the cursor there so you can edit before sending it. Use $1, "
+                 + "$2 for values the popup asks for, and $ARGUMENTS for all of them. "
+                 + "Templates are markdown files in ~/.config/wietty/prompt_templates.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -363,6 +414,25 @@ struct SettingsView: View {
         guard newGroup.isValid else { return }
         store.addGroup(newGroup)
         newGroupName = ""
+    }
+
+    /// The template the add-form describes, built rather than stored so "is this
+    /// addable" and "what gets added" cannot disagree. Its `fileURL` is a placeholder:
+    /// the store assigns the real one from a slug of the name when it saves.
+    private var newTemplate: PromptTemplate {
+        PromptTemplate(name: newTemplateName, summary: newTemplateSummary,
+                       argumentHint: newTemplateHint, body: newTemplateBody,
+                       fileURL: URL(fileURLWithPath: "/"))
+    }
+
+    private func addTemplate() {
+        guard newTemplate.isValid else { return }
+        promptTemplates.add(name: newTemplateName, summary: newTemplateSummary,
+                            argumentHint: newTemplateHint, body: newTemplateBody)
+        newTemplateName = ""
+        newTemplateSummary = ""
+        newTemplateHint = ""
+        newTemplateBody = ""
     }
 
     private func addConnection() {
@@ -825,6 +895,124 @@ struct AgentRow: View {
         guard edited.isValid else { return }
         onUpdate(edited)
         isEditing = false
+    }
+}
+
+/// One row in the "Prompt templates" section: a summary line with edit and delete
+/// buttons, or (while editing) an inline form for name, description, argument hint and
+/// the body. The multi-field sibling of `AgentRow`, with a text editor for the body.
+///
+/// Internal rather than private, and its `init` takes the editing state, for the same
+/// reason `AgentRow`'s does: the editing half is never on screen on the way into the
+/// tab, so a render of the tab alone would cover the reading half and look like it
+/// covered both.
+struct PromptTemplateRow: View {
+    let template: PromptTemplate
+    let onUpdate: (PromptTemplate) -> Void
+    let onDelete: () -> Void
+
+    @State private var isEditing: Bool
+    @State private var name: String
+    @State private var summary: String
+    @State private var hint: String
+    @State private var bodyText: String
+
+    init(template: PromptTemplate, isEditing: Bool = false,
+         onUpdate: @escaping (PromptTemplate) -> Void, onDelete: @escaping () -> Void) {
+        self.template = template
+        self.onUpdate = onUpdate
+        self.onDelete = onDelete
+        _isEditing = State(initialValue: isEditing)
+        _name = State(initialValue: template.name)
+        _summary = State(initialValue: template.summary)
+        _hint = State(initialValue: template.argumentHint)
+        _bodyText = State(initialValue: template.body)
+    }
+
+    var body: some View {
+        if isEditing {
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("Name", text: $name)
+                TextField("Description", text: $summary)
+                TextField("Argument hint", text: $hint)
+                PromptBodyEditor(text: $bodyText)
+                HStack {
+                    Button("Cancel") { cancelEditing() }
+                    Spacer()
+                    Button("Save") { save() }.disabled(!edited.isValid)
+                }
+            }
+        } else {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(template.displayName)
+                    // The description if there is one, otherwise the argument hint, so
+                    // the row says something about the template rather than repeating
+                    // its name.
+                    if let caption = summaryCaption {
+                        Text(caption).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button(action: { isEditing = true }) {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .help("Edit template")
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove template")
+            }
+        }
+    }
+
+    private var summaryCaption: String? {
+        if !template.summary.isEmpty { return template.summary }
+        if !template.argumentHint.isEmpty { return template.argumentHint }
+        return nil
+    }
+
+    /// The template the fields describe, keeping the file URL: an edit replaces the
+    /// file it came from rather than writing a second.
+    private var edited: PromptTemplate {
+        PromptTemplate(name: name, summary: summary, argumentHint: hint, body: bodyText,
+                       fileURL: template.fileURL)
+    }
+
+    private func cancelEditing() {
+        name = template.name
+        summary = template.summary
+        hint = template.argumentHint
+        bodyText = template.body
+        isEditing = false
+    }
+
+    private func save() {
+        guard edited.isValid else { return }
+        onUpdate(edited)
+        isEditing = false
+    }
+}
+
+/// The multi-line field for a template's body. A `TextEditor` rather than a
+/// `TextField`, because a prompt is paragraphs, not a line. It carries its own border
+/// and height: the grouped form's `.roundedBorder` field style reaches `TextField` and
+/// `SecureField` but not `TextEditor`, which would otherwise draw as borderless text
+/// with no sign it can be typed into.
+private struct PromptBodyEditor: View {
+    @Binding var text: String
+
+    var body: some View {
+        TextEditor(text: $text)
+            .font(.body)
+            .frame(minHeight: 90)
+            .padding(4)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color(nsColor: .separatorColor))
+            )
     }
 }
 

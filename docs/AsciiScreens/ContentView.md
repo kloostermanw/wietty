@@ -76,6 +76,13 @@ the menu and the sidebar have to share one app-owned object. Its shape is a pure
 submenu in the menu bar is checked by `SettingsPaneTests` against the running app's
 real menu.
 
+The "Prompt templates" item (`PromptTemplatesCommand`) is a third `commands` type
+owned above the window, for the same reason: it flips the app-owned
+`PromptTemplatePresentation.isPresented`, which `ContentView` binds a `.sheet` to (see
+below). It is declared between `SettingsCommand` and `GroupCommand`, so the app menu
+shows it between "Settings…" and "Group", which `SettingsPaneTests` pins against the
+running app's real menu.
+
 The menu item opens or focuses the main window before setting the override, the way a
 tapped bell notification does, since the window can be closed while the app runs and a
 panel in a pane nobody can see is not an answer. There is no `Settings` scene: settings
@@ -452,13 +459,21 @@ libghostty or the bundled helper failing to start. There is nothing to fall back
 to, so that message is all the user gets and it has to say what they can do about
 it.
 
-Alongside the four alerts, `ContentView` hosts one sheet: `ConfigApprovalView`, on
-`store.pendingConfigApproval`. It asks whether the shell lines in a workspace's
+Alongside the four alerts, `ContentView` hosts two sheets. `ConfigApprovalView`, on
+`store.pendingConfigApproval`, asks whether the shell lines in a workspace's
 `wietty.json` may run, and it can also appear on launch, since `load()` reconciles
 every workspace that has a file. A sheet rather than an alert because the commands
 are the whole question and an alert gives a list of shell lines no room. Its binding
 treats any dismissal as declining, so there is no way to run the file by accident.
 See `ConfigApprovalView.md`.
+
+The second sheet is `PromptTemplatePickerView`, on
+`promptTemplatePresentation.isPresented` (opened by ⌘P and the app menu item above).
+It reloads the templates as it appears, and its `onInject` calls
+`ContentView.injectTemplate`, which writes the rendered prompt to the focused local
+terminal through `GhosttyService.send`, with no trailing newline so the cursor is left
+in the prompt. With no local terminal selected it reports through `store.lastError`
+rather than dropping the text. See `PromptTemplatePickerView.md`.
 
 The `.task` also calls `store.clearDeadSessions()`, before the monitor starts. It
 never sets `store.lastError`: a PTY the app spawned cannot survive the app

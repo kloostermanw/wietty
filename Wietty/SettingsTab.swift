@@ -17,18 +17,23 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case notifications
     case agents
+    case promptTemplates
     case remote
     case mcp
 
     var id: String { rawValue }
 
     /// The segment's label. Not derived from `rawValue`: "MCP" is an initialism
-    /// that no capitalisation rule produces from `mcp`.
+    /// that no capitalisation rule produces from `mcp`. Kept terse ("Prompts", not
+    /// "Prompt templates") because the six segments share the pane's floor width, and
+    /// a long label there would push that floor, and the whole window's minimum, wider.
+    /// The section header and the app menu spell it out in full.
     var title: String {
         switch self {
         case .general: return "General"
         case .notifications: return "Notifications"
         case .agents: return "Agents"
+        case .promptTemplates: return "Prompts"
         case .remote: return "Remote"
         case .mcp: return "MCP"
         }

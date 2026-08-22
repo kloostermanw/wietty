@@ -68,6 +68,10 @@ The file is plaintext, so no secret is ever written to it.
 - **Runtime and UI state** stays in `UserDefaults`: sidebar section collapse
   (`SectionCollapseState`), update check state (`UpdateService`), and remote
   connection metadata (`wietty.remote.connections`).
+- **Prompt templates** are not in this file. Each is its own markdown file under
+  `~/.config/wietty/prompt_templates/`, because a template body is multi-line and this
+  file holds one value per line. `PromptTemplateFile` reads and writes that directory
+  and `PromptTemplateStore` owns the list. See prompt-templates.md.
 - **`desktop-notifications`** already lives in `ghostty.cfg`, written by
   `GhosttyOverrideFile`, and is unchanged (see notifications.md).
 - **The terminal's colours** (`background`, `foreground`, `cursor-color`,
