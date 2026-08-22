@@ -91,6 +91,9 @@ struct RemoteSectionView: View {
             isSelected: isSelected,
             onActivate: { onAttach($0) },
             onRestartTerminal: { store.restart(sessionId: $0.sessionId) },
+            // No stop button: the LAN protocol has no stop that keeps the row, only
+            // close (the trash button, wired below) and restart.
+            canStopTerminal: false,
             onRenameTerminal: { _ in },
             onRemoveTerminal: { _ in },
             onCloseTerminal: { store.close(sessionId: $0.sessionId) },

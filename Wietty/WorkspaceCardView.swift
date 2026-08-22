@@ -27,6 +27,13 @@ struct WorkspaceCardView: View {
     /// A tap on a row, which shows that terminal in the pane.
     let onActivate: (TerminalRef) -> Void
     let onRestartTerminal: (TerminalRef) -> Void
+    /// Stops a row's running session without removing the row (the stop button).
+    /// Defaulted so a caller that does not offer it, such as a remote card, can
+    /// leave it out.
+    var onStopTerminal: (TerminalRef) -> Void = { _ in }
+    /// Whether rows offer the stop button. False on a remote card, whose LAN protocol
+    /// has no stop that keeps the row.
+    var canStopTerminal: Bool = true
     let onRenameTerminal: (TerminalRef) -> Void
     let onRemoveTerminal: (TerminalRef) -> Void
     let onCloseTerminal: (TerminalRef) -> Void
@@ -277,8 +284,10 @@ struct WorkspaceCardView: View {
                     isLocalOnly: isLocalOnly(ref),
                     isSelected: isSelected(ref),
                     onPlay: { onActivate(ref) },
-                    onStop: { onCloseTerminal(ref) },
-                    onRestart: { onRestartTerminal(ref) }
+                    onStop: { onStopTerminal(ref) },
+                    onRestart: { onRestartTerminal(ref) },
+                    onClose: { onCloseTerminal(ref) },
+                    canStop: canStopTerminal
                 )
                 .onTapGesture { onActivate(ref) }
                 .contextMenu {

@@ -14,8 +14,17 @@ struct TerminalRowView: View {
     /// in the window is ever marked, because the pane holds one terminal.
     var isSelected: Bool = false
     let onPlay: () -> Void
+    /// Stops the running session without removing the row (the stop button).
     let onStop: () -> Void
     let onRestart: () -> Void
+    /// Closes and removes the row (the trash button). Distinct from `onStop`, which
+    /// leaves the row in place. Defaulted so a caller that never wires it can leave
+    /// it out.
+    var onClose: () -> Void = {}
+    /// Whether stopping a session in place is available, which offers the stop button
+    /// on a live row. False where only teardown exists, such as a remote card whose
+    /// LAN protocol has no stop that keeps the row.
+    var canStop: Bool = true
 
     @State private var isHovered = false
     @Environment(\.sidebarColors) private var sidebarColors
@@ -60,15 +69,19 @@ struct TerminalRowView: View {
         .onHover { isHovered = $0 }
     }
 
-    // An exited row shows a single play button; a live one shows stop + restart.
+    // A live row can be stopped or restarted; an exited one reopened. Either way it
+    // can be closed, which removes the row, so the trash button is always offered.
     @ViewBuilder private var actionButtons: some View {
         HStack(spacing: 8) {
             if !isExited {
-                RowActionButton(systemName: "stop.fill", help: "Close terminal", action: onStop)
+                if canStop {
+                    RowActionButton(systemName: "stop.fill", help: "Stop", action: onStop)
+                }
                 RowActionButton(systemName: "arrow.clockwise", help: "Restart", action: onRestart)
             } else {
                 RowActionButton(systemName: "play.fill", help: "Activate", action: onPlay)
             }
+            RowActionButton(systemName: "trash", help: "Close terminal", action: onClose)
         }
     }
 
