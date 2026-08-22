@@ -111,11 +111,71 @@ struct FakeCommandRunner: CommandRunning {
                     stderr: "", status: 0
                 )
             }
+            // A branch with only check-runs still returns 200 (empty) from the
+            // legacy status endpoint; that empty side must not hide the line.
+            if args.contains("api"), args.contains(where: { $0.contains("/status?") }) {
+                return CommandResult(stdout: #"{"state":"pending","statuses":[]}"#, stderr: "", status: 0)
+            }
             return CommandResult(stdout: "", stderr: "", status: 1)
         }
         let checks = await svc.ciChecks(for: URL(fileURLWithPath: "/tmp/x"), branch: "feature/issue-30")
         #expect(checks?.passing == 1)
         #expect(checks?.pending == 1)
+    }
+
+    @Test func ciChecksForBranchUsesLegacyStatusesWhenNoCheckRuns() async {
+        // The CircleCI-only case: no check-runs (200 with an empty array), all CI
+        // reported through the legacy combined-status endpoint. The summary must
+        // come solely from the statuses.
+        let svc = service { _, args in
+            if args.contains("api"), args.contains(where: { $0.contains("/check-runs") }) {
+                return CommandResult(stdout: #"{"total_count":0,"check_runs":[]}"#, stderr: "", status: 0)
+            }
+            if args.contains("api"), args.contains(where: { $0.contains("/status?") }) {
+                return CommandResult(
+                    stdout: #"{"state":"failure","statuses":[{"context":"ci/circleci: build","state":"success"},{"context":"ci/circleci: test","state":"failure"}]}"#,
+                    stderr: "", status: 0
+                )
+            }
+            return CommandResult(stdout: "", stderr: "", status: 1)
+        }
+        let checks = await svc.ciChecks(for: URL(fileURLWithPath: "/tmp/x"), branch: "feature/issue-30")
+        #expect(checks?.passing == 1)
+        #expect(checks?.failing == 1)
+        #expect(checks?.total == 2)
+    }
+
+    @Test func ciChecksForBranchNilWhenBothEndpointsFail() async {
+        // An unpushed branch 4xxs both endpoints, so every `gh api` call exits
+        // non-zero and the line hides.
+        let svc = service { _, _ in CommandResult(stdout: "", stderr: "Not Found", status: 1) }
+        let checks = await svc.ciChecks(for: URL(fileURLWithPath: "/tmp/x"), branch: "feature/issue-30")
+        #expect(checks == nil)
+    }
+
+    @Test func ciChecksForBranchHidesLineWhenOneEndpointFailsTransiently() async {
+        // If check-runs succeeds but the status endpoint fails (a transient/auth
+        // error, not a 404, since a valid commit 200s both), returning only the
+        // surviving side would show a smaller count that looks complete. The line
+        // hides instead until the next poll.
+        let svc = service { _, args in
+            if args.contains("api"), args.contains(where: { $0.contains("/check-runs") }) {
+                return CommandResult(
+                    stdout: #"{"total_count":1,"check_runs":[{"status":"completed","conclusion":"success"}]}"#,
+                    stderr: "", status: 0
+                )
+            }
+            return CommandResult(stdout: "", stderr: "500 Internal Server Error", status: 1)
+        }
+        let checks = await svc.ciChecks(for: URL(fileURLWithPath: "/tmp/x"), branch: "feature/issue-30")
+        #expect(checks == nil)
+    }
+
+    @Test func ciChecksForBranchNilForEmptyBranch() async {
+        // The empty-branch guard returns nil before any `gh api` call.
+        let svc = service { _, _ in CommandResult(stdout: "", stderr: "", status: 0) }
+        let checks = await svc.ciChecks(for: URL(fileURLWithPath: "/tmp/x"), branch: "")
+        #expect(checks == nil)
     }
 
     @Test func ciChecksForBranchMergesCheckRunsWithLegacyStatuses() async {
