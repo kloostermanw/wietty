@@ -18,9 +18,9 @@ struct TerminalRowView: View {
     let onStop: () -> Void
     let onRestart: () -> Void
     /// Closes and removes the row (the trash button). Distinct from `onStop`, which
-    /// leaves the row in place. Defaulted so a caller that never wires it can leave
-    /// it out.
-    var onClose: () -> Void = {}
+    /// leaves the row in place. Required, not defaulted: the trash button is always
+    /// rendered, so a caller that forgot to wire it would ship an inert delete.
+    let onClose: () -> Void
     /// Whether stopping a session in place is available, which offers the stop button
     /// on a live row. False where only teardown exists, such as a remote card whose
     /// LAN protocol has no stop that keeps the row.
@@ -32,7 +32,6 @@ struct TerminalRowView: View {
     private var iconName: String {
         kind == .claude ? "sparkle" : "terminal"
     }
-
 
     var body: some View {
         HStack(spacing: 6) {
@@ -69,11 +68,14 @@ struct TerminalRowView: View {
         .onHover { isHovered = $0 }
     }
 
-    // A live row can be stopped or restarted; an exited one reopened. Either way it
-    // can be closed, which removes the row, so the trash button is always offered.
+    // A running row can be stopped or restarted; one that is not running is reopened
+    // with play. Gated on `isRunning`, the same positive signal the glyph uses, rather
+    // than `!isExited`: a plain terminal never reports exited, so keying off it left a
+    // stopped terminal showing a dead stop button and no way to reopen. Either way the
+    // row can be closed, which removes it, so the trash button is always offered.
     @ViewBuilder private var actionButtons: some View {
         HStack(spacing: 8) {
-            if !isExited {
+            if isRunning {
                 if canStop {
                     RowActionButton(systemName: "stop.fill", help: "Stop", action: onStop)
                 }

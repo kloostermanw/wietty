@@ -77,9 +77,11 @@ Legend:
   An exited row dims, and a row that is neither yet (unspawned, or before the first
   job poll) stays neutral rather than claiming to run. This is a positive signal,
   unlike `runState`, which stays optimistically "running" when it has no job info.
-- Hovering a row reveals trailing action buttons. A live terminal or Claude row
-  shows stop (■) and restart (↻); an exited one shows play (▶) in their place. Either
-  way it ends with a trash (🗑) button, and a process row adds a log button. A plain
+- Hovering a row reveals trailing action buttons. A running terminal or Claude row
+  shows stop (■) and restart (↻); one that is not running shows play (▶) in their
+  place. Either way a terminal or Claude row ends with a trash (🗑) button. A process
+  row is different: it never has a trash button, and instead adds a log button to its
+  start/stop/restart set (see `ProcessRowView.md`). A plain
   click on a process row is a no-op, while a plain click on a terminal or Claude row
   activates it (`onActivate`), which shows it in the terminal pane beside the sidebar.
   `ContentView.activate` returns after the store call, because selecting the session

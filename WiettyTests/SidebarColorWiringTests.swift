@@ -32,7 +32,7 @@ import SwiftUI
 @Suite struct ActiveRowColorRenderTests {
     private func backgroundPixel(override: Color) throws -> NSColor {
         let row = TerminalRowView(label: "Terminal 1", kind: .terminal, isSelected: true,
-                                  onPlay: {}, onStop: {}, onRestart: {})
+                                  onPlay: {}, onStop: {}, onRestart: {}, onClose: {})
             .environment(\.sidebarColors, SidebarColors(activeTerminalRowBackground: override))
         let host = NSHostingView(rootView: row)
         host.appearance = NSAppearance(named: .darkAqua)
