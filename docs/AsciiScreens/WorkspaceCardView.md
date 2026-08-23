@@ -42,7 +42,7 @@ Legend:
 - `(Issue #N)` / `(PR #N)`: filled pills from `IssuePRLineView`. When no issue is
   linked to the branch, the issue pill is replaced by the branch name rendered as
   plain, secondary text (no pill), so the line always shows some branch context. The
-  pill fill and text default to a faint accent wash and the accent colour, and both
+  pill fill defaults to a faint accent wash and the text to a fixed `#5fdeff`, and both
   are configurable in Settings > Colors (the Issue/PR pill pair, see SettingsView.md).
 - `1 failing, 1 successfull checks`: `ChecksLineView`, wording from
   `ChecksSummary.summaryText`. The line color follows `ChecksSummary.status`:

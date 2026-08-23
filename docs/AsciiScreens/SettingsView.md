@@ -171,8 +171,8 @@ active terminal row pair colour the selected row, the row background replacing t
 built-in `#292b34` (`SidebarRowBackground.fill(activeRowBackground:)`), and the
 Issue/PR pill pair colour the pills a workspace card draws for its branch's issue and
 PR (`IssuePRLineView`, resolved through `IssuePRPillColors`). An unset pill background
-keeps the faint accent wash and an unset foreground keeps the accent text, so an
-untouched install draws the pills exactly as before.
+keeps the faint accent wash and an unset foreground keeps the fixed `#5fdeff` text, so
+an untouched install draws the pills exactly as before.
 
 The second section is the terminal's own colours, driven by `GhosttyColorSettings`
 and written to `~/.config/wietty/ghostty.cfg` (`GhosttyOverrideFile`), the same file
