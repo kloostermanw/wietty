@@ -32,6 +32,8 @@ Scalars (one key each):
 | `color-active-workspace-foreground`     | the active workspace card foreground |
 | `color-active-terminal-row-background`  | the selected terminal row background |
 | `color-active-terminal-row-foreground`  | the selected terminal row foreground |
+| `color-pill-background`  | the Issue/PR pill background |
+| `color-pill-foreground`  | the Issue/PR pill foreground |
 
 Each colour key is present only when that colour is set. An absent key means "leave
 the default", which is what an untouched install has and what deleting the line
