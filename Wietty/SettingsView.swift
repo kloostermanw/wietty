@@ -331,6 +331,10 @@ struct SettingsView: View {
                             color: $store.sidebarColors.activeTerminalRowBackground)
             ColorSettingRow("Active terminal row foreground", default: Self.defaultForeground,
                             color: $store.sidebarColors.activeTerminalRowForeground)
+            ColorSettingRow("Issue/PR pill background", default: Self.defaultPillBackground,
+                            color: $store.sidebarColors.pillBackground)
+            ColorSettingRow("Issue/PR pill foreground", default: Self.defaultPillForeground,
+                            color: $store.sidebarColors.pillForeground)
             Text("Colours for Wietty's own sidebar. A colour left unset keeps the system default; the reset button beside a colour clears it back to that.")
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -383,6 +387,10 @@ struct SettingsView: View {
     private static let defaultForeground = Color(nsColor: .labelColor)
     private static let defaultActiveBackground = Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
     private static let defaultActiveRowBackground = Color(nsColor: SidebarRowBackground.selectedFill)
+    // The pill swatches preview what an unset pill draws today: the faint accent wash
+    // behind an Issue/PR pill, and the accent the pill's text takes from `.tint`.
+    private static let defaultPillBackground = IssuePRPillColors.fill(override: nil)
+    private static let defaultPillForeground = IssuePRPillColors.text(override: nil)
 
     private var newConnectionIsValid: Bool {
         !newName.trimmingCharacters(in: .whitespaces).isEmpty

@@ -30,6 +30,8 @@ enum SettingsKeys {
     static let colorActiveWorkspaceForeground = "color-active-workspace-foreground"
     static let colorActiveTerminalRowBackground = "color-active-terminal-row-background"
     static let colorActiveTerminalRowForeground = "color-active-terminal-row-foreground"
+    static let colorPillBackground = "color-pill-background"
+    static let colorPillForeground = "color-pill-foreground"
 
     static let agentPrefix = "agent."
     static let workspacePrefix = "workspace."
@@ -45,6 +47,7 @@ enum SettingsKeys {
         colorBackground, colorForeground,
         colorActiveWorkspaceBackground, colorActiveWorkspaceForeground,
         colorActiveTerminalRowBackground, colorActiveTerminalRowForeground,
+        colorPillBackground, colorPillForeground,
     ]
 
     /// The list prefixes, so a list that shrank loses its trailing entries.
