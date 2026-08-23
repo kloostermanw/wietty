@@ -17,19 +17,25 @@ struct SidebarColors: Equatable {
     var activeWorkspaceForeground: Color?
     var activeTerminalRowBackground: Color?
     var activeTerminalRowForeground: Color?
+    var pillBackground: Color?
+    var pillForeground: Color?
 
     init(background: Color? = nil,
          foreground: Color? = nil,
          activeWorkspaceBackground: Color? = nil,
          activeWorkspaceForeground: Color? = nil,
          activeTerminalRowBackground: Color? = nil,
-         activeTerminalRowForeground: Color? = nil) {
+         activeTerminalRowForeground: Color? = nil,
+         pillBackground: Color? = nil,
+         pillForeground: Color? = nil) {
         self.background = background
         self.foreground = foreground
         self.activeWorkspaceBackground = activeWorkspaceBackground
         self.activeWorkspaceForeground = activeWorkspaceForeground
         self.activeTerminalRowBackground = activeTerminalRowBackground
         self.activeTerminalRowForeground = activeTerminalRowForeground
+        self.pillBackground = pillBackground
+        self.pillForeground = pillForeground
     }
 
     /// Reads whichever of the six keys the file carries; a key it does not carry, or
@@ -41,6 +47,8 @@ struct SidebarColors: Equatable {
         activeWorkspaceForeground = cfg[SettingsKeys.colorActiveWorkspaceForeground].flatMap(ColorHex.color(from:))
         activeTerminalRowBackground = cfg[SettingsKeys.colorActiveTerminalRowBackground].flatMap(ColorHex.color(from:))
         activeTerminalRowForeground = cfg[SettingsKeys.colorActiveTerminalRowForeground].flatMap(ColorHex.color(from:))
+        pillBackground = cfg[SettingsKeys.colorPillBackground].flatMap(ColorHex.color(from:))
+        pillForeground = cfg[SettingsKeys.colorPillForeground].flatMap(ColorHex.color(from:))
     }
 
     /// One `(key, hex)` pair per colour that is set. A nil colour is omitted, so the
@@ -57,6 +65,8 @@ struct SidebarColors: Equatable {
         add(SettingsKeys.colorActiveWorkspaceForeground, activeWorkspaceForeground)
         add(SettingsKeys.colorActiveTerminalRowBackground, activeTerminalRowBackground)
         add(SettingsKeys.colorActiveTerminalRowForeground, activeTerminalRowForeground)
+        add(SettingsKeys.colorPillBackground, pillBackground)
+        add(SettingsKeys.colorPillForeground, pillForeground)
         return out
     }
 }
