@@ -17,8 +17,9 @@ import SwiftUI
         #expect(IssuePRPillColors.fill(override: override) == override)
     }
 
-    @Test func anUnsetForegroundKeepsTheTintDefault() {
-        #expect(IssuePRPillColors.text(override: nil) == Color.accentColor)
+    @Test func anUnsetForegroundKeepsTheFixedDefault() throws {
+        let expected = try #require(ColorHex.color(from: "#5fdeff"))
+        #expect(IssuePRPillColors.text(override: nil) == expected)
     }
 
     @Test func aSetForegroundIsUsedAsIs() throws {

@@ -45,15 +45,18 @@ struct IssuePRLineView: View {
 }
 
 /// The colours the Issue/PR pills draw, resolved from the optional overrides in
-/// `SidebarColors`. Nil keeps the accent-derived default an untouched install has (the
-/// fill is a faint accent wash, the text the accent itself); a set colour is used
-/// as-is. Pure so the fallback and the override are both asserted in CI.
+/// `SidebarColors`. Nil keeps the default an untouched install has (the fill is a
+/// faint accent wash, the text the fixed `#5fdeff`); a set colour is used as-is. Pure
+/// so the fallback and the override are both asserted in CI.
 enum IssuePRPillColors {
+    /// The default Issue/PR pill text colour, used when no override is set.
+    static let defaultText = ColorHex.color(from: "#5fdeff") ?? .accentColor
+
     static func fill(override: Color?) -> Color {
         override ?? Color.accentColor.opacity(0.22)
     }
 
     static func text(override: Color?) -> Color {
-        override ?? Color.accentColor
+        override ?? defaultText
     }
 }
