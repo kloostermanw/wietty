@@ -180,7 +180,7 @@ whatever the name currently is: the `slot` under `fixed_naming`, the live title
 otherwise, or a name set with a manual rename. An empty prefix adds nothing.
 
 ```json
-{ "slot": "Claude 5", "prefix": "[default]" }
+{ "slot": "Claude 5", "type": "claude", "prefix": "[default]" }
 ```
 
 shows `[default] Claude 5`, and the prefix stays put while the rest of the name

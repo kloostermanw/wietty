@@ -57,7 +57,9 @@ Lists are flattened into indexed keys:
   `workspace.0.terminal-seq`, `workspace.0.claude-seq`, and `workspace.0.window-id`
   (present only when set). Each workspace's rows follow as
   `workspace.0.terminal.0.label`, `.kind`, `.slot`, `.command` (present only when the
-  row carries one), and `.session-id` (present only when non-empty).
+  row carries one), `.session-id` (present only when non-empty), `.fixed-naming`
+  (present only when the row pins its name to its slot) and `.prefix` (present only
+  when set). The last two are agent row naming, described in wietty-json.md.
 - **Approved commands** per workspace: `approved.<workspace-uuid>.0`,
   `approved.<workspace-uuid>.1`, and so on, one per line the user agreed to run.
 
