@@ -12,7 +12,7 @@ enum RemoteSessionList {
                 "sessions": project.terminals.map { ref in
                     [
                         "id": ref.sessionId,
-                        "label": ref.label,
+                        "label": ref.displayName,
                         "kind": ref.kind.rawValue,
                     ] as [String: Any]
                 },

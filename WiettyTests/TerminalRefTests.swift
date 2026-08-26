@@ -46,4 +46,65 @@ import Foundation
         let decoded = try JSONDecoder().decode(TerminalRef.self, from: data)
         #expect(decoded.slot == "claude1")
     }
+
+    // MARK: Naming (issue #37)
+
+    /// A prefix sits in front of the label with one space; the label already holds
+    /// whichever name won (slot, reported title, or manual rename).
+    @Test func displayNamePrependsPrefix() {
+        let ref = TerminalRef(label: "Claude 5", sessionId: "s", kind: .claude, slot: "Claude 5",
+                              prefix: "[default]")
+        #expect(ref.displayName == "[default] Claude 5")
+    }
+
+    /// An empty prefix means no prefix and, with it, no stray leading space.
+    @Test func displayNameWithEmptyPrefixIsJustTheLabel() {
+        let ref = TerminalRef(label: "Claude 5", sessionId: "s", kind: .claude, slot: "Claude 5",
+                              prefix: "")
+        #expect(ref.displayName == "Claude 5")
+    }
+
+    /// A whitespace only prefix reads as none, and a trailing space in the prefix
+    /// does not double the separator.
+    @Test func displayNameTrimsThePrefix() {
+        #expect(TerminalRef(label: "Claude 5", sessionId: "s", prefix: "   ").displayName == "Claude 5")
+        #expect(TerminalRef(label: "Claude 5", sessionId: "s", prefix: "[default] ").displayName
+                == "[default] Claude 5")
+    }
+
+    /// The prefix follows the label, so a reported title (which lands in `label`)
+    /// still shows the prefix in front of it.
+    @Test func displayNamePrefixesAReportedTitle() {
+        let ref = TerminalRef(label: "running tests", sessionId: "s", kind: .claude,
+                              slot: "Claude 5", prefix: "[default]")
+        #expect(ref.displayName == "[default] running tests")
+    }
+
+    /// Under `fixedNaming` the shown name is the slot, not a `label` that a reported
+    /// title already moved. This is what makes turning the flag on take effect at once
+    /// rather than only when the row is reopened. See issue #37.
+    @Test func displayNameUsesSlotWhenFixedEvenIfLabelDiverged() {
+        let ref = TerminalRef(label: "running tests", sessionId: "s", kind: .claude,
+                              slot: "Claude 5", fixedNaming: true, prefix: "[default]")
+        #expect(ref.displayName == "[default] Claude 5")
+    }
+
+    /// A row stored before the naming fields decodes with the defaults: dynamic
+    /// naming, no prefix.
+    @Test func decodesLegacyRefWithoutNamingFields() throws {
+        let json = Data("""
+        {"id":"\(UUID().uuidString)","label":"Claude 1","sessionId":"sess-A","kind":"claude"}
+        """.utf8)
+        let ref = try JSONDecoder().decode(TerminalRef.self, from: json)
+        #expect(ref.fixedNaming == false)
+        #expect(ref.prefix == "")
+    }
+
+    @Test func roundTripsNamingFields() throws {
+        let ref = TerminalRef(label: "Claude 5", sessionId: "s", kind: .claude, slot: "Claude 5",
+                              fixedNaming: true, prefix: "[default]")
+        let decoded = try JSONDecoder().decode(TerminalRef.self, from: JSONEncoder().encode(ref))
+        #expect(decoded.fixedNaming == true)
+        #expect(decoded.prefix == "[default]")
+    }
 }

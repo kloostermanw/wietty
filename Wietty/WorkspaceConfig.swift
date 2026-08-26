@@ -59,6 +59,47 @@ struct WorkspaceConfig: Codable, Equatable {
     struct Agent: Codable, Equatable {
         var slot: String
         var type: String
+        /// When true, the row always shows `slot` and ignores the title the agent
+        /// reports, rather than being relabelled by it. See issue #37.
+        var fixedNaming: Bool
+        /// Always prepended to the displayed name, with a single space, whatever the
+        /// name is (slot, reported title, or manual rename). Empty means no prefix.
+        var prefix: String
+
+        init(slot: String, type: String, fixedNaming: Bool = false, prefix: String = "") {
+            self.slot = slot
+            self.type = type
+            self.fixedNaming = fixedNaming
+            self.prefix = prefix
+        }
+
+        /// `fixedNaming` maps to the file's `fixed_naming`; the rest keep their names.
+        private enum CodingKeys: String, CodingKey {
+            case slot, type, prefix
+            case fixedNaming = "fixed_naming"
+        }
+
+        /// `slot` and `type` stay required: an agent entry missing either is a
+        /// malformed list the loud parse failure is meant to catch. The two new
+        /// fields are optional and default, so a file written before them still reads.
+        init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            slot = try c.decode(String.self, forKey: .slot)
+            type = try c.decode(String.self, forKey: .type)
+            fixedNaming = try c.decodeIfPresent(Bool.self, forKey: .fixedNaming) ?? false
+            prefix = try c.decodeIfPresent(String.self, forKey: .prefix) ?? ""
+        }
+
+        /// Defaults are omitted, so a file gains `fixed_naming`/`prefix` only when set
+        /// rather than every agent sprouting `"fixed_naming": false, "prefix": ""` on
+        /// the next rewrite.
+        func encode(to encoder: any Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(slot, forKey: .slot)
+            try c.encode(type, forKey: .type)
+            if fixedNaming { try c.encode(fixedNaming, forKey: .fixedNaming) }
+            if !prefix.isEmpty { try c.encode(prefix, forKey: .prefix) }
+        }
     }
 
     var name: String?

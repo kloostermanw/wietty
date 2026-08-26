@@ -30,7 +30,7 @@ struct WorkspaceSerializer {
         var members: [String: JSONValue] = [
             "id": .string(ref.id.uuidString),
             "session_id": .string(ref.sessionId),
-            "label": .string(ref.label),
+            "label": .string(ref.displayName),
             "kind": .string(ref.kind.rawValue),
             "run_state": .string(runState == .running ? "running" : "exited"),
             "needs_attention": .bool(needsAttention),

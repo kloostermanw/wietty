@@ -14,6 +14,11 @@ hovering additionally lightens the row background and reveals action buttons on
 the trailing edge (after any `🔔`). The right-click context menu (also applied by
 the parent) is unchanged.
 
+The `label` this view draws is composed by the parent: it passes `ref.displayName`,
+which prepends an agent's configured `prefix` to the name and, under `fixed_naming`,
+holds the pinned `slot` rather than a reported title. Those are `wietty.json` agent
+fields (see `docs/wietty-json.md`); this view just renders the finished string.
+
 ```
 > Terminal 1                 [◼] [⟳] [🗑]   terminal, running (hovered)
 ✦ Claude Code                              claude, running
