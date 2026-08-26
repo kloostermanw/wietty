@@ -1009,7 +1009,11 @@ final class ProjectStore {
             // workspace name the instant the terminal opens. The price is that an
             // agent that really did report its workspace's name is ignored, which is
             // indistinguishable from the badge and much rarer.
+            // A `fixed_naming` agent row keeps its slot and ignores the reported
+            // title, which is the whole point of the flag: the row is pinned to its
+            // configured name rather than following what the agent renames its tab to.
             if projects[p].terminals[t].kind == .claude, !name.isEmpty,
+               !projects[p].terminals[t].fixedNaming,
                name != projects[p].name,
                projects[p].terminals[t].label != name {
                 projects[p].terminals[t].label = name
@@ -1817,7 +1821,9 @@ final class ProjectStore {
                     sessionId: cfg["\(tk).session-id"] ?? "",
                     kind: TerminalKind(rawValue: cfg["\(tk).kind"] ?? "") ?? .terminal,
                     slot: cfg["\(tk).slot"] ?? label,
-                    command: cfg["\(tk).command"]
+                    command: cfg["\(tk).command"],
+                    fixedNaming: cfg["\(tk).fixed-naming"] == "true",
+                    prefix: cfg["\(tk).prefix"] ?? ""
                 ))
                 t += 1
             }
@@ -1939,6 +1945,10 @@ final class ProjectStore {
             // non-prefixed id from another substrate is meant to survive.
             if !ref.sessionId.isEmpty { pairs.append(("\(tk).session-id", ref.sessionId)) }
             if let command = ref.command { pairs.append(("\(tk).command", command)) }
+            // Written only when set, the way `command` is, so a plain row stays two
+            // lines rather than sprouting `fixed-naming = false` and an empty prefix.
+            if ref.fixedNaming { pairs.append(("\(tk).fixed-naming", "true")) }
+            if !ref.prefix.isEmpty { pairs.append(("\(tk).prefix", ref.prefix)) }
         }
         return pairs
     }

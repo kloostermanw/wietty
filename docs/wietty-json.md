@@ -139,14 +139,17 @@ An ordered list of agent rows. Each entry is an object:
 ```json
 "agents": [
   { "slot": "Design the sync feature", "type": "claude" },
-  { "slot": "codex1", "type": "codex --model o3" }
+  { "slot": "codex1", "type": "codex --model o3" },
+  { "slot": "Claude 5", "type": "claude", "prefix": "[default]", "fixed_naming": false }
 ]
 ```
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `slot` | string | The row's stable label and identity. |
-| `type` | string | What the row runs: the line typed into its shell. `claude` is the default and what every file written before agents were configurable says. |
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `slot` | string | required | The row's stable label and identity. |
+| `type` | string | required | What the row runs: the line typed into its shell. `claude` is the default and what every file written before agents were configurable says. |
+| `fixed_naming` | bool | `false` | When `true`, the row always shows `slot` and ignores the title the agent reports. When `false` (the default), the row keeps the dynamic behavior below. Agent rows only. |
+| `prefix` | string | `""` | Always prepended to the displayed name, with a single space, whatever the name is. Empty means no prefix. Agent rows only. |
 
 A row started from Settings › Agents is written down with the line that agent
 runs, so a workspace that syncs its file keeps a Codex row a Codex row. A `type` of
@@ -160,6 +163,30 @@ applying that to a running Codex row would leave it typing `claude` into Codex.
 Close the row (or restart it after the edit) to pick up a new `type`. The row's
 label is not re-derived either, so a row named after the agent that opened it keeps
 that name.
+
+#### Naming an agent row: `fixed_naming` and `prefix`
+
+By default an agent row is relabelled as it works: the moment the agent reports a
+terminal title, the row's displayed name is replaced by that title. Two optional
+fields control the name. Both apply to agent rows only; terminal rows are unaffected.
+
+`fixed_naming` (default `false`) decides whether that dynamic relabelling happens.
+Left `false`, the row keeps the default behavior and follows the reported title.
+Set `true`, the row always shows its `slot` and ignores the reported title, so it
+stays pinned to its configured name.
+
+`prefix` (default `""`) is prepended to the displayed name, with a single space,
+whatever the name currently is: the `slot` under `fixed_naming`, the live title
+otherwise, or a name set with a manual rename. An empty prefix adds nothing.
+
+```json
+{ "slot": "Claude 5", "prefix": "[default]" }
+```
+
+shows `[default] Claude 5`, and the prefix stays put while the rest of the name
+changes. Unlike `type`, both fields take effect at once, even on a running row,
+because a name is a display preference rather than something the session was
+started with.
 
 ### `terminals`
 

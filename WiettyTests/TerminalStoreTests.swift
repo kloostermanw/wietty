@@ -543,6 +543,30 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(store.projects[0].terminals[0].label == "refactor parser")
     }
 
+    /// The counterpart to `titleEventUpdatesClaudeLabel`: a `fixed_naming` row ignores
+    /// the reported title and keeps its slot, which is the whole point of the flag. The
+    /// row is loaded from a `wietty.json` because `fixed_naming` only reaches a row
+    /// through the config, and `type: "claude"` needs no approval so `addProject`
+    /// scaffolds it straight away. See issue #37.
+    @Test func titleEventIsIgnoredForAFixedNamingRow() async throws {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "opened-1", windowId: "w1")]
+        fake.focusResult = FocusResult(found: false, jobName: nil)
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        let folder = makeTempFolder(named: "proj")
+        try ConfigFile.write(
+            WorkspaceConfig(
+                name: nil,
+                agents: [.init(slot: "Claude 1", type: "claude", fixedNaming: true)],
+                terminals: []),
+            in: folder)
+        store.addProject(url: folder)
+        await store.activate(store.projects[0].terminals[0], in: store.projects[0])
+
+        store.handle(.title(sessionId: "opened-1", name: "running tests"))
+        #expect(store.projects[0].terminals[0].label == "Claude 1")
+    }
+
     @Test func titleEventIgnoredForTerminalKind() async {
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]

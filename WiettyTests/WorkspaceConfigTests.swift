@@ -120,6 +120,56 @@ import Foundation
         #expect(restored.agents.map(\.slot) == ["b", "a"])
     }
 
+    /// The two naming fields are read from an agent entry when present. See issue #37.
+    @Test func parsesAgentNamingFields() throws {
+        let json = Data("""
+        {
+          "agents": [
+            { "slot": "Claude 5", "type": "claude", "fixed_naming": true, "prefix": "[default]" }
+          ],
+          "terminals": []
+        }
+        """.utf8)
+        let config = try WorkspaceConfig.parse(json)
+        #expect(config.agents.first?.fixedNaming == true)
+        #expect(config.agents.first?.prefix == "[default]")
+    }
+
+    /// A file written before the fields, or one that just leaves them out, reads with
+    /// the documented defaults: dynamic naming, no prefix.
+    @Test func agentNamingFieldsDefaultWhenOmitted() throws {
+        let json = Data("""
+        { "agents": [ { "slot": "Claude 1", "type": "claude" } ], "terminals": [] }
+        """.utf8)
+        let config = try WorkspaceConfig.parse(json)
+        #expect(config.agents.first?.fixedNaming == false)
+        #expect(config.agents.first?.prefix == "")
+    }
+
+    /// Defaults are not written back, so an existing file does not gain
+    /// `fixed_naming`/`prefix` noise the first time the app rewrites it.
+    @Test func encodingOmitsDefaultNamingFields() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [.init(slot: "Claude 1", type: "claude")], terminals: [])
+        let text = String(decoding: try config.encoded(), as: UTF8.self)
+        #expect(!text.contains("fixed_naming"))
+        #expect(!text.contains("prefix"))
+    }
+
+    /// A set field is written and survives a round trip, so a hand written or
+    /// app-set value is preserved when the file is rewritten.
+    @Test func encodesAndRoundTripsSetNamingFields() throws {
+        let config = WorkspaceConfig(
+            name: nil,
+            agents: [.init(slot: "Claude 5", type: "claude", fixedNaming: true, prefix: "[default]")],
+            terminals: [])
+        let text = String(decoding: try config.encoded(), as: UTF8.self)
+        #expect(text.contains("fixed_naming"))
+        #expect(text.contains("[default]"))
+        let restored = try WorkspaceConfig.parse(config.encoded())
+        #expect(restored == config)
+    }
+
     @Test func parsesTestsSection() throws {
         let json = Data("""
         {
