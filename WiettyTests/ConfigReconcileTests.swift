@@ -104,6 +104,44 @@ import Foundation
         #expect(result.terminals[0].label == "fix auth")
     }
 
+    // MARK: Naming fields (issue #37)
+
+    /// A new row imported from the file carries the agent's naming fields.
+    @Test func importCarriesAgentNamingFields() {
+        let config = WorkspaceConfig(
+            name: nil,
+            agents: [.init(slot: "Claude 5", type: "claude", fixedNaming: true, prefix: "[default]")],
+            terminals: [])
+        let result = ConfigReconcile.apply(config, to: [])
+        #expect(result.terminals.first?.fixedNaming == true)
+        #expect(result.terminals.first?.prefix == "[default]")
+    }
+
+    /// Naming is a display preference, not a fact about the session, so the file wins
+    /// even on a running row: turning `fixed_naming` on relabels a row whose reported
+    /// title already moved its `label`, at once, back to the slot behind the prefix.
+    @Test func namingFieldsFromTheFileWinOnARunningRow() {
+        let running = TerminalRef(label: "running tests", sessionId: "live-1", kind: .claude,
+                                  slot: "Claude 5", command: nil, fixedNaming: false, prefix: "")
+        let config = WorkspaceConfig(
+            name: nil,
+            agents: [.init(slot: "Claude 5", type: "claude", fixedNaming: true, prefix: "[default]")],
+            terminals: [])
+        let result = ConfigReconcile.apply(config, to: [running])
+        #expect(result.terminals.first?.fixedNaming == true)
+        #expect(result.terminals.first?.prefix == "[default]")
+        #expect(result.terminals.first?.displayName == "[default] Claude 5")
+    }
+
+    /// And back out: a row's naming fields are written to its agent entry.
+    @Test func configFromRowsCarriesNamingFields() {
+        let rows = [TerminalRef(label: "Claude 5", sessionId: "s", kind: .claude, slot: "Claude 5",
+                                fixedNaming: true, prefix: "[default]")]
+        let config = ConfigReconcile.config(from: rows, name: nil)
+        #expect(config.agents.first?.fixedNaming == true)
+        #expect(config.agents.first?.prefix == "[default]")
+    }
+
     @Test func removedRunningRowKeptAsLocalOnly() {
         let running = TerminalRef(label: "Claude 2", sessionId: "live-2", kind: .claude, slot: "claude2")
         let config = WorkspaceConfig(name: nil, agents: [], terminals: [])

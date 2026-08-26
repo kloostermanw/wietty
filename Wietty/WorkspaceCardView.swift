@@ -276,7 +276,7 @@ struct WorkspaceCardView: View {
             }
             ForEach(project.terminals) { ref in
                 TerminalRowView(
-                    label: ref.label,
+                    label: ref.displayName,
                     kind: ref.kind,
                     isExited: ref.kind == .claude && runState(ref) == .exited,
                     isRunning: isRunning(ref),

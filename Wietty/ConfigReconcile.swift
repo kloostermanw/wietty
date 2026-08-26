@@ -24,7 +24,8 @@ enum ConfigReconcile {
     ) -> WorkspaceConfig {
         let agents = terminals
             .filter { $0.kind == .claude }
-            .map { WorkspaceConfig.Agent(slot: $0.slot, type: $0.command ?? defaultAgentType) }
+            .map { WorkspaceConfig.Agent(slot: $0.slot, type: $0.command ?? defaultAgentType,
+                                         fixedNaming: $0.fixedNaming, prefix: $0.prefix) }
         let iterm = terminals
             .filter { $0.kind == .terminal }
             .map(\.slot)
@@ -47,7 +48,8 @@ enum ConfigReconcile {
         var remaining = existing
         var result: [TerminalRef] = []
 
-        func take(kind: TerminalKind, slot: String, command: String? = nil) -> TerminalRef {
+        func take(kind: TerminalKind, slot: String, command: String? = nil,
+                  fixedNaming: Bool = false, prefix: String = "") -> TerminalRef {
             if let index = remaining.firstIndex(where: { $0.kind == kind && $0.slot == slot }) {
                 var existing = remaining.remove(at: index)
                 // The file decides what the row runs, the same way it decides which
@@ -62,16 +64,23 @@ enum ConfigReconcile {
                 // type `claude` into Codex at the next restart. A row that is not
                 // running has nothing to contradict, so the file wins there.
                 if !hasSession(existing) { existing.command = command }
+                // Naming is a display preference, not a fact about the session, so the
+                // file wins even on a running row: editing `prefix` or `fixed_naming`
+                // has to relabel the row it names right away.
+                existing.fixedNaming = fixedNaming
+                existing.prefix = prefix
                 return existing
             }
-            return TerminalRef(label: slot, sessionId: "", kind: kind, slot: slot, command: command)
+            return TerminalRef(label: slot, sessionId: "", kind: kind, slot: slot, command: command,
+                               fixedNaming: fixedNaming, prefix: prefix)
         }
 
         for agent in config.agents {
             // `claude` maps back to no line of its own, which is what it meant before
             // rows carried one and what a hand written file means by it.
             let command = agent.type == defaultAgentType ? nil : agent.type
-            result.append(take(kind: .claude, slot: agent.slot, command: command))
+            result.append(take(kind: .claude, slot: agent.slot, command: command,
+                               fixedNaming: agent.fixedNaming, prefix: agent.prefix))
         }
         for label in config.terminals {
             result.append(take(kind: .terminal, slot: label))

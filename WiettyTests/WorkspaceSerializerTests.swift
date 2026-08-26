@@ -29,4 +29,15 @@ import Foundation
         #expect(m["needs_attention"] == .bool(true))
         #expect(m["job_name"] == .string("vim"))
     }
+
+    /// The wire label carries the composed display name, so the prefix shows on every
+    /// client rather than only in this app's sidebar. See issue #37.
+    @Test func terminalLabelCarriesThePrefix() {
+        let ref = TerminalRef(label: "Claude 5", sessionId: "s1", kind: .claude, slot: "Claude 5",
+                              prefix: "[default]")
+        let json = WorkspaceSerializer.terminal(ref, projectId: UUID(), projectName: "demo",
+                                                runState: .running, needsAttention: false, jobName: nil)
+        guard case let .object(m) = json else { Issue.record("expected object"); return }
+        #expect(m["label"] == .string("[default] Claude 5"))
+    }
 }

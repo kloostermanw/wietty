@@ -700,7 +700,7 @@ struct ContentView: View {
                 appIsFrontmost: NSApp.isActive,
                 terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
             let notification = BellNotification.local(workspace: project.name,
-                                                      label: ref.label, refId: ref.id,
+                                                      label: ref.displayName, refId: ref.id,
                                                       sound: store.bellSound)
             Task { await bells.post(notification) }
         }
@@ -712,7 +712,7 @@ struct ContentView: View {
             guard BellAlert.shouldPost(
                 appIsFrontmost: NSApp.isActive,
                 terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
-            let notification = BellNotification.sent(workspace: project.name, label: ref.label,
+            let notification = BellNotification.sent(workspace: project.name, label: ref.displayName,
                                                      refId: ref.id, title: title, body: body,
                                                      sound: store.bellSound)
             Task { await bells.post(notification) }
