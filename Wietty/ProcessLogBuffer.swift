@@ -26,38 +26,86 @@ func stripANSI(_ text: String) -> String {
 }
 
 /// A capped, line-oriented buffer of process output. Newest lines are kept when
-/// the line count exceeds `limit`. A chunk without a trailing newline leaves an
-/// open last line that the next chunk appends to.
+/// the line count exceeds `limit`, and each line is itself capped at `lineLimit`
+/// characters (keeping the most recent tail) so a no-newline emitter cannot grow
+/// one line without bound. A chunk without a trailing newline leaves an open last
+/// line that the next chunk continues.
+///
+/// A bare carriage return (`\r`, without a following newline) is treated the way a
+/// terminal treats it: the write cursor returns to column 0 and the following
+/// characters overwrite the current line in place. This is what a progress bar
+/// (`\rprogress 10%`, `\rprogress 20%`, ...) does, and without it that output
+/// concatenates into a single ever-growing line that stalls the log pane.
 struct ProcessLogBuffer: Equatable {
     private(set) var lines: [String] = []
     private let limit: Int
+    private let lineLimit: Int
     private var hasOpenLine = false
+    /// Column the next character overwrites when the last line stays open across
+    /// chunks. Persisted so a `\r` at the end of one chunk still governs where the
+    /// next chunk starts writing.
+    private var openColumn = 0
 
-    init(limit: Int = 5000) {
+    init(limit: Int = 5000, lineLimit: Int = 8192) {
         self.limit = max(1, limit)
+        self.lineLimit = max(1, lineLimit)
     }
 
     mutating func append(_ chunk: String) {
-        let cleaned = stripANSI(chunk).replacingOccurrences(of: "\r\n", with: "\n")
+        let cleaned = stripANSI(chunk)
         guard !cleaned.isEmpty else { return }
-        let endsWithNewline = cleaned.hasSuffix("\n")
-        let pieces = cleaned.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        var incoming = pieces
-        if endsWithNewline, let last = incoming.last, last.isEmpty { incoming.removeLast() }
 
-        for (offset, piece) in incoming.enumerated() {
-            if offset == 0, hasOpenLine, !lines.isEmpty {
-                lines[lines.count - 1] += piece
-            } else {
-                lines.append(piece)
+        var completed: [String] = []
+        var current: [Character]
+        var column: Int
+        if hasOpenLine, let open = lines.popLast() {
+            current = Array(open)
+            column = min(openColumn, current.count)
+        } else {
+            current = []
+            column = 0
+        }
+
+        for character in cleaned {
+            switch character {
+            case "\n":
+                completed.append(clampedTail(current))
+                current = []
+                column = 0
+            case "\r":
+                // Carriage return: move the cursor to the start of the line so the
+                // next characters overwrite it in place.
+                column = 0
+            default:
+                if column < current.count {
+                    current[column] = character
+                } else {
+                    current.append(character)
+                }
+                column += 1
             }
         }
-        hasOpenLine = !endsWithNewline
+
+        lines.append(contentsOf: completed)
+        hasOpenLine = !current.isEmpty
+        if hasOpenLine {
+            lines.append(clampedTail(current))
+            openColumn = column
+        } else {
+            openColumn = 0
+        }
         if lines.count > limit { lines.removeFirst(lines.count - limit) }
     }
 
     mutating func clear() {
         lines.removeAll()
         hasOpenLine = false
+        openColumn = 0
+    }
+
+    /// Caps a line at `lineLimit` characters, keeping the most recent tail.
+    private func clampedTail(_ characters: [Character]) -> String {
+        guard characters.count > lineLimit else { return String(characters) }
+        return String(characters.suffix(lineLimit))
     }
 }
