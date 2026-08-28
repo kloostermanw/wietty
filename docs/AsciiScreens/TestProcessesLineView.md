@@ -40,7 +40,9 @@ Legend:
   only while that test is running; Open log (`onOpenLog`, opens a
   the pane with a `ProcessLogRef` carrying `isTest: true`, via `WorkspaceCardView.onOpenTestLog`);
   Copy ID for agent (`onCopyId`), which copies the test's `ManagedProcessID`
-  (`<workspace-id>:test:<name>`) so the MCP `get_managed_process_*` tools can read
-  its output from a prompt. See `docs/mcp.md`.
+  (`<workspace-id>:test:<name>`) so the MCP tools can act on it from a prompt:
+  `run_test` runs it (the Run button's equivalent, as `run_all_tests` is the All
+  button's), and `get_managed_process_*` read its status and output. See
+  `docs/mcp.md`.
 - Tooltip (`.help`): "Running…" while running, otherwise "Not run" / "Passed" /
   "Failed" based on the button's style.

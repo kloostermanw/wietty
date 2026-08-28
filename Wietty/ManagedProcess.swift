@@ -77,11 +77,13 @@ final class ManagedProcess: Identifiable {
 
     // MARK: Controls
 
-    func start() {
-        guard state == .idle || state == .finished || state.isFailed else { return }
+    @discardableResult
+    func start() -> Bool {
+        guard state == .idle || state == .finished || state.isFailed else { return false }
         stopRequested = false
         recentRestarts.removeAll() // a manual start re-enables a capped process
         launchMain()
+        return true
     }
 
     func restart() {

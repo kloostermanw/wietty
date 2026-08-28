@@ -55,6 +55,29 @@ final class FakeProcessLauncher: @preconcurrency ProcessLaunching, @unchecked Se
 @Suite struct ManagedProcessTests {
     let dir = URL(fileURLWithPath: "/tmp")
 
+    /// `start()` is guarded, so callers that need to know whether a launch actually
+    /// happened (the MCP `run_test` tool, and the fingerprint stamp in
+    /// `TestSupervisor.run`) have to be able to tell a refused call from a fresh one.
+    @Test func startReportsWhetherItLaunched() {
+        let launcher = FakeProcessLauncher()
+        let p = ManagedProcess(name: "t", config: ProcessConfig(command: "phpunit", kind: .shortRunning), directory: dir, launcher: launcher)
+        #expect(p.start() == true)
+        #expect(p.start() == false) // already running: the guard refuses
+        launcher.last.onExit(0)
+        #expect(p.start() == true)  // finished is startable again
+        #expect(launcher.launches.count == 2)
+    }
+
+    /// A launch that is refused by `blocking` or thrown out by the launcher still
+    /// counts as started: it changed state to `.failed` and is reported, not silent.
+    @Test func startReportsTrueWhenTheLaunchItselfFails() {
+        let launcher = FakeProcessLauncher()
+        launcher.failingCommands = ["phpunit"]
+        let p = ManagedProcess(name: "t", config: ProcessConfig(command: "phpunit", kind: .shortRunning), directory: dir, launcher: launcher)
+        #expect(p.start() == true)
+        #expect(p.state == .failed(-1))
+    }
+
     @Test func shortRunningSuccessBecomesFinished() {
         let launcher = FakeProcessLauncher()
         let p = ManagedProcess(name: "t", config: ProcessConfig(command: "phpunit", kind: .shortRunning), directory: dir, launcher: launcher)

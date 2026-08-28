@@ -249,27 +249,45 @@ final class MCPToolRouter {
         return .object(["tests": .array(items)])
     }
 
-    /// Runs one test by its id and reports its now-running status. A well-formed id
-    /// that names a process rather than a test is rejected: the supervisor would
-    /// find no test by that name and start nothing, so failing loudly beats a silent
-    /// no-op.
+    /// Runs one test by its id and reports the status the run left it in.
+    ///
+    /// A well-formed id naming a process rather than a test is rejected instead of
+    /// resolved by name: the supervisor looks tests up by name alone, and a process
+    /// and a test may share one (see `ManagedProcessID`), so the unguarded call would
+    /// start the same-named *test* and return the process row labelled as one.
+    ///
+    /// A test already in flight is refused rather than reported as started. The two
+    /// are otherwise indistinguishable in the response, and an agent that polls
+    /// afterwards would read the in-flight run's verdict as the verdict on its own
+    /// change.
     private func runTest(_ args: [String: JSONValue]) throws -> JSONValue {
         let (id, process, parsed, project) = try resolveManagedProcess(args)
         guard parsed.isTest else {
             throw MCPToolError.invalidArgument("id is not a test: \(id)")
         }
-        store.testSupervisor.run(projectId: project.id, name: parsed.name)
-        return managedProcessJSON(process, isTest: true, in: project)
+        guard store.testSupervisor.run(projectId: project.id, name: parsed.name) else {
+            throw MCPToolError.failed(
+                "Test \(parsed.name) is already running, so this call started nothing. Its "
+                + "result will not reflect changes made since it launched. Wait for it with "
+                + "get_managed_process_status, then run it again."
+            )
+        }
+        return managedProcessJSON(process, isTest: true, in: project, started: true)
     }
 
-    /// Runs every test in a workspace and reports each test's now-running status.
-    /// Scopes to the selected workspace when `project_id` is omitted, like the other
-    /// workspace-wide tools.
+    /// Runs every test in a workspace and reports the status each was left in.
+    /// Unlike `run_test` an overlapping run is not an error here, since a fan-out
+    /// routinely meets one test already in flight, so each row carries `started` to
+    /// say whether this call is what launched it.
+    ///
+    /// Requires `project_id` or a `select_project` default, unlike `list_tests`,
+    /// which spans every workspace when scoping is omitted. Running every test in
+    /// every workspace is not a reasonable reading of an omitted argument.
     private func runAllTests(_ args: [String: JSONValue]) throws -> JSONValue {
         let project = try resolveProject(args)
-        store.testSupervisor.runAll(projectId: project.id)
+        let started = store.testSupervisor.runAll(projectId: project.id)
         let items = store.testSupervisor.tests(for: project.id)
-            .map { managedProcessJSON($0, isTest: true, in: project) }
+            .map { managedProcessJSON($0, isTest: true, in: project, started: started.contains($0.name)) }
         return .object(["tests": .array(items)])
     }
 
@@ -371,7 +389,12 @@ final class MCPToolRouter {
     /// A managed process or test is serialized only for the MCP surface (not the shared
     /// `WorkspaceSerializer`, which is the LAN protocol's shape too), so it is defined
     /// here rather than there.
-    private func managedProcessJSON(_ process: ManagedProcess, isTest: Bool, in project: Project) -> JSONValue {
+    ///
+    /// `started` is carried only by the run tools, which need to say whether this
+    /// call is what launched the test; the read-only tools leave it off.
+    private func managedProcessJSON(
+        _ process: ManagedProcess, isTest: Bool, in project: Project, started: Bool? = nil
+    ) -> JSONValue {
         var members: [String: JSONValue] = [
             "id": .string(ManagedProcessID.string(projectId: project.id, name: process.name, isTest: isTest)),
             "name": .string(process.name),
@@ -382,6 +405,7 @@ final class MCPToolRouter {
             "project_name": .string(project.name),
         ]
         if case let .failed(code) = process.state { members["exit_code"] = .int(Int(code)) }
+        if let started { members["started"] = .bool(started) }
         return .object(members)
     }
 
@@ -473,13 +497,13 @@ final class MCPToolRouter {
                     "id": Self.stringProp("managed process or test id (from list_managed_processes or 'Copy ID for agent')"),
                   ], required: ["id"])),
             .init(name: "list_tests",
-                  description: "List a workspace's tests (defined in wietty.json), with their id, name, status, and whether they are running. Narrower than list_managed_processes, which also includes processes. Each id feeds run_test. Optionally scoped to one workspace.",
-                  inputSchema: Self.schema(properties: ["project_id": Self.stringProp("Optional workspace id to scope to")], required: [])),
+                  description: "List a workspace's tests (defined in wietty.json), in the same row shape list_managed_processes returns. Narrower than that tool, which also includes processes. Each id feeds run_test. Omit project_id to list every workspace's tests; this does not fall back to the selected workspace.",
+                  inputSchema: Self.schema(properties: ["project_id": Self.stringProp("Optional workspace id to scope to; omitted lists every workspace")], required: [])),
             .init(name: "run_test",
-                  description: "Run one test by its id (from list_tests or list_managed_processes) and return its now-running status. Read the result afterwards with get_managed_process_status / get_managed_process_output.",
+                  description: "Run one test by its id (from list_tests or list_managed_processes) and return the status the run left it in: running, or failed with exit_code -1 when the launch was blocked or refused. Errors if the test is already running, since that call would start nothing. Read the result afterwards with get_managed_process_status / get_managed_process_output; it is done when the status reaches finished or failed.",
                   inputSchema: Self.schema(properties: ["id": Self.stringProp("test id")], required: ["id"])),
             .init(name: "run_all_tests",
-                  description: "Run every test in a workspace and return each test's now-running status. Uses the selected workspace if project_id is omitted.",
+                  description: "Run every test in a workspace and return the status each was left in. A test already running is left alone rather than restarted, so each row carries started: true/false saying whether this call launched it. Uses the selected workspace if project_id is omitted.",
                   inputSchema: Self.schema(properties: ["project_id": Self.stringProp("Workspace id (defaults to selected)")], required: [])),
         ]
     }

@@ -520,6 +520,43 @@ import Foundation
         #expect(result["id"]?.stringValue == id)
         #expect(result["status"]?.stringValue == "running")
         #expect(result["running"]?.boolValue == true)
+        #expect(result["started"]?.boolValue == true)
+    }
+
+    /// A second `run_test` while the first is still in flight starts nothing
+    /// (`ManagedProcess.start()` refuses it). Answering `running` regardless would be
+    /// byte-identical to a fresh launch, and an agent polling afterwards would read
+    /// the in-flight run's verdict as the verdict on its own change.
+    @Test func runTestOnAnAlreadyRunningTestFailsLoudly() async throws {
+        let (router, _, project, _, testLauncher) = makeManagedRouter(tests: ["phpunit": TestConfig(command: "phpunit")])
+        let id = ManagedProcessID.string(projectId: project.id, name: "phpunit", isTest: true)
+        _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        await #expect {
+            _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        } throws: { error in
+            guard case let MCPToolError.failed(message) = error else { return false }
+            return message.contains("already running")
+        }
+        #expect(testLauncher.launches.count == 1)
+    }
+
+    /// `run_all_tests` tolerates an overlapping run rather than throwing (a partial
+    /// overlap is normal when tests fan out), so it has to say per row which ones it
+    /// actually started.
+    @Test func runAllTestsMarksTheTestsItCouldNotStart() async throws {
+        let (router, _, project, _, testLauncher) = makeManagedRouter(
+            tests: ["phpunit": TestConfig(command: "phpunit"), "phpstan": TestConfig(command: "phpstan")]
+        )
+        let id = ManagedProcessID.string(projectId: project.id, name: "phpunit", isTest: true)
+        _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        let result = try await router.call(
+            "run_all_tests", arguments: ["project_id": .string(project.id.uuidString)]
+        )
+        #expect(testLauncher.launches.map(\.command).sorted() == ["phpstan", "phpunit"])
+        let started = (result["tests"]?.arrayValue ?? []).reduce(into: [String: Bool]()) {
+            $0[$1["name"]?.stringValue ?? ""] = $1["started"]?.boolValue
+        }
+        #expect(started == ["phpunit": false, "phpstan": true])
     }
 
     /// A process id is a valid handle but not a test, so `run_test` must refuse it
@@ -552,10 +589,11 @@ import Foundation
         let result = try await router.call(
             "run_all_tests", arguments: ["project_id": .string(project.id.uuidString)]
         )
-        #expect(testLauncher.launches.count == 2)
+        #expect(testLauncher.launches.map(\.command).sorted() == ["phpstan", "phpunit"])
         let items = result["tests"]?.arrayValue ?? []
-        #expect(items.count == 2)
+        #expect(items.compactMap { $0["name"]?.stringValue }.sorted() == ["phpstan", "phpunit"])
         #expect(items.allSatisfy { $0["running"]?.boolValue == true })
+        #expect(items.allSatisfy { $0["started"]?.boolValue == true })
     }
 
     @Test func runAllTestsUsesSelectedWorkspaceWhenProjectIdOmitted() async throws {

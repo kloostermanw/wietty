@@ -74,17 +74,26 @@ managed process is read only here (list, and read its recent output or status by
 id); the app itself starts and supervises it.
 
 Tests: `list_tests`, `run_test`, `run_all_tests`. `list_tests` is a tests-only
-view (the same rows `list_managed_processes` carries under `tests`, without the
-`processes`). `run_test` runs one test by its id; `run_all_tests` runs every test
-in a workspace (the selected one if `project_id` is omitted). Both return each
-test's now-running status. A test runs to completion, so read its result
+view, returning the test rows `list_managed_processes` returns without the
+process ones. `run_test` runs one test by its id; `run_all_tests` runs every test
+in a workspace (the selected one if `project_id` is omitted). Both return the
+status each test was left in. A test runs to completion, so read its result
 afterwards with `get_managed_process_status` or `get_managed_process_output`,
-the same read tools a managed process uses. Passing a process id to `run_test` is
-an error: only tests are runnable this way.
+the same read tools a managed process uses. It is done when the status reaches
+`finished` or `failed`. Passing a process id to `run_test` is an error: only
+tests are runnable this way.
 
-Tools that omit `project_id` fall back to the workspace set with
-`select_project`. Send a trailing newline in `send_input` text to submit a
-command.
+A test that is already running is left alone rather than restarted, because a
+second run would otherwise report the in-flight run's result as its own.
+`run_test` treats that as an error, since it started nothing. `run_all_tests`
+does not (meeting one test already in flight is normal when it fans out), so
+every row it returns carries `started`, saying whether this call is what launched
+that test.
+
+Tools that act on one workspace fall back to the workspace set with
+`select_project` when `project_id` is omitted. The `list_*` tools do not:
+`list_processes`, `list_managed_processes`, and `list_tests` span every workspace
+unless scoped. Send a trailing newline in `send_input` text to submit a command.
 
 ## Notes
 
