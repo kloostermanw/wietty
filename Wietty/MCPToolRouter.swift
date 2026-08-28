@@ -67,6 +67,9 @@ final class MCPToolRouter {
         case "list_managed_processes": return try listManagedProcesses(arguments)
         case "get_managed_process_output": return try getManagedProcessOutput(arguments)
         case "get_managed_process_status": return try getManagedProcessStatus(arguments)
+        case "list_tests": return try listTests(arguments)
+        case "run_test": return try runTest(arguments)
+        case "run_all_tests": return try runAllTests(arguments)
         default: throw MCPToolError.unknownTool(name)
         }
     }
@@ -229,6 +232,45 @@ final class MCPToolRouter {
     private func getManagedProcessStatus(_ args: [String: JSONValue]) throws -> JSONValue {
         let (_, process, parsed, project) = try resolveManagedProcess(args)
         return managedProcessJSON(process, isTest: parsed.isTest, in: project)
+    }
+
+    /// Lists only the tests a workspace declares, a narrower view than
+    /// `list_managed_processes` (which also carries `processes`) for an agent that
+    /// means to run the checks. Ids and shape match, so what this returns feeds
+    /// straight into `run_test`.
+    private func listTests(_ args: [String: JSONValue]) throws -> JSONValue {
+        let projects: [Project]
+        if args["project_id"] != nil { projects = [try resolveProject(args)] }
+        else { projects = store.projects }
+        let items = projects.flatMap { project in
+            store.testSupervisor.tests(for: project.id)
+                .map { managedProcessJSON($0, isTest: true, in: project) }
+        }
+        return .object(["tests": .array(items)])
+    }
+
+    /// Runs one test by its id and reports its now-running status. A well-formed id
+    /// that names a process rather than a test is rejected: the supervisor would
+    /// find no test by that name and start nothing, so failing loudly beats a silent
+    /// no-op.
+    private func runTest(_ args: [String: JSONValue]) throws -> JSONValue {
+        let (id, process, parsed, project) = try resolveManagedProcess(args)
+        guard parsed.isTest else {
+            throw MCPToolError.invalidArgument("id is not a test: \(id)")
+        }
+        store.testSupervisor.run(projectId: project.id, name: parsed.name)
+        return managedProcessJSON(process, isTest: true, in: project)
+    }
+
+    /// Runs every test in a workspace and reports each test's now-running status.
+    /// Scopes to the selected workspace when `project_id` is omitted, like the other
+    /// workspace-wide tools.
+    private func runAllTests(_ args: [String: JSONValue]) throws -> JSONValue {
+        let project = try resolveProject(args)
+        store.testSupervisor.runAll(projectId: project.id)
+        let items = store.testSupervisor.tests(for: project.id)
+            .map { managedProcessJSON($0, isTest: true, in: project) }
+        return .object(["tests": .array(items)])
     }
 
     // MARK: - Resolution helpers
@@ -430,6 +472,15 @@ final class MCPToolRouter {
                   inputSchema: Self.schema(properties: [
                     "id": Self.stringProp("managed process or test id (from list_managed_processes or 'Copy ID for agent')"),
                   ], required: ["id"])),
+            .init(name: "list_tests",
+                  description: "List a workspace's tests (defined in wietty.json), with their id, name, status, and whether they are running. Narrower than list_managed_processes, which also includes processes. Each id feeds run_test. Optionally scoped to one workspace.",
+                  inputSchema: Self.schema(properties: ["project_id": Self.stringProp("Optional workspace id to scope to")], required: [])),
+            .init(name: "run_test",
+                  description: "Run one test by its id (from list_tests or list_managed_processes) and return its now-running status. Read the result afterwards with get_managed_process_status / get_managed_process_output.",
+                  inputSchema: Self.schema(properties: ["id": Self.stringProp("test id")], required: ["id"])),
+            .init(name: "run_all_tests",
+                  description: "Run every test in a workspace and return each test's now-running status. Uses the selected workspace if project_id is omitted.",
+                  inputSchema: Self.schema(properties: ["project_id": Self.stringProp("Workspace id (defaults to selected)")], required: [])),
         ]
     }
 
