@@ -106,6 +106,43 @@ import Foundation
         #expect(sup.tests(for: pid).allSatisfy { $0.state == .running })
     }
 
+    @Test func runReportsWhetherItStartedTheTest() {
+        let launcher = FakeProcessLauncher()
+        let sup = TestSupervisor(launcher: launcher)
+        sup.apply(config(["phpstan": TestConfig(command: "phpstan")]), projectId: pid, directory: dir)
+        #expect(sup.run(projectId: pid, name: "phpstan") == true)
+        #expect(sup.run(projectId: pid, name: "phpstan") == false) // already in flight
+        #expect(sup.run(projectId: pid, name: "ghost") == false)   // no such test
+        #expect(launcher.launches.count == 1)
+    }
+
+    @Test func runAllReportsOnlyTheTestsItStarted() {
+        let launcher = FakeProcessLauncher()
+        let sup = TestSupervisor(launcher: launcher)
+        sup.apply(config(["a": TestConfig(command: "cmd-a"), "b": TestConfig(command: "cmd-b")]), projectId: pid, directory: dir)
+        sup.run(projectId: pid, name: "a")
+        #expect(sup.runAll(projectId: pid) == ["b"])
+    }
+
+    /// A `run` the guard refuses must not rebase the staleness baseline. Stamping the
+    /// current tree for a launch that never happened lets the in-flight run, started
+    /// against an older tree, finish green and pass as fresh against the newer one,
+    /// which is exactly what the fingerprint exists to prevent.
+    @Test func aRefusedRunDoesNotRebaseTheFingerprint() {
+        let launcher = FakeProcessLauncher()
+        let sup = TestSupervisor(launcher: launcher)
+        sup.apply(config(["phpstan": TestConfig(command: "phpstan")]), projectId: pid, directory: dir)
+        sup.applyWorkingTreeFingerprint("fp1", projectId: pid)
+        sup.run(projectId: pid, name: "phpstan") // launched against fp1
+        sup.applyWorkingTreeFingerprint("fp2", projectId: pid) // tree edited mid-run
+        sup.run(projectId: pid, name: "phpstan") // refused: still running
+        #expect(launcher.launches.count == 1)
+        launcher.last.onExit(0)
+        sup.applyWorkingTreeFingerprint("fp2", projectId: pid)
+        // The result reflects fp1, not the fp2 tree, so it must read as stale.
+        #expect(sup.test(projectId: pid, name: "phpstan")?.state == .idle)
+    }
+
     @Test func appliesVariablesToTestLaunch() {
         let launcher = FakeProcessLauncher()
         let sup = TestSupervisor(launcher: launcher)

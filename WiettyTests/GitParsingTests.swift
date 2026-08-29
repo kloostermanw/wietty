@@ -145,11 +145,19 @@ import Foundation
         #expect(s?.total == 1)     // the null-conclusion run is ignored
     }
 
-    @Test func checksSummaryTextListsNonzeroCategories() {
-        let failing = ChecksSummary(passing: 291, failing: 11, cancelled: 3, skipped: 3, pending: 0)
-        #expect(failing.summaryText == "11 failing, 3 cancelled, 3 skipped, 291 successfull checks")
+    @Test func checksSummaryTextListsNonzeroCategoriesInOrder() {
+        let every = ChecksSummary(passing: 291, failing: 11, cancelled: 3, skipped: 3, pending: 2)
+        #expect(every.summaryText == "11 failing, 3 cancelled, 291 successfull checks, 2 pending")
         let clean = ChecksSummary(passing: 291, failing: 0, cancelled: 0, skipped: 3, pending: 0)
-        #expect(clean.summaryText == "3 skipped, 291 successfull checks")
+        #expect(clean.summaryText == "291 successfull checks")
+    }
+
+    @Test func checksSummaryTextOmitsSkipped() {
+        // Nothing is left to name when every check was skipped, and the card
+        // guards its checks line on `checks != nil` rather than on the text, so
+        // the line renders empty instead of being hidden.
+        let skippedOnly = ChecksSummary(passing: 0, failing: 0, cancelled: 0, skipped: 3, pending: 0)
+        #expect(skippedOnly.summaryText == "")
     }
 
     @Test func checksSummaryStatusReflectsFailuresPendingAndSuccess() {

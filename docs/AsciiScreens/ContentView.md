@@ -195,9 +195,16 @@ editing the process out of `wietty.json` while its log is up.
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-The body is a scrollable, monospaced, read-only, selectable dump of
-`ManagedProcess.log.lines`, with a `ScrollViewReader` jumping to a hidden bottom
-anchor whenever the line count changes.
+The body is a scrollable, monospaced, read-only view of `ManagedProcess.log.lines`,
+one selectable `Text` per line inside a `LazyVStack`, with a `ScrollViewReader`
+jumping to a hidden bottom anchor whenever the line count changes. It is one row
+per line, not a single `Text` of the whole joined buffer, because a lone selectable
+`Text` lays out in O(content size) synchronously on the main thread and froze the
+app on a large log. The lazy stack only lays out the rows on screen. The trade-off
+is that a text selection no longer spans lines, it is per row. The backing
+`ProcessLogBuffer` also caps each line's length (not just the line count) and treats
+a bare carriage return as an in-place overwrite, so progress-bar output cannot grow
+one line without bound.
 
 ### Who gets the surplus, and where the divider is
 
@@ -365,6 +372,17 @@ Legend:
 - Drop zone: a `Color.clear` region at the bottom of the Local section that
   accepts a dragged card to move it to the end. Remote sections don't support
   reordering.
+- Drop indicator: while a card is dragged, a thin accent insertion line
+  (`WorkspaceInsertionIndicator`) shows where it will land. Each card's
+  `dropDestination` reports its `isTargeted` state into `dropTarget`
+  (`WorkspaceDropTarget`), and the line is overlaid at that card's top edge, since
+  `ProjectStore.move(id:before:)` always inserts before the card under the pointer.
+  The trailing drop zone gets the same treatment for "drop at the end", drawing the
+  line after the last card. The indicator is overlaid (its opacity toggled) rather
+  than inserted into the layout, so it appears and clears without shifting the cards.
+  `isTargeted` only moves this `@State`; the store is still written once, in the drop
+  `action` on release, so one reorder is one file write. `WorkspaceDropTargetTests`
+  covers where the line sits.
 - `minWidth: 240`: the sidebar has a minimum width. It is also
   `SidebarWidth.minimum`, the floor a divider drag stops at, since the outer
   explicit width never goes below it.

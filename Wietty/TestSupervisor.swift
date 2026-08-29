@@ -80,14 +80,29 @@ final class TestSupervisor {
         byProject[projectId] = kept
     }
 
-    func run(projectId: UUID, name: String) {
-        guard let test = test(projectId: projectId, name: name) else { return }
+    /// Starts one test and reports whether it actually launched. `start()` refuses a
+    /// test that is already in flight, and the baseline is stamped only on a launch
+    /// that happened: rebasing it for a refused call would let the in-flight run,
+    /// started against an older tree, finish green and read as fresh against the
+    /// current one, which is the exact claim `applyWorkingTreeFingerprint` exists to
+    /// prevent. An unknown name returns false rather than throwing; callers that need
+    /// the distinction resolve the test first.
+    @discardableResult
+    func run(projectId: UUID, name: String) -> Bool {
+        guard let test = test(projectId: projectId, name: name), test.start() else { return false }
         runFingerprint[projectId, default: [:]][name] = currentFingerprint[projectId]
-        test.start()
+        return true
     }
 
-    func runAll(projectId: UUID) {
-        for test in byProject[projectId] ?? [] { run(projectId: projectId, name: test.name) }
+    /// Runs every test in the workspace, returning the names actually started. Tests
+    /// already in flight are left alone, so the result is not always every test.
+    @discardableResult
+    func runAll(projectId: UUID) -> Set<String> {
+        var started: Set<String> = []
+        for test in byProject[projectId] ?? [] {
+            if run(projectId: projectId, name: test.name) { started.insert(test.name) }
+        }
+        return started
     }
 
     /// Records the workspace's latest working-tree fingerprint and stales any

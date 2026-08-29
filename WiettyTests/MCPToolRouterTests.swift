@@ -460,4 +460,155 @@ import Foundation
             return true
         }
     }
+
+    // MARK: - Running tests
+
+    /// `list_tests` is a tests-only view: a workspace's processes must not leak into
+    /// it the way they share `list_managed_processes`.
+    @Test func listTestsReturnsOnlyTests() async throws {
+        let (router, _, _, _, _) = makeManagedRouter(
+            processes: ["queue": ProcessConfig(command: "run-queue")],
+            tests: ["phpunit": TestConfig(command: "phpunit")]
+        )
+        let result = try await router.call("list_tests", arguments: [:])
+        let items = result["tests"]?.arrayValue ?? []
+        #expect(items.count == 1)
+        #expect(items.first?["name"]?.stringValue == "phpunit")
+        #expect(items.first?["type"]?.stringValue == "test")
+    }
+
+    /// The listed id round-trips as a test handle, so `run_test` resolves exactly what
+    /// `list_tests` hands back.
+    @Test func listTestsEmitsResolvableTestIds() async throws {
+        let (router, _, project, _, _) = makeManagedRouter(tests: ["phpunit": TestConfig(command: "phpunit")])
+        let result = try await router.call("list_tests", arguments: [:])
+        let id = result["tests"]?.arrayValue?.first?["id"]?.stringValue
+        #expect(ManagedProcessID.parse(id ?? "")
+            == ManagedProcessID.Parsed(projectId: project.id, name: "phpunit", isTest: true))
+    }
+
+    @Test func listTestsScopesToOneWorkspace() async throws {
+        let store = ProjectStore(
+            defaults: makeDefaults(), service: FakeTerminalService(),
+            processSupervisor: ProcessSupervisor(launcher: FakeProcessLauncher()),
+            testSupervisor: TestSupervisor(launcher: FakeProcessLauncher())
+        )
+        store.addProject(url: makeTempFolder(named: "alpha"))
+        store.addProject(url: makeTempFolder(named: "beta"))
+        for project in store.projects {
+            let config = WorkspaceConfig(name: nil, agents: [], terminals: [],
+                                         tests: ["phpunit": TestConfig(command: "phpunit")])
+            store.testSupervisor.apply(config, projectId: project.id, directory: project.url)
+        }
+        let router = MCPToolRouter(store: store)
+        let scoped = try await router.call(
+            "list_tests", arguments: ["project_id": .string(store.projects[0].id.uuidString)]
+        )
+        #expect(scoped["tests"]?.arrayValue?.count == 1)
+        let all = try await router.call("list_tests", arguments: [:])
+        #expect(all["tests"]?.arrayValue?.count == 2)
+    }
+
+    @Test func runTestStartsTheTestAndReportsRunning() async throws {
+        let (router, _, project, _, testLauncher) = makeManagedRouter(tests: ["phpunit": TestConfig(command: "phpunit")])
+        let id = ManagedProcessID.string(projectId: project.id, name: "phpunit", isTest: true)
+        let result = try await router.call("run_test", arguments: ["id": .string(id)])
+        // The supervisor forwarded the run to the launcher, and the tool reports the
+        // now-running test rather than its pre-run idle state.
+        #expect(testLauncher.launches.count == 1)
+        #expect(testLauncher.last.command == "phpunit")
+        #expect(result["id"]?.stringValue == id)
+        #expect(result["status"]?.stringValue == "running")
+        #expect(result["running"]?.boolValue == true)
+        #expect(result["started"]?.boolValue == true)
+    }
+
+    /// A second `run_test` while the first is still in flight starts nothing
+    /// (`ManagedProcess.start()` refuses it). Answering `running` regardless would be
+    /// byte-identical to a fresh launch, and an agent polling afterwards would read
+    /// the in-flight run's verdict as the verdict on its own change.
+    @Test func runTestOnAnAlreadyRunningTestFailsLoudly() async throws {
+        let (router, _, project, _, testLauncher) = makeManagedRouter(tests: ["phpunit": TestConfig(command: "phpunit")])
+        let id = ManagedProcessID.string(projectId: project.id, name: "phpunit", isTest: true)
+        _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        await #expect {
+            _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        } throws: { error in
+            guard case let MCPToolError.failed(message) = error else { return false }
+            return message.contains("already running")
+        }
+        #expect(testLauncher.launches.count == 1)
+    }
+
+    /// `run_all_tests` tolerates an overlapping run rather than throwing (a partial
+    /// overlap is normal when tests fan out), so it has to say per row which ones it
+    /// actually started.
+    @Test func runAllTestsMarksTheTestsItCouldNotStart() async throws {
+        let (router, _, project, _, testLauncher) = makeManagedRouter(
+            tests: ["phpunit": TestConfig(command: "phpunit"), "phpstan": TestConfig(command: "phpstan")]
+        )
+        let id = ManagedProcessID.string(projectId: project.id, name: "phpunit", isTest: true)
+        _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        let result = try await router.call(
+            "run_all_tests", arguments: ["project_id": .string(project.id.uuidString)]
+        )
+        #expect(testLauncher.launches.map(\.command).sorted() == ["phpstan", "phpunit"])
+        let started = (result["tests"]?.arrayValue ?? []).reduce(into: [String: Bool]()) {
+            $0[$1["name"]?.stringValue ?? ""] = $1["started"]?.boolValue
+        }
+        #expect(started == ["phpunit": false, "phpstan": true])
+    }
+
+    /// A process id is a valid handle but not a test, so `run_test` must refuse it
+    /// rather than silently do nothing (the supervisor would find no test by that name).
+    @Test func runTestWithAProcessIdThrowsInvalidArgument() async throws {
+        let (router, _, project, _, _) = makeManagedRouter(
+            processes: ["queue": ProcessConfig(command: "run-queue")]
+        )
+        let id = ManagedProcessID.string(projectId: project.id, name: "queue", isTest: false)
+        await #expect {
+            _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        } throws: { error in
+            guard case MCPToolError.invalidArgument = error else { return false }
+            return true
+        }
+    }
+
+    @Test func runTestUnknownIdThrows() async throws {
+        let (router, _, project, _, _) = makeManagedRouter()
+        let id = ManagedProcessID.string(projectId: project.id, name: "ghost", isTest: true)
+        await #expect(throws: MCPToolError.unknownManagedProcess(id)) {
+            _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        }
+    }
+
+    @Test func runAllTestsRunsEveryTestInTheWorkspace() async throws {
+        let (router, _, project, _, testLauncher) = makeManagedRouter(
+            tests: ["phpunit": TestConfig(command: "phpunit"), "phpstan": TestConfig(command: "phpstan")]
+        )
+        let result = try await router.call(
+            "run_all_tests", arguments: ["project_id": .string(project.id.uuidString)]
+        )
+        #expect(testLauncher.launches.map(\.command).sorted() == ["phpstan", "phpunit"])
+        let items = result["tests"]?.arrayValue ?? []
+        #expect(items.compactMap { $0["name"]?.stringValue }.sorted() == ["phpstan", "phpunit"])
+        #expect(items.allSatisfy { $0["running"]?.boolValue == true })
+        #expect(items.allSatisfy { $0["started"]?.boolValue == true })
+    }
+
+    @Test func runAllTestsUsesSelectedWorkspaceWhenProjectIdOmitted() async throws {
+        let (router, _, project, _, testLauncher) = makeManagedRouter(
+            tests: ["phpunit": TestConfig(command: "phpunit")]
+        )
+        _ = try await router.call("select_project", arguments: ["project_id": .string(project.id.uuidString)])
+        _ = try await router.call("run_all_tests", arguments: [:])
+        #expect(testLauncher.launches.count == 1)
+    }
+
+    @Test func runAllTestsWithoutProjectOrSelectionThrowsMissingArgument() async throws {
+        let (router, _, _, _, _) = makeManagedRouter(tests: ["phpunit": TestConfig(command: "phpunit")])
+        await #expect(throws: MCPToolError.missingArgument("project_id")) {
+            _ = try await router.call("run_all_tests", arguments: [:])
+        }
+    }
 }

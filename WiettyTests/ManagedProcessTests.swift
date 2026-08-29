@@ -55,6 +55,29 @@ final class FakeProcessLauncher: @preconcurrency ProcessLaunching, @unchecked Se
 @Suite struct ManagedProcessTests {
     let dir = URL(fileURLWithPath: "/tmp")
 
+    /// `start()` is guarded, so callers that need to know whether a launch actually
+    /// happened (the MCP `run_test` tool, and the fingerprint stamp in
+    /// `TestSupervisor.run`) have to be able to tell a refused call from a fresh one.
+    @Test func startReportsWhetherItLaunched() {
+        let launcher = FakeProcessLauncher()
+        let p = ManagedProcess(name: "t", config: ProcessConfig(command: "phpunit", kind: .shortRunning), directory: dir, launcher: launcher)
+        #expect(p.start() == true)
+        #expect(p.start() == false) // already running: the guard refuses
+        launcher.last.onExit(0)
+        #expect(p.start() == true)  // finished is startable again
+        #expect(launcher.launches.count == 2)
+    }
+
+    /// A launch that is refused by `blocking` or thrown out by the launcher still
+    /// counts as started: it changed state to `.failed` and is reported, not silent.
+    @Test func startReportsTrueWhenTheLaunchItselfFails() {
+        let launcher = FakeProcessLauncher()
+        launcher.failingCommands = ["phpunit"]
+        let p = ManagedProcess(name: "t", config: ProcessConfig(command: "phpunit", kind: .shortRunning), directory: dir, launcher: launcher)
+        #expect(p.start() == true)
+        #expect(p.state == .failed(-1))
+    }
+
     @Test func shortRunningSuccessBecomesFinished() {
         let launcher = FakeProcessLauncher()
         let p = ManagedProcess(name: "t", config: ProcessConfig(command: "phpunit", kind: .shortRunning), directory: dir, launcher: launcher)
@@ -266,6 +289,168 @@ final class FakeProcessLauncher: @preconcurrency ProcessLaunching, @unchecked Se
             #expect(launcher.launches.count == expected)
             clock = clock.advanced(by: .seconds(120))
         }
+    }
+
+    // MARK: Daemon auto_restart
+
+    /// A daemon's "unexpected exit" is the backing service going down, which the
+    /// status probe reports as a `.running` -> down transition. An auto_restart
+    /// daemon relaunches its start command when that happens.
+    @Test func daemonAutoRestartRelaunchesWhenProbeFindsItDown() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        let config = ProcessConfig(command: "sail up -d", kind: .daemon, status: "sail ps", autoRestart: true)
+        let p = ManagedProcess(name: "sail", config: config, directory: dir, launcher: launcher)
+        p.start()
+        #expect(p.state == .running)
+        launcher.immediateExit["sail ps"] = 0
+        p.probeStatus() // healthy: stays running, no relaunch
+        #expect(p.state == .running)
+        let before = launcher.launches.filter { $0.command == "sail up -d" }.count
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus() // down: relaunch the start command
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count == before + 1)
+        #expect(p.state == .running)
+    }
+
+    /// Without auto_restart, a probe that finds a daemon down leaves it idle and
+    /// does not relaunch (the pre-existing behavior).
+    @Test func daemonWithoutAutoRestartStaysIdleWhenProbeFindsItDown() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        let config = ProcessConfig(command: "sail up -d", kind: .daemon, status: "sail ps")
+        let p = ManagedProcess(name: "sail", config: config, directory: dir, launcher: launcher)
+        p.start()
+        let before = launcher.launches.filter { $0.command == "sail up -d" }.count
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus()
+        #expect(p.state == .idle)
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count == before)
+    }
+
+    /// A user stop settles a daemon to `.idle`, so a following down-probe is not a
+    /// `.running` -> down transition and must not resurrect what the user stopped.
+    @Test func daemonAutoRestartDoesNotResurrectAUserStoppedDaemon() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        launcher.immediateExit["sail down"] = 0
+        let config = ProcessConfig(command: "sail up -d", kind: .daemon, stop: "sail down", status: "sail ps", autoRestart: true)
+        let p = ManagedProcess(name: "sail", config: config, directory: dir, launcher: launcher)
+        p.start()
+        #expect(p.state == .running)
+        p.stop()
+        #expect(p.state == .idle)
+        let before = launcher.launches.filter { $0.command == "sail up -d" }.count
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus()
+        #expect(p.state == .idle)
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count == before)
+    }
+
+    /// The daemon path caps consecutive failed relaunches rather than churning the
+    /// start command on every poll forever. The start command "succeeds" (exit 0)
+    /// each time, but the service stays down, so every following probe is a
+    /// `.running` -> down transition until the cap is hit.
+    @Test func daemonAutoRestartCapsConsecutiveFailedRelaunches() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        let config = ProcessConfig(command: "sail up -d", kind: .daemon, status: "sail ps", autoRestart: true)
+        let p = ManagedProcess(name: "sail", config: config, directory: dir, launcher: launcher)
+        p.start()
+        let base = launcher.launches.filter { $0.command == "sail up -d" }.count
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus(); p.probeStatus(); p.probeStatus() // three relaunches
+        p.probeStatus() // capped
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count - base == 3)
+        #expect(p.state == .idle)
+    }
+
+    /// The consecutive-failure count is not a lifetime counter: a probe that finds
+    /// the daemon healthy resets it, so a daemon that recovers and later drops again
+    /// still relaunches rather than staying barred.
+    @Test func daemonAutoRestartCounterResetsAfterHealthyProbe() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        let config = ProcessConfig(command: "sail up -d", kind: .daemon, status: "sail ps", autoRestart: true)
+        let p = ManagedProcess(name: "sail", config: config, directory: dir, launcher: launcher)
+        p.start()
+        let base = launcher.launches.filter { $0.command == "sail up -d" }.count
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus(); p.probeStatus() // two relaunches (count -> 2)
+        launcher.immediateExit["sail ps"] = 0
+        p.probeStatus() // healthy: resets the count
+        #expect(p.state == .running)
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus(); p.probeStatus() // both relaunch: not capped
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count - base == 4)
+        #expect(p.state == .running)
+    }
+
+    // MARK: Stop/settle re-entrancy
+
+    /// A `restart()` arriving while a daemon is already tearing down must not
+    /// launch a second stop command. The in-flight teardown owns the relaunch, so
+    /// its `settleStopped()` sees `pendingRestart` and brings the daemon back up.
+    /// The old bug launched a second `sail down`; when that stale teardown settled
+    /// after the relaunch it found `pendingRestart == false` and reverted the
+    /// running daemon to `.idle`.
+    @Test func daemonRestartWhileStoppingRelaunchesAndStaysRunning() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0 // start and relaunch settle at once
+        // "sail down" is left in flight so its exit can be driven after the
+        // re-entrant restart, the ordering the synchronous fake otherwise hides.
+        let p = ManagedProcess(name: "sail", config: ProcessConfig(command: "sail up -d", kind: .daemon, stop: "sail down"), directory: dir, launcher: launcher)
+        p.start()
+        #expect(p.state == .running)
+        p.stop() // teardown A begins
+        let teardownA = launcher.last
+        #expect(teardownA.command == "sail down")
+        #expect(p.state == .stopping)
+        p.restart() // arrives while stopping
+        // Only one teardown may be in flight; the re-entrant restart must not
+        // launch a second.
+        #expect(launcher.launches.filter { $0.command == "sail down" }.count == 1)
+        teardownA.onExit(0) // teardown settles, honoring the pending restart
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count == 2)
+        #expect(p.state == .running)
+    }
+
+    /// A `stop()` arriving while a daemon is tearing down for a restart cancels the
+    /// pending relaunch and settles idle, without launching a duplicate teardown.
+    @Test func daemonStopWhileStoppingCancelsPendingRestart() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        let p = ManagedProcess(name: "sail", config: ProcessConfig(command: "sail up -d", kind: .daemon, stop: "sail down"), directory: dir, launcher: launcher)
+        p.start()
+        p.restart() // running -> teardown begins, pendingRestart set
+        let teardown = launcher.last
+        #expect(teardown.command == "sail down")
+        p.stop() // cancels the pending relaunch while stopping
+        #expect(launcher.launches.filter { $0.command == "sail down" }.count == 1)
+        teardown.onExit(0)
+        #expect(p.state == .idle)
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count == 1) // no relaunch
+    }
+
+    /// A second `restart()` on a long-running process must cancel the first
+    /// escalation before scheduling its own. The old bug overwrote `escalation`
+    /// without cancelling, leaking a Task that later fired SIGTERM/SIGKILL against
+    /// the freshly relaunched process's handle.
+    @Test func longRunningDoubleRestartDoesNotSignalTheRelaunchedProcess() async throws {
+        let launcher = FakeProcessLauncher()
+        let p = ManagedProcess(name: "srv", config: ProcessConfig(command: "server", kind: .longRunning), directory: dir, launcher: launcher, graceInterval: .milliseconds(20))
+        p.start()
+        let first = launcher.last
+        p.restart()
+        #expect(first.handle.signals.first == SIGINT)
+        p.restart() // with the fix, this cancels the first escalation
+        first.onExit(0) // exits from the signal, relaunches (handleExit cancels the live escalation)
+        let second = launcher.last
+        #expect(second !== first)
+        #expect(p.state == .running)
+        // Past two grace intervals: a leaked escalation would signal the new handle here.
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(second.handle.signals.isEmpty)
     }
 
     // MARK: Variable injection

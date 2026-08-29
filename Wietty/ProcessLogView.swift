@@ -21,11 +21,23 @@ struct ProcessLogView: View {
             if let process {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        Text(process.log.lines.joined(separator: "\n"))
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
+                        // One `Text` per line inside a `LazyVStack`, rather than a
+                        // single `Text` of the whole joined buffer. A lone selectable
+                        // `Text` lays out in O(content size) synchronously on the main
+                        // thread, so a large log (or one runaway line) froze the app;
+                        // the lazy stack only lays out the rows on screen. The cost is
+                        // that selection no longer spans lines, it is per row.
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(process.log.lines.enumerated()), id: \.offset) { _, line in
+                                // A blank line renders as a space so it keeps a row's
+                                // height instead of collapsing to nothing.
+                                Text(line.isEmpty ? " " : line)
+                                    .font(.system(.body, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(8)
                         Color.clear.frame(height: 1).id("bottom")
                     }
                     .onChange(of: process.log.lines.count) {

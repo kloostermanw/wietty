@@ -91,7 +91,7 @@ Processes live under a `processes` key, keyed by name:
 | `stop` | string | none | A command that shuts the process down. |
 | `status` | string | none | Daemon only. A probe command (see Status command below). |
 | `auto_start` | bool | `false` | Start the process when the workspace loads. |
-| `auto_restart` | bool | `false` | Restart on unexpected exit (see Limitations). |
+| `auto_restart` | bool | `false` | Restart on unexpected exit (see Auto restart below). |
 | `restart_when_changed` | array | `[]` | Paths to watch (see Limitations). |
 | `env` | object | `{}` | Extra environment variables. |
 | `allow_empty_vars` | bool | `false` | Run even when a referenced `WIETTY_*` variable has no value (see Variables). |
@@ -110,6 +110,22 @@ Every process offers start, stop, restart, and kill from the row's context menu.
   start command may exit right away while the real service keeps running, so a `stop` command is
   effectively required to bring it down, and a `status` command is recommended so the app can
   tell whether it is up.
+
+### Auto restart
+
+With `auto_restart` enabled, a process is brought back after an unexpected exit. What counts as
+unexpected, and how a crash loop is bounded, depends on the kind:
+
+- **long_running**: restarts when the foreground command exits non zero without a stop or restart
+  having been asked for. A sliding time window caps rapid restarts, so an occasional crash still
+  restarts while a tight crash loop stops.
+- **daemon**: has no foreground command to watch, so a drop is detected by the `status` probe
+  (auto_restart therefore requires a `status` command). When a probe finds a daemon that was up now
+  down, the start command runs again. A count of consecutive relaunches bounds this rather than a
+  time window, since a probe only fires on the status poll interval: after enough consecutive
+  relaunches without recovery the daemon is left down, and a probe that finds it healthy resets the
+  count. A daemon the user stopped is not resurrected, because stopping settles it to idle.
+- **short_running**: never auto restarted; the flag is ignored.
 
 ### Status dot
 
@@ -261,8 +277,6 @@ the `env` map (those are set verbatim, not shell evaluated).
 
 - `restart_when_changed` is parsed and stored, but file watching is not implemented yet, so the
   field currently has no effect.
-- `auto_restart` applies to `long_running` processes only. Daemon auto restart is not implemented
-  yet.
 - There is no timeout on `stop` or `status` commands, so keep them fast and non interactive; a
   command that hangs will hang that step.
 - Log output is not written to disk, and typing into a running process is not supported.

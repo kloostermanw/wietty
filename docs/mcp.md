@@ -67,15 +67,33 @@ Sessions: `list_processes`, `get_process_status`, `spawn_process`,
 Managed processes and tests: `list_managed_processes`,
 `get_managed_process_output`, `get_managed_process_status`. These are the
 `processes` and `tests` a workspace declares in `wietty.json`, which are
-supervised commands with a captured log rather than interactive terminals, so
-the surface is read only (list, and read one's recent output or status by its
-id). The id each carries is the same handle the sidebar's "Copy ID for agent"
-row action copies, so a prompt can point an agent straight at another process's
-output.
+supervised commands with a captured log rather than interactive terminals. The
+id each carries is the same handle the sidebar's "Copy ID for agent" row action
+copies, so a prompt can point an agent straight at another process's output. A
+managed process is read only here (list, and read its recent output or status by
+id); the app itself starts and supervises it.
 
-Tools that omit `project_id` fall back to the workspace set with
-`select_project`. Send a trailing newline in `send_input` text to submit a
-command.
+Tests: `list_tests`, `run_test`, `run_all_tests`. `list_tests` is a tests-only
+view, returning the test rows `list_managed_processes` returns without the
+process ones. `run_test` runs one test by its id; `run_all_tests` runs every test
+in a workspace (the selected one if `project_id` is omitted). Both return the
+status each test was left in. A test runs to completion, so read its result
+afterwards with `get_managed_process_status` or `get_managed_process_output`,
+the same read tools a managed process uses. It is done when the status reaches
+`finished` or `failed`. Passing a process id to `run_test` is an error: only
+tests are runnable this way.
+
+A test that is already running is left alone rather than restarted, because a
+second run would otherwise report the in-flight run's result as its own.
+`run_test` treats that as an error, since it started nothing. `run_all_tests`
+does not (meeting one test already in flight is normal when it fans out), so
+every row it returns carries `started`, saying whether this call is what launched
+that test.
+
+Tools that act on one workspace fall back to the workspace set with
+`select_project` when `project_id` is omitted. The `list_*` tools do not:
+`list_processes`, `list_managed_processes`, and `list_tests` span every workspace
+unless scoped. Send a trailing newline in `send_input` text to submit a command.
 
 ## Notes
 

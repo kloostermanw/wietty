@@ -52,6 +52,13 @@ final class ManagedProcess: Identifiable {
     /// Timestamps of recent auto-restarts, pruned to `restartWindow`. The cap
     /// counts a tight crash loop, not crashes spread across the process's life.
     private var recentRestarts: [ContinuousClock.Instant] = []
+    /// Consecutive probe-driven daemon relaunches that have not yet been followed
+    /// by a healthy probe. A daemon relaunch is paced by the status poll interval,
+    /// not by an exit, so the time-window cap `autoRestart()` uses would never fire
+    /// at the slower poll tiers. This count-based cap bounds a daemon that will not
+    /// stay up regardless of poll cadence, and a healthy probe resets it so a
+    /// service that recovers is not permanently barred. See `autoRestartDaemon()`.
+    private var daemonRestartAttempts = 0
 
     init(
         name: String,
@@ -77,15 +84,30 @@ final class ManagedProcess: Identifiable {
 
     // MARK: Controls
 
-    func start() {
-        guard state == .idle || state == .finished || state.isFailed else { return }
+    @discardableResult
+    func start() -> Bool {
+        guard state == .idle || state == .finished || state.isFailed else { return false }
         stopRequested = false
         recentRestarts.removeAll() // a manual start re-enables a capped process
+        daemonRestartAttempts = 0
         launchMain()
+        return true
     }
 
     func restart() {
         recentRestarts.removeAll()
+        daemonRestartAttempts = 0
+        // Already tearing down: the in-flight teardown owns the relaunch, so just
+        // flag it rather than launching a second stop command (or a second
+        // escalation) that races the first. When that teardown settles it honors
+        // pendingRestart and brings the process back up. Without this a stale
+        // second teardown could settle after the relaunch and revert a running
+        // process to .idle.
+        if state == .stopping {
+            stopRequested = true
+            pendingRestart = true
+            return
+        }
         guard isAlive else {
             launchMain()
             return
@@ -120,6 +142,13 @@ final class ManagedProcess: Identifiable {
 
     func stop() {
         guard isAlive else { return }
+        // Already tearing down: cancel any pending relaunch (a restart may have set
+        // it) so the in-flight teardown settles idle, without launching a duplicate
+        // stop command.
+        if state == .stopping {
+            pendingRestart = false
+            return
+        }
         stopRequested = true
         pendingRestart = false
         state = .stopping
@@ -189,12 +218,24 @@ final class ManagedProcess: Identifiable {
             },
             onExit: { [weak self] code in
                 guard let self, generation == probeGeneration else { return }
+                // Captured before the state is overwritten: a daemon dropping from
+                // running to down is the probe-detected "unexpected exit". A daemon
+                // that was already idle (never up, or the user stopped it, which
+                // settles idle) is not, so this transition guard keeps auto_restart
+                // from resurrecting something it should not.
+                let wasRunning = state == .running
                 state = (code == 0) ? .running : .idle
                 failedProbeCode = (code == 0) ? nil : code
-                // A probe that came back healthy clears the dedupe, so if the
-                // same fault returns later it is logged afresh rather than
-                // staying silent forever.
-                if code == 0 { lastLoggedProbeFailure = nil }
+                if code == 0 {
+                    // A probe that came back healthy clears the dedupe, so if the
+                    // same fault returns later it is logged afresh rather than
+                    // staying silent forever, and re-enables the daemon crash-loop
+                    // cap so a later drop is treated as a fresh event.
+                    lastLoggedProbeFailure = nil
+                    daemonRestartAttempts = 0
+                } else if config.autoRestart, wasRunning {
+                    autoRestartDaemon()
+                }
             }
         )
     }
@@ -341,6 +382,21 @@ final class ManagedProcess: Identifiable {
         launchMain()
     }
 
+    /// Relaunches a daemon whose status probe found the backing service down, up
+    /// to `maxRapidRestarts` consecutive attempts. Unlike `autoRestart()` this
+    /// counts attempts rather than timing them: a probe fires on the poll interval
+    /// (15-300s), so a time window sized for exit-driven restarts would not bound a
+    /// daemon that keeps going down at the slower tiers. The count is reset to zero
+    /// by a healthy probe (see `probeStatus`) and by a manual `start()`/`restart()`,
+    /// so only a daemon that stays down across attempts is capped. The service is
+    /// already down, so this relaunches the start command directly rather than
+    /// running the stop command first.
+    private func autoRestartDaemon() {
+        guard daemonRestartAttempts < maxRapidRestarts else { return } // crash-loop cap
+        daemonRestartAttempts += 1
+        launchMain()
+    }
+
     /// Stop mechanics only: runs the configured stop command, or escalates
     /// signals against the live handle. Deliberately does not touch
     /// `pendingRestart` so both `stop()` (which clears it) and `restart()`
@@ -391,6 +447,10 @@ final class ManagedProcess: Identifiable {
     }
 
     private func escalateSignals() {
+        // Cancel any escalation already in flight before scheduling a new one, so a
+        // second call (e.g. a repeated restart) cannot leak the prior Task, which
+        // would otherwise wake later and signal a since-relaunched process.
+        escalation?.cancel()
         handle?.send(signal: SIGINT)
         escalation = Task { [weak self, graceInterval] in
             guard let self else { return }
