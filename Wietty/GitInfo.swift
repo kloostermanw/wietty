@@ -34,7 +34,6 @@ struct ChecksSummary: Equatable, Sendable {
         var parts: [String] = []
         if failing > 0 { parts.append("\(failing) failing") }
         if cancelled > 0 { parts.append("\(cancelled) cancelled") }
-        if skipped > 0 { parts.append("\(skipped) skipped") }
         if passing > 0 { parts.append("\(passing) successfull checks") }
         if pending > 0 { parts.append("\(pending) pending") }
         return parts.joined(separator: ", ")
