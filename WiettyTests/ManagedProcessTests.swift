@@ -291,6 +291,73 @@ final class FakeProcessLauncher: @preconcurrency ProcessLaunching, @unchecked Se
         }
     }
 
+    // MARK: Stop/settle re-entrancy
+
+    /// A `restart()` arriving while a daemon is already tearing down must not
+    /// launch a second stop command. The in-flight teardown owns the relaunch, so
+    /// its `settleStopped()` sees `pendingRestart` and brings the daemon back up.
+    /// The old bug launched a second `sail down`; when that stale teardown settled
+    /// after the relaunch it found `pendingRestart == false` and reverted the
+    /// running daemon to `.idle`.
+    @Test func daemonRestartWhileStoppingRelaunchesAndStaysRunning() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0 // start and relaunch settle at once
+        // "sail down" is left in flight so its exit can be driven after the
+        // re-entrant restart, the ordering the synchronous fake otherwise hides.
+        let p = ManagedProcess(name: "sail", config: ProcessConfig(command: "sail up -d", kind: .daemon, stop: "sail down"), directory: dir, launcher: launcher)
+        p.start()
+        #expect(p.state == .running)
+        p.stop() // teardown A begins
+        let teardownA = launcher.last
+        #expect(teardownA.command == "sail down")
+        #expect(p.state == .stopping)
+        p.restart() // arrives while stopping
+        // Only one teardown may be in flight; the re-entrant restart must not
+        // launch a second.
+        #expect(launcher.launches.filter { $0.command == "sail down" }.count == 1)
+        teardownA.onExit(0) // teardown settles, honoring the pending restart
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count == 2)
+        #expect(p.state == .running)
+    }
+
+    /// A `stop()` arriving while a daemon is tearing down for a restart cancels the
+    /// pending relaunch and settles idle, without launching a duplicate teardown.
+    @Test func daemonStopWhileStoppingCancelsPendingRestart() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        let p = ManagedProcess(name: "sail", config: ProcessConfig(command: "sail up -d", kind: .daemon, stop: "sail down"), directory: dir, launcher: launcher)
+        p.start()
+        p.restart() // running -> teardown begins, pendingRestart set
+        let teardown = launcher.last
+        #expect(teardown.command == "sail down")
+        p.stop() // cancels the pending relaunch while stopping
+        #expect(launcher.launches.filter { $0.command == "sail down" }.count == 1)
+        teardown.onExit(0)
+        #expect(p.state == .idle)
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count == 1) // no relaunch
+    }
+
+    /// A second `restart()` on a long-running process must cancel the first
+    /// escalation before scheduling its own. The old bug overwrote `escalation`
+    /// without cancelling, leaking a Task that later fired SIGTERM/SIGKILL against
+    /// the freshly relaunched process's handle.
+    @Test func longRunningDoubleRestartDoesNotSignalTheRelaunchedProcess() async throws {
+        let launcher = FakeProcessLauncher()
+        let p = ManagedProcess(name: "srv", config: ProcessConfig(command: "server", kind: .longRunning), directory: dir, launcher: launcher, graceInterval: .milliseconds(20))
+        p.start()
+        let first = launcher.last
+        p.restart()
+        #expect(first.handle.signals.first == SIGINT)
+        p.restart() // with the fix, this cancels the first escalation
+        first.onExit(0) // exits from the signal, relaunches (handleExit cancels the live escalation)
+        let second = launcher.last
+        #expect(second !== first)
+        #expect(p.state == .running)
+        // Past two grace intervals: a leaked escalation would signal the new handle here.
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(second.handle.signals.isEmpty)
+    }
+
     // MARK: Variable injection
 
     @Test func injectsVariablesIntoLaunchEnvironment() {

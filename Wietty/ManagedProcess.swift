@@ -88,6 +88,17 @@ final class ManagedProcess: Identifiable {
 
     func restart() {
         recentRestarts.removeAll()
+        // Already tearing down: the in-flight teardown owns the relaunch, so just
+        // flag it rather than launching a second stop command (or a second
+        // escalation) that races the first. When that teardown settles it honors
+        // pendingRestart and brings the process back up. Without this a stale
+        // second teardown could settle after the relaunch and revert a running
+        // process to .idle.
+        if state == .stopping {
+            stopRequested = true
+            pendingRestart = true
+            return
+        }
         guard isAlive else {
             launchMain()
             return
@@ -122,6 +133,13 @@ final class ManagedProcess: Identifiable {
 
     func stop() {
         guard isAlive else { return }
+        // Already tearing down: cancel any pending relaunch (a restart may have set
+        // it) so the in-flight teardown settles idle, without launching a duplicate
+        // stop command.
+        if state == .stopping {
+            pendingRestart = false
+            return
+        }
         stopRequested = true
         pendingRestart = false
         state = .stopping
@@ -393,6 +411,10 @@ final class ManagedProcess: Identifiable {
     }
 
     private func escalateSignals() {
+        // Cancel any escalation already in flight before scheduling a new one, so a
+        // second call (e.g. a repeated restart) cannot leak the prior Task, which
+        // would otherwise wake later and signal a since-relaunched process.
+        escalation?.cancel()
         handle?.send(signal: SIGINT)
         escalation = Task { [weak self, graceInterval] in
             guard let self else { return }
