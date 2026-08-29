@@ -16,7 +16,7 @@ Queries GitHub for a pull request matching the current branch. Requires a non-em
 Fetches the CI status of the workspace's pull request from GitHub. Buckets checks into passing, failing, cancelled, skipped, and pending (in-progress checks count as pending). Requires the pull request lookup to have found a PR.
 
 **Process Status** (local)
-Re-probes daemon-kind processes that declare a status command by running that command to learn whether the backing service is up or down. Local operation, same tiering as the other checks.
+Re-probes daemon-kind processes that declare a status command by running that command to learn whether the backing service is up or down. Local operation, same tiering as the other checks. For a daemon with `auto_restart` enabled, a probe that finds a previously up service now down also relaunches its start command (bounded by a consecutive relaunch cap), so the poll tier also sets how quickly a dropped daemon is brought back. See the `auto_restart` note in `wietty-json.md`.
 
 **Working Tree** (local)
 Computes a fingerprint of the workspace's working tree and forwards it to `TestSupervisor`, which stales any test whose last passing run was baselined against a different fingerprint. Local operation, but its tier does not follow the Decision Matrix below: like the app-wide job name poll, it runs Fast whenever its workspace is expanded and Slow when collapsed, and is not sped up further by the CI-pending or needs-attention overlays (`CheckTier.swift`, `checkTier(for:collapsed:ciPending:needsAttention:)`).
