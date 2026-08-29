@@ -54,7 +54,10 @@ Legend:
   its status-details page does: check-runs (`gh api .../commits/<branch>/check-runs`,
   GitHub Actions and GitHub-App integrations) and the legacy combined commit
   status (`gh api .../commits/<branch>/status`, status-based CI such as
-  CircleCI). The line stays hidden only when there are no checks at all.
+  CircleCI). The summary names the failing, cancelled, passing and pending
+  counts, in that order. Skipped checks still count toward the total but are
+  never named, so a branch whose checks were all skipped renders the line
+  empty. The line is absent only when there are no checks at all.
 - `[phpunit] [feature-tests] ... [All]`: `TestProcessesLineView`, the test
   buttons flowing and wrapping on the left with an `All` button pinned to the
   top right. Rendered only when the workspace defines at least one test
