@@ -52,7 +52,14 @@ struct ProcessLogBuffer: Equatable {
     }
 
     mutating func append(_ chunk: String) {
-        let cleaned = stripANSI(chunk)
+        // Normalize CRLF to a bare newline before the character loop. A PTY in
+        // cooked mode (ONLCR) ends every line with `\r\n`, and Swift coalesces
+        // `\r\n` into a single `Character` (one grapheme, scalars 13 10) that
+        // matches neither the `\r` nor the `\n` branch below. Without this it
+        // would fall through as a literal character and no line would ever
+        // break, collapsing all output onto one runaway line. A lone `\r` (a
+        // progress bar) is left for the loop to handle as an in-place overwrite.
+        let cleaned = stripANSI(chunk).replacingOccurrences(of: "\r\n", with: "\n")
         guard !cleaned.isEmpty else { return }
 
         var completed: [String] = []
