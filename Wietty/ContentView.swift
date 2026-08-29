@@ -50,6 +50,11 @@ struct ContentView: View {
     /// The width the current drag started from, so the gesture offsets a fixed
     /// origin instead of accumulating rounding on every frame.
     @State private var dragStartWidth: Double?
+    /// Where the insertion line sits while a workspace card is being dragged over the
+    /// local sidebar. Set from each drop destination's `isTargeted` closure and
+    /// cleared on drop, so it moves on every frame but never writes the store: the
+    /// reorder itself still happens once, in the `action` closure on release.
+    @State private var dropTarget: WorkspaceDropTarget = .none
     /// Watches connected Macs for bells. Held here so its Combine subscriptions live
     /// as long as the window, and built once in `task`.
     @State private var remoteBells: RemoteBellObserver?
@@ -451,11 +456,22 @@ struct ContentView: View {
                     onTestRunAll: { store.testSupervisor.runAll(projectId: project.id) },
                     onOpenTestLog: { openTestLog($0, in: project) }
                 )
+                .overlay(alignment: .top) {
+                    WorkspaceInsertionIndicator()
+                        .opacity(dropTarget.indicatesBefore(project.id) ? 1 : 0)
+                }
                 .draggable(project.id.uuidString)
                 .dropDestination(for: String.self) { items, _ in
+                    dropTarget = .none
                     guard let first = items.first, let dragged = UUID(uuidString: first) else { return false }
                     store.move(id: dragged, before: project.id)
                     return true
+                } isTargeted: { targeted in
+                    if targeted {
+                        dropTarget = .before(project.id)
+                    } else if dropTarget.indicatesBefore(project.id) {
+                        dropTarget = .none
+                    }
                 }
                 if project.id != visible.last?.id {
                     Divider()
@@ -464,10 +480,17 @@ struct ContentView: View {
             Color.clear
                 .frame(maxWidth: .infinity, minHeight: 40)
                 .contentShape(Rectangle())
+                .overlay(alignment: .top) {
+                    WorkspaceInsertionIndicator()
+                        .opacity(dropTarget.indicatesEnd ? 1 : 0)
+                }
                 .dropDestination(for: String.self) { items, _ in
+                    dropTarget = .none
                     guard let first = items.first, let dragged = UUID(uuidString: first) else { return false }
                     store.moveToEnd(id: dragged)
                     return true
+                } isTargeted: { targeted in
+                    dropTarget = targeted ? .end : (dropTarget.indicatesEnd ? .none : dropTarget)
                 }
         }
     }

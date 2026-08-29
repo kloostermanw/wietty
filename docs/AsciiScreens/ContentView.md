@@ -372,6 +372,17 @@ Legend:
 - Drop zone: a `Color.clear` region at the bottom of the Local section that
   accepts a dragged card to move it to the end. Remote sections don't support
   reordering.
+- Drop indicator: while a card is dragged, a thin accent insertion line
+  (`WorkspaceInsertionIndicator`) shows where it will land. Each card's
+  `dropDestination` reports its `isTargeted` state into `dropTarget`
+  (`WorkspaceDropTarget`), and the line is overlaid at that card's top edge, since
+  `ProjectStore.move(id:before:)` always inserts before the card under the pointer.
+  The trailing drop zone gets the same treatment for "drop at the end", drawing the
+  line after the last card. The indicator is overlaid (its opacity toggled) rather
+  than inserted into the layout, so it appears and clears without shifting the cards.
+  `isTargeted` only moves this `@State`; the store is still written once, in the drop
+  `action` on release, so one reorder is one file write. `WorkspaceDropTargetTests`
+  covers where the line sits.
 - `minWidth: 240`: the sidebar has a minimum width. It is also
   `SidebarWidth.minimum`, the floor a divider drag stops at, since the outer
   explicit width never goes below it.
