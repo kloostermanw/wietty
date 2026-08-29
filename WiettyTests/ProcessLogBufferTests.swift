@@ -48,6 +48,19 @@ import Testing
         #expect(buffer.lines == ["progress 30%"])
     }
 
+    @Test func crlfSplitsIntoLinesWithinOneChunk() {
+        var buffer = ProcessLogBuffer(limit: 100)
+        buffer.append("line1\r\nline2\r\n")
+        #expect(buffer.lines == ["line1", "line2"])
+    }
+
+    @Test func crlfSplitAcrossChunksStillBreaksTheLine() {
+        var buffer = ProcessLogBuffer(limit: 100)
+        buffer.append("line1\r")
+        buffer.append("\nline2\n")
+        #expect(buffer.lines == ["line1", "line2"])
+    }
+
     @Test func carriageReturnCollapsesAcrossChunks() {
         var buffer = ProcessLogBuffer(limit: 100)
         buffer.append("10%\r")
