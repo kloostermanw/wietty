@@ -291,6 +291,101 @@ final class FakeProcessLauncher: @preconcurrency ProcessLaunching, @unchecked Se
         }
     }
 
+    // MARK: Daemon auto_restart
+
+    /// A daemon's "unexpected exit" is the backing service going down, which the
+    /// status probe reports as a `.running` -> down transition. An auto_restart
+    /// daemon relaunches its start command when that happens.
+    @Test func daemonAutoRestartRelaunchesWhenProbeFindsItDown() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        let config = ProcessConfig(command: "sail up -d", kind: .daemon, status: "sail ps", autoRestart: true)
+        let p = ManagedProcess(name: "sail", config: config, directory: dir, launcher: launcher)
+        p.start()
+        #expect(p.state == .running)
+        launcher.immediateExit["sail ps"] = 0
+        p.probeStatus() // healthy: stays running, no relaunch
+        #expect(p.state == .running)
+        let before = launcher.launches.filter { $0.command == "sail up -d" }.count
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus() // down: relaunch the start command
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count == before + 1)
+        #expect(p.state == .running)
+    }
+
+    /// Without auto_restart, a probe that finds a daemon down leaves it idle and
+    /// does not relaunch (the pre-existing behavior).
+    @Test func daemonWithoutAutoRestartStaysIdleWhenProbeFindsItDown() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        let config = ProcessConfig(command: "sail up -d", kind: .daemon, status: "sail ps")
+        let p = ManagedProcess(name: "sail", config: config, directory: dir, launcher: launcher)
+        p.start()
+        let before = launcher.launches.filter { $0.command == "sail up -d" }.count
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus()
+        #expect(p.state == .idle)
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count == before)
+    }
+
+    /// A user stop settles a daemon to `.idle`, so a following down-probe is not a
+    /// `.running` -> down transition and must not resurrect what the user stopped.
+    @Test func daemonAutoRestartDoesNotResurrectAUserStoppedDaemon() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        launcher.immediateExit["sail down"] = 0
+        let config = ProcessConfig(command: "sail up -d", kind: .daemon, stop: "sail down", status: "sail ps", autoRestart: true)
+        let p = ManagedProcess(name: "sail", config: config, directory: dir, launcher: launcher)
+        p.start()
+        #expect(p.state == .running)
+        p.stop()
+        #expect(p.state == .idle)
+        let before = launcher.launches.filter { $0.command == "sail up -d" }.count
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus()
+        #expect(p.state == .idle)
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count == before)
+    }
+
+    /// The daemon path caps consecutive failed relaunches rather than churning the
+    /// start command on every poll forever. The start command "succeeds" (exit 0)
+    /// each time, but the service stays down, so every following probe is a
+    /// `.running` -> down transition until the cap is hit.
+    @Test func daemonAutoRestartCapsConsecutiveFailedRelaunches() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        let config = ProcessConfig(command: "sail up -d", kind: .daemon, status: "sail ps", autoRestart: true)
+        let p = ManagedProcess(name: "sail", config: config, directory: dir, launcher: launcher)
+        p.start()
+        let base = launcher.launches.filter { $0.command == "sail up -d" }.count
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus(); p.probeStatus(); p.probeStatus() // three relaunches
+        p.probeStatus() // capped
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count - base == 3)
+        #expect(p.state == .idle)
+    }
+
+    /// The consecutive-failure count is not a lifetime counter: a probe that finds
+    /// the daemon healthy resets it, so a daemon that recovers and later drops again
+    /// still relaunches rather than staying barred.
+    @Test func daemonAutoRestartCounterResetsAfterHealthyProbe() {
+        let launcher = FakeProcessLauncher()
+        launcher.immediateExit["sail up -d"] = 0
+        let config = ProcessConfig(command: "sail up -d", kind: .daemon, status: "sail ps", autoRestart: true)
+        let p = ManagedProcess(name: "sail", config: config, directory: dir, launcher: launcher)
+        p.start()
+        let base = launcher.launches.filter { $0.command == "sail up -d" }.count
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus(); p.probeStatus() // two relaunches (count -> 2)
+        launcher.immediateExit["sail ps"] = 0
+        p.probeStatus() // healthy: resets the count
+        #expect(p.state == .running)
+        launcher.immediateExit["sail ps"] = 1
+        p.probeStatus(); p.probeStatus() // both relaunch: not capped
+        #expect(launcher.launches.filter { $0.command == "sail up -d" }.count - base == 4)
+        #expect(p.state == .running)
+    }
+
     // MARK: Stop/settle re-entrancy
 
     /// A `restart()` arriving while a daemon is already tearing down must not

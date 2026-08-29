@@ -208,7 +208,7 @@ reference:
 | `stop` | string | none | A command that shuts the process down. |
 | `status` | string | none | Daemon only. An exit code based probe command. |
 | `auto_start` | bool | `false` | Start the process when the workspace loads. |
-| `auto_restart` | bool | `false` | Restart on unexpected exit (long_running only). |
+| `auto_restart` | bool | `false` | Restart on unexpected exit. For `daemon` see the note below. |
 | `restart_when_changed` | array | `[]` | Paths to watch (not yet implemented). |
 | `env` | object | `{}` | Extra environment variables. |
 | `allow_empty_vars` | bool | `false` | Run even when a referenced `WIETTY_*` variable has no value. |
@@ -235,6 +235,24 @@ Example:
   }
 }
 ```
+
+`auto_restart` works differently per kind, because "unexpected exit" is detected
+differently:
+
+- A `long_running` process restarts automatically when its foreground command exits non zero
+  without a stop or restart having been asked for. Rapid restarts are bounded by a
+  sliding time window, so an occasional crash still restarts while a tight crash
+  loop is capped.
+- A `daemon` has no foreground command to watch (its start command exits once the
+  service is up), so a drop is instead detected by the `status` probe, which means
+  `auto_restart` for a daemon requires a `status` command. When a probe finds a
+  daemon that was up now down, the start command is run again. This is bounded by a
+  count of consecutive relaunches rather than a time window, because a probe fires
+  only on the status poll interval: after enough consecutive relaunches without the
+  service coming back the daemon is left down, and a probe that finds it healthy
+  resets the count so a later drop restarts again. A daemon the user stopped is not
+  resurrected, because stopping settles it to idle rather than leaving it running.
+- `short_running` processes are never restarted automatically; the flag is ignored.
 
 See the README "Processes" section for how each kind runs, the status dot, the log
 window, and the shell environment.
