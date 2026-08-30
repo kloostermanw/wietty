@@ -304,6 +304,7 @@ struct AgentConfigRow: View {
                     Button("Save") { save() }.disabled(slot.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .settingsFormBox()
         } else {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -407,6 +408,7 @@ struct TerminalConfigRow: View {
                     Button("Save") { save() }.disabled(slot.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .settingsFormBox()
         } else {
             HStack {
                 Text(ref.slot)
@@ -540,6 +542,7 @@ struct ProcessConfigRow: View {
                     Button("Save") { save() }.disabled(!valid)
                 }
             }
+            .settingsFormBox()
         } else {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -680,6 +683,7 @@ struct TestConfigRow: View {
                     Button("Save") { save() }.disabled(!valid)
                 }
             }
+            .settingsFormBox()
         } else {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
