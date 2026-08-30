@@ -145,24 +145,24 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var agentsSection: some View {
-        Section("Agents") {
-            if store.agents.isEmpty {
-                Text("No agents. The two \"Add Agent\" entries in a workspace's menu "
-                     + "have nothing to offer until there is one here.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+        ListSettingsSection(title: "Agents", isEmpty: store.agents.isEmpty) {
             ForEach(store.agents) { agent in
                 AgentRow(agent: agent,
                          onUpdate: { store.updateAgent($0) },
                          onDelete: { store.removeAgent(id: agent.id) })
             }
+        } addForm: { collapse in
             VStack(alignment: .leading, spacing: 6) {
                 TextField("Name", text: $newAgentName)
                 TextField("Command", text: $newAgentCommand)
                 TextField("Default Arguments", text: $newAgentArguments)
-                Button("Add Agent", action: addAgent)
-                    .disabled(!newAgent.isValid)
+                HStack {
+                    Spacer()
+                    Button("Add Agent") { if addAgent() { collapse() } }
+                        .disabled(!newAgent.isValid)
+                }
             }
+        } footer: {
             Text("Each agent is one entry in a workspace's \"Add Agent\" menu. Starting "
                  + "one opens a terminal in that workspace and types the command, "
                  + "followed by its arguments. \"Add Agent with args\" asks for other "
@@ -172,22 +172,19 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var groupsSection: some View {
-        Section("Groups") {
-            if store.groups.isEmpty {
-                Text("No groups. Every workspace shows under \"All\" in the app menu's "
-                     + "Group submenu until you make one here and file workspaces under it.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+        ListSettingsSection(title: "Groups", isEmpty: store.groups.isEmpty) {
             ForEach(store.groups) { group in
                 GroupRow(group: group,
                          onUpdate: { store.updateGroup($0) },
                          onDelete: { store.removeGroup(id: group.id) })
             }
+        } addForm: { collapse in
             HStack {
                 TextField("Name", text: $newGroupName)
-                Button("Add Group", action: addGroup)
+                Button("Add Group") { if addGroup() { collapse() } }
                     .disabled(!newGroup.isValid)
             }
+        } footer: {
             Text("A group is one entry in the app menu's Group submenu. Pick it there to "
                  + "show only the workspaces filed under it. Assign a workspace to a group "
                  + "from \"Edit workspace…\" in its menu.")
@@ -196,25 +193,25 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var promptTemplatesSection: some View {
-        Section("Prompt templates") {
-            if promptTemplates.templates.isEmpty {
-                Text("No prompt templates. The popup (⌘P, or \"Prompt templates\" in the "
-                     + "app menu) has nothing to offer until you add one here.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+        ListSettingsSection(title: "Prompt templates", isEmpty: promptTemplates.templates.isEmpty) {
             ForEach(promptTemplates.templates) { template in
                 PromptTemplateRow(template: template,
                                   onUpdate: { promptTemplates.update($0) },
                                   onDelete: { promptTemplates.remove(template) })
             }
+        } addForm: { collapse in
             VStack(alignment: .leading, spacing: 6) {
                 TextField("Name", text: $newTemplateName)
                 TextField("Description", text: $newTemplateSummary)
                 TextField("Argument hint (for example <ticket-id> <area>)", text: $newTemplateHint)
                 PromptBodyEditor(text: $newTemplateBody)
-                Button("Add Template", action: addTemplate)
-                    .disabled(!newTemplate.isValid)
+                HStack {
+                    Spacer()
+                    Button("Add Template") { if addTemplate() { collapse() } }
+                        .disabled(!newTemplate.isValid)
+                }
             }
+        } footer: {
             if let error = promptTemplates.lastError {
                 // Neutral wording: `lastError` carries both write failures (a save that
                 // could not reach disk) and read failures (a file that could not be
@@ -269,7 +266,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var remoteConnectionsSection: some View {
-        Section("Remote connections") {
+        ListSettingsSection(title: "Remote connections", isEmpty: remoteConnections.connections.isEmpty) {
             ForEach(remoteConnections.connections) { connection in
                 RemoteConnectionRow(
                     connection: connection,
@@ -283,14 +280,19 @@ struct SettingsView: View {
                     }
                 )
             }
+        } addForm: { collapse in
             VStack(alignment: .leading, spacing: 6) {
                 TextField("Name", text: $newName)
                 TextField("Host", text: $newHost)
                 NarrowFieldRow("Port") { TextField("Port", text: $newPort) }
                 SecureField("Token", text: $newToken)
-                Button("Add connection", action: addConnection)
-                    .disabled(!newConnectionIsValid)
+                HStack {
+                    Spacer()
+                    Button("Add connection") { if addConnection() { collapse() } }
+                        .disabled(!newConnectionIsValid)
+                }
             }
+        } footer: {
             Text("Connect to another Mac running Wietty with its LAN remote terminal enabled. Enter the host, port, and token shown in that Mac's Settings.")
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -406,22 +408,26 @@ struct SettingsView: View {
                         defaultArguments: newAgentArguments)
     }
 
-    private func addAgent() {
-        guard newAgent.isValid else { return }
+    @discardableResult
+    private func addAgent() -> Bool {
+        guard newAgent.isValid else { return false }
         store.addAgent(newAgent)
         newAgentName = ""
         newAgentCommand = ""
         newAgentArguments = ""
+        return true
     }
 
     /// The group the name field currently describes, built rather than stored so "is
     /// this addable" and "what gets added" cannot disagree.
     private var newGroup: WorkspaceGroup { WorkspaceGroup(name: newGroupName) }
 
-    private func addGroup() {
-        guard newGroup.isValid else { return }
+    @discardableResult
+    private func addGroup() -> Bool {
+        guard newGroup.isValid else { return false }
         store.addGroup(newGroup)
         newGroupName = ""
+        return true
     }
 
     /// The template the add-form describes, built rather than stored so "is this
@@ -433,18 +439,21 @@ struct SettingsView: View {
                        fileURL: URL(fileURLWithPath: "/"))
     }
 
-    private func addTemplate() {
-        guard newTemplate.isValid else { return }
+    @discardableResult
+    private func addTemplate() -> Bool {
+        guard newTemplate.isValid else { return false }
         promptTemplates.add(name: newTemplateName, summary: newTemplateSummary,
                             argumentHint: newTemplateHint, body: newTemplateBody)
         newTemplateName = ""
         newTemplateSummary = ""
         newTemplateHint = ""
         newTemplateBody = ""
+        return true
     }
 
-    private func addConnection() {
-        guard let port = Int(newPort) else { return }
+    @discardableResult
+    private func addConnection() -> Bool {
+        guard newConnectionIsValid, let port = Int(newPort) else { return false }
         let connection = RemoteConnection(
             id: UUID(),
             name: newName.trimmingCharacters(in: .whitespaces),
@@ -458,6 +467,7 @@ struct SettingsView: View {
         newHost = ""
         newPort = "7434"
         newToken = ""
+        return true
     }
 
     private func portField(_ label: String, value: Binding<Int>) -> some View {

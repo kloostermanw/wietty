@@ -77,14 +77,25 @@ workspace card.
 - **Terminals and agents are kept in sync.** When a file exists (sync is on), the
   app writes the file to mirror the workspace's current rows, and it applies edits
   you make to the file back into the layout.
-- **Processes are read only in the app.** You declare them in the file; the app
-  never edits process definitions. It preserves the processes it last read when it
-  rewrites the file for terminal or agent changes, so processes you add by hand are
-  not lost.
+- **Processes and tests are preserved across rewrites.** When the app rewrites the
+  file for a row change, it writes back the process and test definitions it last
+  read, so definitions you added by hand are not lost.
+
+There are two ways to change the file: edit it on disk, or edit it in the app from
+"Edit workspace…" in the workspace's card menu.
 
 When you edit the file on disk, a file watcher notices and the workspace card shows
 a change indicator. Clicking it applies the change: new processes appear, removed
 ones are dropped, and changed commands take effect on the next start.
+
+The "Edit workspace…" page (see `AsciiScreens/WorkspaceSettingsView.md`) edits every
+section of the file directly: `shell_init`, agents, terminals, processes and tests.
+It is the reverse of the read path, writing the same pretty-printed, defaults-omitted
+file described below. Because the file runs shell lines, an edit made on the page is
+also agreed to on your behalf (see [The file runs commands](#the-file-runs-commands-so-it-is-agreed-to-first)),
+so it never raises the approval prompt: typing the command here is the consent. The
+page only appears once sync is on; a workspace with no `wietty.json` shows an "Enable
+config sync" button first.
 
 The app writes the file pretty printed, with sorted keys and a trailing newline, so
 it stays stable and diff friendly. Array order (agents, terminals) is preserved as

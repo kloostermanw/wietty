@@ -7,11 +7,13 @@ enum ProcessKind: String, Codable, Equatable {
     case shortRunning = "short_running"
 }
 
-/// One process definition from `wietty.json`. The file is the source of truth:
-/// the app never edits a definition, but it does re-encode the ones it decoded,
-/// because rewriting the file (when terminal rows change) reconstructs it from
+/// One process definition from `wietty.json`. The file is the source of truth, and
+/// the app re-encodes the definitions it decoded whenever it rewrites the file
+/// (a row change, or an edit from the Edit workspace page), reconstructing them from
 /// the definitions held on `Project`. A decoded definition must therefore keep
-/// saying exactly what the file said.
+/// saying exactly what the file said, so a rewrite that touches a neighbour does not
+/// rewrite it. The Edit workspace page (`ProjectStore.updateProcess`) is the one path
+/// that changes a definition on purpose.
 struct ProcessConfig: Codable, Equatable {
     var command: String
     var kind: ProcessKind
