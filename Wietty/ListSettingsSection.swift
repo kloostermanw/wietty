@@ -1,5 +1,15 @@
 import SwiftUI
 
+extension View {
+    /// The bordered box that sets an add or edit form apart from the plain rows in a
+    /// settings list. Used by both the add form (`ListSettingsSection`) and each
+    /// row's inline edit form, so the two look the same.
+    func settingsFormBox() -> some View {
+        padding(10)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor)))
+    }
+}
+
 /// A settings section whose body is a list of items: the section title on the left
 /// with an Add button on the right, then the rows, then an add form that stays
 /// hidden until it is needed.
@@ -30,9 +40,7 @@ struct ListSettingsSection<Rows: View, AddForm: View, Footer: View>: View {
             if showingForm {
                 // Boxed, so the add form reads as a distinct thing to fill in rather
                 // than another row in the list above it.
-                addForm { isAdding = false }
-                    .padding(10)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor)))
+                addForm { isAdding = false }.settingsFormBox()
             }
             footer()
         } header: {

@@ -799,6 +799,7 @@ struct GroupRow: View {
                 Button("Cancel") { cancelEditing() }
                 Button("Save") { save() }.disabled(!edited.isValid)
             }
+            .settingsFormBox()
         } else {
             HStack {
                 Text(group.displayName)
@@ -874,6 +875,7 @@ struct AgentRow: View {
                     Button("Save") { save() }.disabled(!edited.isValid)
                 }
             }
+            .settingsFormBox()
         } else {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -962,6 +964,7 @@ struct PromptTemplateRow: View {
                     Button("Save") { save() }.disabled(!edited.isValid)
                 }
             }
+            .settingsFormBox()
         } else {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1072,6 +1075,7 @@ private struct RemoteConnectionRow: View {
                     Button("Save") { save() }.disabled(!isValid)
                 }
             }
+            .settingsFormBox()
         } else {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {

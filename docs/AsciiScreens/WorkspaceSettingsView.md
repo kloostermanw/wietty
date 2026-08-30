@@ -45,8 +45,10 @@ the title on the left and an Add button on the right, then the rows, each with a
 pencil and a trash icon. The add form is hidden until it is needed. It appears when
 the list is empty (there is nothing to do but add the first item) or when Add is
 pressed, and folds away again on a successful add or on Cancel. When shown it sits in
-a bordered box, set apart from the rows above it. Pressing Add on the "Agents"
-section, say, reveals the slot, type, prefix and fixed-naming fields below the rows:
+a bordered box (`View.settingsFormBox`), set apart from the rows above it. The inline
+edit form a row shows when its pencil is clicked uses the same box, so adding and
+editing look alike. Pressing Add on the "Agents" section, say, reveals the slot, type,
+prefix and fixed-naming fields below the rows:
 
 ```
 │  Agents                                  Cancel   │
