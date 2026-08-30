@@ -129,7 +129,9 @@ struct WorkspaceSettingsView: View {
         }
 
         ListSettingsSection(title: Self.agentsSectionTitle, isEmpty: agents.isEmpty) {
-            ForEach(agents) { ref in
+            ReorderableForEach(items: agents,
+                               onMove: { store.moveConfigRows(kind: .claude, fromOffsets: $0,
+                                                              toOffset: $1, for: id) }) { ref in
                 AgentConfigRow(ref: ref,
                                onSave: { store.updateConfigRow(ref.id, slot: $0, type: $1, prefix: $2,
                                                                fixedNaming: $3, for: id) },
@@ -145,7 +147,9 @@ struct WorkspaceSettingsView: View {
         }
 
         ListSettingsSection(title: Self.terminalsSectionTitle, isEmpty: terminals.isEmpty) {
-            ForEach(terminals) { ref in
+            ReorderableForEach(items: terminals,
+                               onMove: { store.moveConfigRows(kind: .terminal, fromOffsets: $0,
+                                                              toOffset: $1, for: id) }) { ref in
                 TerminalConfigRow(ref: ref,
                                   onSave: { store.updateConfigRow(ref.id, slot: $0, type: "", prefix: "",
                                                                   fixedNaming: false, for: id) },

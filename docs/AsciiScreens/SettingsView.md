@@ -142,7 +142,9 @@ menu spell the feature out in full.
 
 The Groups section (`SettingsView.groupsSection`) is a `ListSettingsSection`: the
 title with an Add button on the right, then one row per `store.groups` (`GroupRow`):
-the group's name with an edit `(✎)` and delete `(🗑)` button. Editing swaps the row
+the group's name with an edit `(✎)` and delete `(🗑)` button. The rows are draggable
+to reorder the list (`ReorderableForEach` calling `store.moveGroup`), which is the
+order the app menu's Group submenu shows them in. Editing swaps the row
 for an inline Name field with Cancel and Save; Save is disabled until the name is
 non-blank (`WorkspaceGroup.isValid`). The add form (a Name field and "Add Group") is
 hidden until the list is empty or Add is pressed, and folds away again on a
@@ -302,7 +304,8 @@ command and the arguments as two separate facts. Editing (✎) swaps the row for
 inline Name / Command / Default Arguments form with Cancel and Save; Save is disabled
 until both a name and a command are present (`AgentDefinition.isValid`). The add form
 is hidden until the list is empty or Add is pressed, and folds away again on a
-successful add; "Add Agent" is disabled by the same rule.
+successful add; "Add Agent" is disabled by the same rule. The rows are draggable to
+reorder the menu (`ReorderableForEach` calling `store.moveAgent`).
 
 The list is a preference like the ports and the bell sound: held on `ProjectStore`,
 persisted to `~/.config/wietty/config` as `agent.0.name`/`.command`/`.args` (see

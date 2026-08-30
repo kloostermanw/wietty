@@ -303,6 +303,11 @@ final class ProjectStore {
         agents.append(agent)
     }
 
+    /// Reorders the agent menu (the Settings › Agents list is draggable).
+    func moveAgent(fromOffsets: IndexSet, toOffset: Int) {
+        agents.move(fromOffsets: fromOffsets, toOffset: toOffset)
+    }
+
     /// Replaces the agent with the same id, and does nothing when there is none:
     /// the edit form is on screen while the list can change under it, and an edit
     /// of a deleted agent must not put it back.
@@ -339,6 +344,11 @@ final class ProjectStore {
     /// Appends a group to the end of the list.
     func addGroup(_ group: WorkspaceGroup) {
         groups.append(group)
+    }
+
+    /// Reorders the group list (the Settings › General list is draggable).
+    func moveGroup(fromOffsets: IndexSet, toOffset: Int) {
+        groups.move(fromOffsets: fromOffsets, toOffset: toOffset)
     }
 
     /// Replaces the group with the same id, and does nothing when there is none: the
@@ -1974,6 +1984,21 @@ final class ProjectStore {
         }
         commitConfigEdits(for: projectId)
         return true
+    }
+
+    /// Reorders the rows of one kind. The file writes agents then terminals in row
+    /// order, so order within a kind is what the page can change; `offsets` and
+    /// `destination` index into that kind's rows as the page lists them.
+    func moveConfigRows(kind: TerminalKind, fromOffsets offsets: IndexSet, toOffset destination: Int,
+                        for projectId: UUID) {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return }
+        var ofKind = projects[index].terminals.filter { $0.kind == kind }
+        let others = projects[index].terminals.filter { $0.kind != kind }
+        ofKind.move(fromOffsets: offsets, toOffset: destination)
+        // Keep the two kinds contiguous the way the file writes them: agents first,
+        // then terminals, so the rebuilt config reads in the order the page shows.
+        projects[index].terminals = kind == .claude ? ofKind + others : others + ofKind
+        commitConfigEdits(for: projectId)
     }
 
     /// The user agreed to what the pending file wants to run, so it is applied now.
