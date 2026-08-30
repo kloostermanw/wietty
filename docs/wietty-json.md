@@ -88,7 +88,11 @@ ones are dropped, and changed commands take effect on the next start.
 
 The app writes the file pretty printed, with sorted keys and a trailing newline, so
 it stays stable and diff friendly. Array order (agents, terminals) is preserved as
-written.
+written. Slashes are left unescaped, so a command path reads as
+`/usr/local/bin/fork`, not `\/usr\/local\/bin\/fork`. A process or test definition
+is written with only the fields you set: fields left at their default (for example
+`auto_start`, `allow_empty_vars`) and empty collections (`env`, `restart_when_changed`,
+`shell_init`) are omitted rather than spelled out on every rewrite.
 
 ## Creating the file (build)
 

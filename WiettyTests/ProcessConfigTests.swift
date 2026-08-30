@@ -75,4 +75,59 @@ import Foundation
         let config = try WorkspaceConfig.parse(json)
         #expect(config.processes == nil)
     }
+
+    /// The app re-encodes the process definitions it decoded whenever it rewrites
+    /// `wietty.json` for a row change. A minimal definition must come back minimal,
+    /// not sprout `auto_start: false`, `env: {}` and the rest of the defaults.
+    /// `command` and `kind` are always written; everything else only when set.
+    @Test func encodingOmitsDefaultAndEmptyFields() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [], terminals: [],
+            processes: ["npm": ProcessConfig(command: "npm run dev")]
+        )
+        let text = String(decoding: try config.encoded(), as: UTF8.self)
+        #expect(text.contains("\"command\""))
+        #expect(text.contains("\"kind\""))
+        #expect(!text.contains("auto_start"))
+        #expect(!text.contains("auto_restart"))
+        #expect(!text.contains("allow_empty_vars"))
+        #expect(!text.contains("restart_when_changed"))
+        #expect(!text.contains("shell_init"))
+        #expect(!text.contains("\"env\""))
+        #expect(!text.contains("\"stop\""))
+        #expect(!text.contains("\"status\""))
+    }
+
+    /// A set field is written and survives a round trip, so a hand written or
+    /// decoded value is preserved when the file is rewritten.
+    @Test func encodingKeepsSetFieldsAndRoundTrips() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [], terminals: [],
+            processes: ["sail": ProcessConfig(
+                command: "sail up -d", kind: .daemon, stop: "sail down", status: "sail ps",
+                autoStart: true, autoRestart: true, restartWhenChanged: [".env"],
+                env: ["APP_ENV": "local"], allowEmptyVars: true, shellInit: ["source .env"])]
+        )
+        let text = String(decoding: try config.encoded(), as: UTF8.self)
+        #expect(text.contains("auto_start"))
+        #expect(text.contains("auto_restart"))
+        #expect(text.contains("allow_empty_vars"))
+        #expect(text.contains("restart_when_changed"))
+        #expect(text.contains("shell_init"))
+        let restored = try WorkspaceConfig.parse(config.encoded())
+        #expect(restored == config)
+    }
+
+    /// The whole point of the issue: a command path is written with real slashes,
+    /// not the `\/` Foundation escapes by default.
+    @Test func encodingDoesNotEscapeSlashesInCommand() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [], terminals: [],
+            processes: ["fork": ProcessConfig(
+                command: "/usr/local/bin/fork $WIETTY_WORKSPACE_PATH", kind: .shortRunning)]
+        )
+        let text = String(decoding: try config.encoded(), as: UTF8.self)
+        #expect(text.contains("/usr/local/bin/fork $WIETTY_WORKSPACE_PATH"))
+        #expect(!text.contains("\\/"))
+    }
 }

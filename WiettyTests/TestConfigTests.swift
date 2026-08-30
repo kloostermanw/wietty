@@ -52,4 +52,16 @@ import Foundation
         let cfg = try JSONDecoder().decode(TestConfig.self, from: json)
         #expect(cfg.shellInit == ["source ./.venv/bin/activate"])
     }
+
+    /// Like a process definition, a re-encoded test definition must not gain
+    /// `env: {}`, `allow_empty_vars: false` and `shell_init: []` the first time
+    /// the app rewrites the file. Only `command` is always written.
+    @Test func encodingOmitsDefaultAndEmptyFields() throws {
+        let data = try JSONEncoder().encode(TestConfig(command: "vendor/bin/phpstan analyse"))
+        let text = try #require(String(data: data, encoding: .utf8))
+        #expect(text.contains("command"))
+        #expect(!text.contains("allow_empty_vars"))
+        #expect(!text.contains("shell_init"))
+        #expect(!text.contains("env"))
+    }
 }
