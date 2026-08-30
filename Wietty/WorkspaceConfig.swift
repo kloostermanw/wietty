@@ -134,10 +134,12 @@ struct WorkspaceConfig: Codable, Equatable {
     }
 
     /// Pretty, key-sorted JSON with a trailing newline so the file is stable and
-    /// diff friendly. Array order is preserved as written.
+    /// diff friendly. Array order is preserved as written. Slashes are left
+    /// unescaped so a command path reads as `/usr/local/bin/x`, the way it was
+    /// written by hand, rather than Foundation's default `\/`.
     func encoded() throws -> Data {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         var data = try encoder.encode(self)
         data.append(0x0A)
         return data

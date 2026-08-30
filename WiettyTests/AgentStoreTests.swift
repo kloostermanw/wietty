@@ -92,4 +92,17 @@ import Foundation
         store.updateAgent(AgentDefinition(name: "Ghost", command: "ghost"))
         #expect(store.agents.map(\.name) == ["Claude"])
     }
+
+    /// Dragging a row to reorder the menu is a real reorder that survives a relaunch,
+    /// the same as adding one.
+    @Test func movingAnAgentReordersAndPersists() {
+        let defaults = freshDefaults()
+        let first = store(defaults)
+        first.addAgent(AgentDefinition(name: "Codex", command: "codex"))
+        first.addAgent(AgentDefinition(name: "Aider", command: "aider"))
+        // Claude, Codex, Aider -> move Aider (index 2) to the front.
+        first.moveAgent(fromOffsets: IndexSet(integer: 2), toOffset: 0)
+        #expect(first.agents.map(\.name) == ["Aider", "Claude", "Codex"])
+        #expect(store(defaults).agents.map(\.name) == ["Aider", "Claude", "Codex"])
+    }
 }

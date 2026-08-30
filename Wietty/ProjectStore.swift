@@ -303,6 +303,11 @@ final class ProjectStore {
         agents.append(agent)
     }
 
+    /// Reorders the agent menu (the Settings › Agents list is draggable).
+    func moveAgent(fromOffsets: IndexSet, toOffset: Int) {
+        agents.move(fromOffsets: fromOffsets, toOffset: toOffset)
+    }
+
     /// Replaces the agent with the same id, and does nothing when there is none:
     /// the edit form is on screen while the list can change under it, and an edit
     /// of a deleted agent must not put it back.
@@ -339,6 +344,11 @@ final class ProjectStore {
     /// Appends a group to the end of the list.
     func addGroup(_ group: WorkspaceGroup) {
         groups.append(group)
+    }
+
+    /// Reorders the group list (the Settings › General list is draggable).
+    func moveGroup(fromOffsets: IndexSet, toOffset: Int) {
+        groups.move(fromOffsets: fromOffsets, toOffset: toOffset)
     }
 
     /// Replaces the group with the same id, and does nothing when there is none: the
@@ -1773,6 +1783,222 @@ final class ProjectStore {
     func approve(_ commands: [String], for projectId: UUID) {
         guard !commands.isEmpty else { return }
         approvedCommands[projectId, default: []].formUnion(commands)
+    }
+
+    // MARK: - Editing the workspace config from the Edit workspace page
+    //
+    // The methods below let the Edit workspace page change what a workspace's
+    // `wietty.json` says: its `shell_init`, agents, terminals, processes and tests.
+    // Each mutates the live `Project` and then routes through `commitConfigEdits`,
+    // so a change typed on the page behaves exactly like the same change reconciled
+    // from disk, minus the approval prompt: the user typing it here is the consent
+    // the prompt would otherwise ask for, the same standing `enableConfigSync`
+    // relies on.
+    //
+    // They assume sync is on, which the page enforces by showing an "Enable config
+    // sync" button rather than the editors until it is. Only the file write is
+    // actually guarded (`emitConfig` checks the file exists); the in-memory mutation
+    // and the supervisor apply are not, so calling one with sync off would leave the
+    // `Project` and the (absent) file out of step. That state is unreachable through
+    // the UI, and these are the only callers.
+
+    /// Rebuilds the config from the workspace's live state, agrees to every line it
+    /// now runs, applies the process and test definitions to their supervisors, and
+    /// rewrites the file. The one path every Edit-workspace mutator ends in.
+    private func commitConfigEdits(for projectId: UUID) {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return }
+        let project = projects[index]
+        let config = ConfigReconcile.config(
+            from: project.terminals, name: project.configName, processes: project.configProcesses,
+            tests: project.configTests, shellInit: project.configShellInit
+        )
+        // The edit is the user asking for it, so nothing here needs a second question.
+        approve(ConfigTrust.commands(in: config), for: projectId)
+        processes.apply(config, projectId: projectId, directory: project.url) { [weak self] in
+            self?.processVariables(for: projectId) ?? [:]
+        }
+        testSupervisor.apply(config, projectId: projectId, directory: project.url) { [weak self] in
+            self?.processVariables(for: projectId) ?? [:]
+        }
+        save()
+        emitConfig(for: projectId)
+    }
+
+    /// Replaces the workspace-wide `shell_init` lines. Blank lines are dropped and
+    /// an empty result is stored as absent, so the key leaves the file rather than
+    /// lingering as `"shell_init": []`.
+    func setShellInit(_ lines: [String], for projectId: UUID) {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return }
+        let kept = lines.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let settled: [String]? = kept.isEmpty ? nil : kept
+        guard projects[index].configShellInit != settled else { return }
+        projects[index].configShellInit = settled
+        commitConfigEdits(for: projectId)
+    }
+
+    /// Adds a process definition under a new name. Refuses an empty name or one that
+    /// is already taken, returning false so the add form can keep what the user
+    /// typed rather than silently dropping it.
+    @discardableResult
+    func addProcess(name: String, config: ProcessConfig, for projectId: UUID) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return false }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        var procs = projects[index].configProcesses ?? [:]
+        guard procs[trimmed] == nil else { return false }
+        procs[trimmed] = config
+        projects[index].configProcesses = procs
+        commitConfigEdits(for: projectId)
+        return true
+    }
+
+    /// Applies an edit to an existing process row, renaming it when the name
+    /// changed. Refuses an empty name, an unknown original, or a rename onto a
+    /// different existing process; returns false so the row stays in edit mode.
+    @discardableResult
+    func updateProcess(originalName: String, name: String, config: ProcessConfig,
+                       for projectId: UUID) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }),
+              var procs = projects[index].configProcesses, procs[originalName] != nil else { return false }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed == originalName || procs[trimmed] == nil else { return false }
+        procs[originalName] = nil
+        procs[trimmed] = config
+        projects[index].configProcesses = procs
+        commitConfigEdits(for: projectId)
+        return true
+    }
+
+    /// Removes a process definition. Clears the section to absent when it empties.
+    func removeProcess(name: String, for projectId: UUID) {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }),
+              var procs = projects[index].configProcesses, procs[name] != nil else { return }
+        procs[name] = nil
+        projects[index].configProcesses = procs.isEmpty ? nil : procs
+        commitConfigEdits(for: projectId)
+    }
+
+    /// Adds a test definition under a new name. Same refusals as `addProcess`.
+    @discardableResult
+    func addTest(name: String, config: TestConfig, for projectId: UUID) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return false }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        var tests = projects[index].configTests ?? [:]
+        guard tests[trimmed] == nil else { return false }
+        tests[trimmed] = config
+        projects[index].configTests = tests
+        commitConfigEdits(for: projectId)
+        return true
+    }
+
+    /// Applies an edit to an existing test row, renaming it when the name changed.
+    /// Same refusals as `updateProcess`.
+    @discardableResult
+    func updateTest(originalName: String, name: String, config: TestConfig,
+                    for projectId: UUID) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }),
+              var tests = projects[index].configTests, tests[originalName] != nil else { return false }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed == originalName || tests[trimmed] == nil else { return false }
+        tests[originalName] = nil
+        tests[trimmed] = config
+        projects[index].configTests = tests
+        commitConfigEdits(for: projectId)
+        return true
+    }
+
+    /// Removes a test definition. Clears the section to absent when it empties.
+    func removeTest(name: String, for projectId: UUID) {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }),
+              var tests = projects[index].configTests, tests[name] != nil else { return }
+        tests[name] = nil
+        projects[index].configTests = tests.isEmpty ? nil : tests
+        commitConfigEdits(for: projectId)
+    }
+
+    /// Adds a declared agent row: a row with no session yet, exactly what a
+    /// `wietty.json` agent entry is. `type` is the line it runs (`claude` for the
+    /// default). Refuses an empty slot or one already used by another agent row,
+    /// since the file matches rows to entries by slot.
+    @discardableResult
+    func addAgentRow(slot: String, type: String, prefix: String = "", fixedNaming: Bool = false,
+                     for projectId: UUID) -> Bool {
+        addConfigRow(kind: .claude, slot: slot, type: type, prefix: prefix,
+                     fixedNaming: fixedNaming, for: projectId)
+    }
+
+    /// Adds a declared terminal row (a label). Refuses an empty or duplicate slot.
+    @discardableResult
+    func addTerminalRow(slot: String, for projectId: UUID) -> Bool {
+        addConfigRow(kind: .terminal, slot: slot, type: ConfigReconcile.defaultAgentType,
+                     prefix: "", fixedNaming: false, for: projectId)
+    }
+
+    private func addConfigRow(kind: TerminalKind, slot: String, type: String, prefix: String,
+                              fixedNaming: Bool, for projectId: UUID) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return false }
+        let trimmed = slot.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard !projects[index].terminals.contains(where: { $0.kind == kind && $0.slot == trimmed }) else {
+            return false
+        }
+        // `claude` carries no line of its own, the way a hand written file means it.
+        let command = kind == .claude && type != ConfigReconcile.defaultAgentType ? type : nil
+        projects[index].terminals.append(
+            TerminalRef(label: trimmed, sessionId: "", kind: kind, slot: trimmed, command: command,
+                        fixedNaming: fixedNaming, prefix: prefix)
+        )
+        commitConfigEdits(for: projectId)
+        return true
+    }
+
+    /// Edits a declared row. The slot must stay unique for its kind. For an agent
+    /// row, `type` is the line it runs; it is applied only while the row is idle,
+    /// because a running session keeps the line it was started with (the same rule
+    /// `ConfigReconcile.apply` follows). `prefix` and `fixedNaming` are display and
+    /// apply even to a running agent row; both are ignored for a terminal row.
+    /// Refuses an empty or colliding slot, returning false so the row stays editing.
+    @discardableResult
+    func updateConfigRow(_ refId: UUID, slot: String, type: String, prefix: String,
+                         fixedNaming: Bool, for projectId: UUID) -> Bool {
+        guard let pIndex = projects.firstIndex(where: { $0.id == projectId }),
+              let tIndex = projects[pIndex].terminals.firstIndex(where: { $0.id == refId }) else { return false }
+        let kind = projects[pIndex].terminals[tIndex].kind
+        let trimmed = slot.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let collides = projects[pIndex].terminals.contains {
+            $0.id != refId && $0.kind == kind && $0.slot == trimmed
+        }
+        guard !collides else { return false }
+        projects[pIndex].terminals[tIndex].slot = trimmed
+        projects[pIndex].terminals[tIndex].label = trimmed
+        if kind == .claude {
+            let hasSession = !projects[pIndex].terminals[tIndex].sessionId.isEmpty
+            if !hasSession {
+                projects[pIndex].terminals[tIndex].command =
+                    type == ConfigReconcile.defaultAgentType ? nil : type
+            }
+            projects[pIndex].terminals[tIndex].prefix = prefix
+            projects[pIndex].terminals[tIndex].fixedNaming = fixedNaming
+        }
+        commitConfigEdits(for: projectId)
+        return true
+    }
+
+    /// Reorders the rows of one kind. The file writes agents then terminals in row
+    /// order, so order within a kind is what the page can change; `offsets` and
+    /// `destination` index into that kind's rows as the page lists them.
+    func moveConfigRows(kind: TerminalKind, fromOffsets offsets: IndexSet, toOffset destination: Int,
+                        for projectId: UUID) {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return }
+        var ofKind = projects[index].terminals.filter { $0.kind == kind }
+        let others = projects[index].terminals.filter { $0.kind != kind }
+        ofKind.move(fromOffsets: offsets, toOffset: destination)
+        // Keep the two kinds contiguous the way the file writes them: agents first,
+        // then terminals, so the rebuilt config reads in the order the page shows.
+        projects[index].terminals = kind == .claude ? ofKind + others : others + ofKind
+        commitConfigEdits(for: projectId)
     }
 
     /// The user agreed to what the pending file wants to run, so it is applied now.

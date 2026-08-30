@@ -65,6 +65,15 @@ struct RightTerminalView: View {
             // The same floor again, so which page is up cannot change how small the
             // window can get.
             WorkspaceSettingsView(store: store, project: store.projects.first { $0.id == id })
+                // Load bearing. The editors hold per-workspace `@State` (the shell
+                // init draft, each row's in-progress edit buffer) seeded from the
+                // project in `init`, which SwiftUI ignores on reuse. Switching from
+                // one workspace's Edit page to another keeps this one branch's
+                // structural identity, so without an id the second workspace would
+                // inherit the first's drafts and a Save would write them into the
+                // wrong `wietty.json`. Keying to the id gives each workspace its own
+                // editor state, the same way the remote pane keys to its session.
+                .id(id)
                 .frame(minWidth: SidebarWidth.paneMinimum,
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)

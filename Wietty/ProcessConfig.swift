@@ -7,11 +7,13 @@ enum ProcessKind: String, Codable, Equatable {
     case shortRunning = "short_running"
 }
 
-/// One process definition from `wietty.json`. The file is the source of truth:
-/// the app never edits a definition, but it does re-encode the ones it decoded,
-/// because rewriting the file (when terminal rows change) reconstructs it from
+/// One process definition from `wietty.json`. The file is the source of truth, and
+/// the app re-encodes the definitions it decoded whenever it rewrites the file
+/// (a row change, or an edit from the Edit workspace page), reconstructing them from
 /// the definitions held on `Project`. A decoded definition must therefore keep
-/// saying exactly what the file said.
+/// saying exactly what the file said, so a rewrite that touches a neighbour does not
+/// rewrite it. The Edit workspace page (`ProjectStore.updateProcess`) is the one path
+/// that changes a definition on purpose.
 struct ProcessConfig: Codable, Equatable {
     var command: String
     var kind: ProcessKind
@@ -77,5 +79,24 @@ struct ProcessConfig: Codable, Equatable {
         env = try c.decodeIfPresent([String: String].self, forKey: .env) ?? [:]
         allowEmptyVars = try c.decodeIfPresent(Bool.self, forKey: .allowEmptyVars) ?? false
         shellInit = try c.decodeIfPresent([String].self, forKey: .shellInit) ?? []
+    }
+
+    /// Defaults and empty collections are omitted, so re-encoding a decoded
+    /// definition keeps saying exactly what the file said rather than adding
+    /// `auto_start: false`, `env: {}` and the rest of the defaults as noise. The
+    /// round trip still holds: `init(from:)` restores each omitted field to the
+    /// same default it was omitted for. `command` and `kind` are always written.
+    func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(command, forKey: .command)
+        try c.encode(kind, forKey: .kind)
+        try c.encodeIfPresent(stop, forKey: .stop)
+        try c.encodeIfPresent(status, forKey: .status)
+        if autoStart { try c.encode(autoStart, forKey: .autoStart) }
+        if autoRestart { try c.encode(autoRestart, forKey: .autoRestart) }
+        if !restartWhenChanged.isEmpty { try c.encode(restartWhenChanged, forKey: .restartWhenChanged) }
+        if !env.isEmpty { try c.encode(env, forKey: .env) }
+        if allowEmptyVars { try c.encode(allowEmptyVars, forKey: .allowEmptyVars) }
+        if !shellInit.isEmpty { try c.encode(shellInit, forKey: .shellInit) }
     }
 }

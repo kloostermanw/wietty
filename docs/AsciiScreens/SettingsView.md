@@ -92,10 +92,9 @@ menu spell the feature out in full.
 │    libghostty exposes no way to set a surface's    │
 │    title.                                          │
 │                                                    │
-│  Groups                                           │
+│  Groups                                     Add   │
 │    Work                                (✎) (🗑)   │
 │    Private                             (✎) (🗑)   │
-│    Name  [________________ ]  [ Add Group ]        │
 │    A group is one entry in the app menu's Group    │
 │    submenu. Pick it there to show only the         │
 │    workspaces filed under it. Assign a workspace   │
@@ -141,12 +140,18 @@ menu spell the feature out in full.
 └──────────────────────────────────────────────────┘
 ```
 
-The Groups section (`SettingsView.groupsSection`) is one row per `store.groups`
-(`GroupRow`): the group's name with an edit `(✎)` and delete `(🗑)` button. Editing
-swaps the row for an inline Name field with Cancel and Save; Save is disabled until
-the name is non-blank (`WorkspaceGroup.isValid`). The Name field below the list adds
-one, and "Add Group" is disabled by the same rule. With the list empty the section
-says so. A group is the same preference the agents are: held on `ProjectStore`,
+The Groups section (`SettingsView.groupsSection`) is a `ListSettingsSection`: the
+title with an Add button on the right, then one row per `store.groups` (`GroupRow`):
+the group's name with an edit `(✎)` and delete `(🗑)` button. The rows are draggable
+to reorder the list (`ReorderableForEach` calling `store.moveGroup`), which is the
+order the app menu's Group submenu shows them in. Editing swaps the row
+for an inline Name field with Cancel and Save; Save is disabled until the name is
+non-blank (`WorkspaceGroup.isValid`). The add form (a Name field and "Add Group") is
+hidden until the list is empty or Add is pressed, and folds away again on a
+successful add; "Add Group" is disabled by the same non-blank rule. When shown, the
+add form of every `ListSettingsSection` (here and in the list sections below) sits in
+a bordered box, so it reads as a distinct thing to fill in rather than another row. A
+group is the same preference the agents are: held on `ProjectStore`,
 persisted to `~/.config/wietty/config` as `group.0.id`/`.name` (see
 settings-storage.md), and never seeded, so an install with no groups shows every
 workspace under "All". Deleting a group unfiles the workspaces that were in it and
@@ -278,15 +283,11 @@ holds settings of its own.
 │ │General│Notifi…│Agents │Prompts│Remote │ MCP │   │
 │ └───────┴───────┴───────┴───────┴───────┴─────┘   │
 │ ────────────────────────────────────────────────  │
-│  Agents                                           │
+│  Agents                                     Add   │
 │    Claude                              (✎) (🗑)   │
 │    claude                                         │
 │    Codex                               (✎) (🗑)   │
 │    codex --model o3                               │
-│    Name                    [________________ ]    │
-│    Command                 [________________ ]    │
-│    Default Arguments       [________________ ]    │
-│    [ Add Agent ]                                   │
 │    Each agent is one entry in a workspace's        │
 │    "Add Agent" menu. Starting one opens a          │
 │    terminal in that workspace and types the        │
@@ -296,21 +297,23 @@ holds settings of its own.
 └──────────────────────────────────────────────────┘
 ```
 
-One row per `store.agents` (`AgentRow`), each showing the agent's name and, under
-it in secondary text, the line starting it types (`AgentDefinition.launchCommand`)
-rather than the command and the arguments as two separate facts. Editing (✎) swaps
-the row for an inline Name / Command / Default Arguments form with Cancel and Save;
-Save is disabled until both a name and a command are present
-(`AgentDefinition.isValid`). The form below the list adds one, and "Add Agent" is
-disabled by the same rule.
+A `ListSettingsSection` (the title with an Add button on the right), then one row per
+`store.agents` (`AgentRow`), each showing the agent's name and, under it in secondary
+text, the line starting it types (`AgentDefinition.launchCommand`) rather than the
+command and the arguments as two separate facts. Editing (✎) swaps the row for an
+inline Name / Command / Default Arguments form with Cancel and Save; Save is disabled
+until both a name and a command are present (`AgentDefinition.isValid`). The add form
+is hidden until the list is empty or Add is pressed, and folds away again on a
+successful add; "Add Agent" is disabled by the same rule. The rows are draggable to
+reorder the menu (`ReorderableForEach` calling `store.moveAgent`).
 
 The list is a preference like the ports and the bell sound: held on `ProjectStore`,
 persisted to `~/.config/wietty/config` as `agent.0.name`/`.command`/`.args` (see
 settings-storage.md), and seeded with Claude on a fresh install so the workspace menu
 is not empty before anyone has been here. Seeding happens only when migrating an
 install that never stored a list, never on an empty file, so deleting the last agent
-sticks across a relaunch. With the list empty the section says so, and each "Add
-Agent" submenu holds one disabled line pointing back here.
+sticks across a relaunch. With the list empty the add form shows in place, and each
+"Add Agent" submenu holds one disabled line pointing back here.
 
 ## Prompts
 
@@ -325,20 +328,11 @@ added or edited outside the app shows without a relaunch.
 │ │General│Notifi…│Agents │Prompts│Remote │ MCP │   │
 │ └───────┴───────┴───────┴───────┴───────┴─────┘   │
 │ ────────────────────────────────────────────────  │
-│  Prompt templates                                 │
+│  Prompt templates                           Add   │
 │    Fix bug                             (✎) (🗑)   │
 │    Investigate and propose a fix                  │
 │    Refactor helper                     (✎) (🗑)   │
 │    Reduce nesting                                 │
-│    Name         [________________ ]               │
-│    Description  [________________ ]               │
-│    Argument hint (for example <ticket-id> <area>) │
-│                 [________________ ]               │
-│    ┌────────────────────────────────┐             │
-│    │ Body: Investigate bug $1 and…  │             │
-│    │                                │             │
-│    └────────────────────────────────┘             │
-│    [ Add Template ]                                │
 │    (only after a write failed:)                   │
 │    ⚠ Could not save that: <reason>               │
 │    Each template is a prompt the popup types into │
@@ -350,15 +344,16 @@ added or edited outside the app shows without a relaunch.
 └──────────────────────────────────────────────────┘
 ```
 
-One row per `promptTemplates.templates` (`PromptTemplateRow`), each showing the
-template's display name and, under it in secondary text, its description (or the
-argument hint when there is no description). Editing (✎) swaps the row for an inline
-Name / Description / Argument hint form plus a `PromptBodyEditor` (a `TextEditor`
-with its own border and height, because the grouped form's `.roundedBorder` field
-style reaches `TextField` and `SecureField` but not `TextEditor`) and Cancel / Save;
-Save is disabled until the name is non-blank (`PromptTemplate.isValid`). The form
-below the list adds one, and "Add Template" is disabled by the same rule. With the
-list empty the section says so.
+A `ListSettingsSection` (the title with an Add button on the right), then one row per
+`promptTemplates.templates` (`PromptTemplateRow`), each showing the template's display
+name and, under it in secondary text, its description (or the argument hint when there
+is no description). Editing (✎) swaps the row for an inline Name / Description /
+Argument hint form plus a `PromptBodyEditor` (a `TextEditor` with its own border and
+height, because the grouped form's `.roundedBorder` field style reaches `TextField`
+and `SecureField` but not `TextEditor`) and Cancel / Save; Save is disabled until the
+name is non-blank (`PromptTemplate.isValid`). The add form, the same set of fields, is
+hidden until the list is empty or Add is pressed, and folds away on a successful add;
+"Add Template" is disabled by the same rule.
 
 Unlike the groups and agents, a template is not a flat-config list on `ProjectStore`:
 it is one markdown file, so it has its own store (`PromptTemplateStore`) over a
@@ -391,16 +386,11 @@ URL); deleting removes it. See settings-storage.md and prompt-templates.md.
 │    your sessions. Traffic is unencrypted, so use   │
 │    it only on trusted networks.                    │
 │                                                    │
-│  Remote connections                               │
+│  Remote connections                         Add   │
 │    Office Mac                          (✎) (🗑)   │
 │    192.168.1.20:7434                              │
 │    Home Mac                            (✎) (🗑)   │
 │    10.0.0.5:7434                                  │
-│    Name                    [________________ ]    │
-│    Host                    [________________ ]    │
-│    Port                              [  7434 ]    │
-│    Token                   [________________ ]    │
-│    [ Add connection ]                              │
 │    Connect to another Mac running Wietty with      │
 │    its LAN remote terminal enabled. Enter the      │
 │    host, port, and token shown in that Mac's       │
@@ -535,16 +525,17 @@ scheduler's next tick, no restart needed.
   network interface exists. The URL is
   `http://<lan-ip>:<remotePort>/?token=<token>` (`LocalNetwork.primaryIPv4`,
   `ProjectStore.remoteToken`); the QR encodes the same URL (`QRCode.image`).
-- "Remote connections": one row per `remoteConnections.connections`
+- "Remote connections": a `ListSettingsSection` (the title with an Add button on the
+  right), one row per `remoteConnections.connections`
   (`SettingsView.RemoteConnectionRow`), each showing the connection's name and
   `host:port` with edit (✎) and delete (🗑) buttons. Editing swaps the row for
   an inline name/host/port/token form with Cancel and Save; Save is disabled
-  until name, host, and a valid port are present. Below the list, a form adds
-  a new connection (`SettingsView.addConnection`); "Add connection" is
-  disabled until name, host, port, and token are all filled in. Every
-  add/edit/delete calls the matching `RemoteConnectionsStore` method and then
-  `remoteWorkspaces.sync()`, which starts or stops the corresponding
-  `RemoteWorkspaceStore` in `ContentView`'s sidebar.
+  until name, host, and a valid port are present. The add form is hidden until the
+  list is empty or Add is pressed, and folds away on a successful add
+  (`SettingsView.addConnection`); "Add connection" is disabled until name, host,
+  port, and token are all filled in. Every add/edit/delete calls the matching
+  `RemoteConnectionsStore` method and then `remoteWorkspaces.sync()`, which starts or
+  stops the corresponding `RemoteWorkspaceStore` in `ContentView`'s sidebar.
 
 See docs/remote-access.md for the full feature description and the
 security caveat.
