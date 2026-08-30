@@ -90,8 +90,10 @@ The app writes the file pretty printed, with sorted keys and a trailing newline,
 it stays stable and diff friendly. Array order (agents, terminals) is preserved as
 written. Slashes are left unescaped, so a command path reads as
 `/usr/local/bin/fork`, not `\/usr\/local\/bin\/fork`. A process or test definition
-is written with only the fields you set: fields left at their default (for example
-`auto_start`, `allow_empty_vars`) and empty collections (`env`, `restart_when_changed`,
+is written with only the fields you set, plus the required `command` (and, for a
+process, its `kind`, which is always written even when it is the default
+`long_running`). Fields left at their default (for example `auto_start`,
+`allow_empty_vars`) and empty collections (`env`, `restart_when_changed`,
 `shell_init`) are omitted rather than spelled out on every rewrite.
 
 ## Creating the file (build)
