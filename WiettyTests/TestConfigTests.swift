@@ -59,9 +59,33 @@ import Foundation
     @Test func encodingOmitsDefaultAndEmptyFields() throws {
         let data = try JSONEncoder().encode(TestConfig(command: "vendor/bin/phpstan analyse"))
         let text = try #require(String(data: data, encoding: .utf8))
-        #expect(text.contains("command"))
-        #expect(!text.contains("allow_empty_vars"))
-        #expect(!text.contains("shell_init"))
-        #expect(!text.contains("env"))
+        #expect(text.contains("\"command\""))
+        #expect(!text.contains("\"allow_empty_vars\""))
+        #expect(!text.contains("\"shell_init\""))
+        #expect(!text.contains("\"env\""))
+    }
+
+    /// The non-default branches, exercised through the real write path
+    /// (`WorkspaceConfig.encoded()`): a set `env`/`allow_empty_vars`/`shell_init`
+    /// is written, a slash in a command or shell line is not escaped, and the
+    /// whole thing round trips. Guards against dropping a set field or escaping
+    /// slashes in the `tests` section.
+    @Test func encodingKeepsSetFieldsAndDoesNotEscapeSlashes() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [], terminals: [],
+            tests: ["fixer": TestConfig(
+                command: "/usr/local/bin/php-cs-fixer fix",
+                env: ["APP_ENV": "testing"], allowEmptyVars: true,
+                shellInit: ["source /opt/venv/bin/activate"])]
+        )
+        let text = String(decoding: try config.encoded(), as: UTF8.self)
+        #expect(text.contains("\"env\""))
+        #expect(text.contains("\"allow_empty_vars\""))
+        #expect(text.contains("\"shell_init\""))
+        #expect(text.contains("/usr/local/bin/php-cs-fixer fix"))
+        #expect(text.contains("source /opt/venv/bin/activate"))
+        #expect(!text.contains("\\/"))
+        let restored = try WorkspaceConfig.parse(config.encoded())
+        #expect(restored == config)
     }
 }

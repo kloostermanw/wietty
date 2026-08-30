@@ -98,6 +98,25 @@ import Foundation
         #expect(!text.contains("\"status\""))
     }
 
+    /// Each field's omission is independent: a process with only `stop` set keeps
+    /// `stop` and still drops every other default, proving the encode conditions
+    /// are not cross-wired (`stop`/`status` use `encodeIfPresent`; the booleans and
+    /// collections use their own `if` guards).
+    @Test func encodingOmitsUnsetFieldsIndependently() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [], terminals: [],
+            processes: ["srv": ProcessConfig(command: "server", stop: "stop.sh")]
+        )
+        let text = String(decoding: try config.encoded(), as: UTF8.self)
+        #expect(text.contains("\"stop\""))
+        #expect(!text.contains("\"status\""))
+        #expect(!text.contains("auto_start"))
+        #expect(!text.contains("\"env\""))
+        #expect(!text.contains("shell_init"))
+        let restored = try WorkspaceConfig.parse(config.encoded())
+        #expect(restored == config)
+    }
+
     /// A set field is written and survives a round trip, so a hand written or
     /// decoded value is preserved when the file is rewritten.
     @Test func encodingKeepsSetFieldsAndRoundTrips() throws {
