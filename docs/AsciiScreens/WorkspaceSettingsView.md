@@ -104,8 +104,14 @@ are edited as text through `ConfigTextEditor`, parsed by `ConfigFieldText`.
 These edits are the reverse of the read path documented in wietty-json.md. Each row's
 save calls a `ProjectStore` mutator (`setShellInit`, `addProcess`/`updateProcess`/
 `removeProcess`, the `Test` equivalents, `addAgentRow`/`addTerminalRow`/
-`updateConfigRow`), which changes the live `Project`, rebuilds the
-file through `ConfigReconcile.config`, and writes it. Because a `wietty.json` runs
+`updateConfigRow`/`moveConfigRows`), which changes the live `Project`, rebuilds the
+file through `ConfigReconcile.config`, and writes it.
+
+The agent and terminal rows are draggable: dragging one reorders it within its kind
+(`ReorderableForEach` calling `moveConfigRows`), which is the order the file lists
+them in and the card lays them out in. Processes and tests are not draggable, because
+the file stores them as objects keyed by name and writes them with sorted keys, so
+their order is always alphabetical. Because a `wietty.json` runs
 shell lines, the store also agrees to the lines the config now runs on the user's
 behalf (`ConfigTrust`, via `commitConfigEdits`): typing a command on this page is the
 consent the config-approval prompt would otherwise ask for, the same standing

@@ -37,6 +37,19 @@ import Foundation
         #expect(store(defaults).groups.map(\.name) == ["Work"])
     }
 
+    /// Dragging a group to reorder the list is a real reorder that survives a relaunch.
+    @Test func movingAGroupReordersAndPersists() {
+        let defaults = makeDefaults()
+        let first = store(defaults)
+        first.addGroup(WorkspaceGroup(name: "Work"))
+        first.addGroup(WorkspaceGroup(name: "Private"))
+        first.addGroup(WorkspaceGroup(name: "Side"))
+        // Work, Private, Side -> move Side (index 2) to the front.
+        first.moveGroup(fromOffsets: IndexSet(integer: 2), toOffset: 0)
+        #expect(first.groups.map(\.name) == ["Side", "Work", "Private"])
+        #expect(store(defaults).groups.map(\.name) == ["Side", "Work", "Private"])
+    }
+
     @Test func updatingAGroupRenamesTheOneWithThatId() {
         let store = store(makeDefaults())
         store.addGroup(WorkspaceGroup(name: "Wrok"))

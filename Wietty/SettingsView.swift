@@ -146,7 +146,8 @@ struct SettingsView: View {
 
     @ViewBuilder private var agentsSection: some View {
         ListSettingsSection(title: "Agents", isEmpty: store.agents.isEmpty) {
-            ForEach(store.agents) { agent in
+            ReorderableForEach(items: store.agents,
+                               onMove: { store.moveAgent(fromOffsets: $0, toOffset: $1) }) { agent in
                 AgentRow(agent: agent,
                          onUpdate: { store.updateAgent($0) },
                          onDelete: { store.removeAgent(id: agent.id) })
@@ -173,7 +174,8 @@ struct SettingsView: View {
 
     @ViewBuilder private var groupsSection: some View {
         ListSettingsSection(title: "Groups", isEmpty: store.groups.isEmpty) {
-            ForEach(store.groups) { group in
+            ReorderableForEach(items: store.groups,
+                               onMove: { store.moveGroup(fromOffsets: $0, toOffset: $1) }) { group in
                 GroupRow(group: group,
                          onUpdate: { store.updateGroup($0) },
                          onDelete: { store.removeGroup(id: group.id) })

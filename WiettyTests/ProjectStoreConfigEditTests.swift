@@ -196,4 +196,27 @@ import Foundation
         #expect(!store.updateConfigRow(bId, slot: "a", type: "claude",
                                        prefix: "", fixedNaming: false, for: id))
     }
+
+    @Test func moveConfigRowsReordersWithinKind() throws {
+        let (store, id, folder) = try makeStore()
+        _ = store.addTerminalRow(slot: "first", for: id)
+        _ = store.addTerminalRow(slot: "second", for: id)
+        _ = store.addTerminalRow(slot: "third", for: id)
+        // Move "third" (index 2) to the front.
+        store.moveConfigRows(kind: .terminal, fromOffsets: IndexSet(integer: 2), toOffset: 0, for: id)
+        let reread = try #require(try ConfigFile.read(in: folder))
+        #expect(reread.terminals == ["third", "first", "second"])
+    }
+
+    /// Reordering one kind leaves the other kind's rows and order alone.
+    @Test func moveConfigRowsLeavesTheOtherKindAlone() throws {
+        let (store, id, folder) = try makeStore()
+        _ = store.addAgentRow(slot: "agentA", type: "claude", for: id)
+        _ = store.addTerminalRow(slot: "t1", for: id)
+        _ = store.addTerminalRow(slot: "t2", for: id)
+        store.moveConfigRows(kind: .terminal, fromOffsets: IndexSet(integer: 1), toOffset: 0, for: id)
+        let reread = try #require(try ConfigFile.read(in: folder))
+        #expect(reread.agents.map(\.slot) == ["agentA"])
+        #expect(reread.terminals == ["t2", "t1"])
+    }
 }
