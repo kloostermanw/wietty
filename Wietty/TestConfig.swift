@@ -1,8 +1,9 @@
 import Foundation
 
 /// One test-process definition from the `tests` section of `wietty.json`. A
-/// test is a run-to-completion check: exit 0 = pass, non-zero = fail. Read-only
-/// in the app (the file is the source of truth); `Codable` for symmetry/tests.
+/// test is a run-to-completion check: exit 0 = pass, non-zero = fail. The file is
+/// the source of truth; the Edit workspace page (`ProjectStore.updateTest`) is the
+/// one path that changes a definition from inside the app.
 struct TestConfig: Codable, Equatable {
     var command: String
     var env: [String: String]
