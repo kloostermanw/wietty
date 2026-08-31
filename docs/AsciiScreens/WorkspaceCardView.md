@@ -38,7 +38,10 @@ Legend:
   baseline, so the project name keeps the same position whether the card is
   collapsed or expanded and whether the ahead/behind block has one row or two.
 - `origin/... ↑a ↓b`: `AheadBehindView`, one row per comparison, label plus the
-  up (ahead) and down (behind) counts.
+  up (ahead) and down (behind) counts. When the row is behind (`↓b` with `b > 0`)
+  the down arrow and its count turn red (`AheadBehindView.behindColor`), since a
+  behind count is the one number on the card that asks the user to pull; the label
+  and the ahead group stay secondary.
 - `(Issue #N)` / `(PR #N)`: filled pills from `IssuePRLineView`. When no issue is
   linked to the branch, the issue pill is replaced by the branch name rendered as
   plain, secondary text (no pill), so the line always shows some branch context. The
