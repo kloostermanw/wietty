@@ -4,13 +4,19 @@ import Foundation
 
 final class FakeFreshnessProvider: FreshnessChecking, @unchecked Sendable {
     var results: [FreshnessResult] = []
+    /// The cache this provider hands back, so a store test can assert the store keeps
+    /// and re-passes it. Defaults to empty, matching a provider that caches nothing.
+    var returnedCache: FreshnessCache = [:]
     private(set) var lastChecks: [String: CheckConfig] = [:]
+    private(set) var lastCache: FreshnessCache = [:]
     private(set) var runCount = 0
 
-    func run(checks: [String: CheckConfig], in folder: URL) async -> [FreshnessResult] {
+    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache)
+        async -> (results: [FreshnessResult], cache: FreshnessCache) {
         lastChecks = checks
+        lastCache = cache
         runCount += 1
-        return results
+        return (results, returnedCache)
     }
 }
 
@@ -44,6 +50,25 @@ final class FakeFreshnessProvider: FreshnessChecking, @unchecked Sendable {
         #expect(fresh.lastChecks["composer"]?.command == "check")
         #expect(store.freshness[id]?.first?.actionNeeded == true)
         #expect(store.freshness[id].map(\.needsAttention) == true)
+    }
+
+    /// The store keeps each workspace's freshness cache and passes it back into the
+    /// next tick, so a `watch` check can skip re-running while its file is unchanged.
+    @Test func carriesFreshnessCacheAcrossTicks() async {
+        let fresh = FakeFreshnessProvider()
+        let result = FreshnessResult(name: "c", actionNeeded: false, message: "c")
+        fresh.results = [result]
+        fresh.returnedCache = ["c": FreshnessCacheEntry(watchHash: "h", command: "check", result: result)]
+        let store = store(fresh)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        let id = store.projects[0].id
+        store.addCheck(name: "c", config: CheckConfig(command: "check", watch: "composer.lock"), for: id)
+
+        await store.refreshAllGitInfo()
+        #expect(fresh.lastCache.isEmpty)
+
+        await store.refreshAllGitInfo()
+        #expect(fresh.lastCache["c"]?.watchHash == "h")
     }
 
     /// A workspace with no configured checks never calls the provider and shows no

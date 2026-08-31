@@ -774,6 +774,7 @@ struct CheckConfigRow: View {
     @State private var draftName: String
     @State private var command: String
     @State private var message: String
+    @State private var watch: String
     @State private var rejected = false
 
     init(name: String, config: CheckConfig, isEditing: Bool = false,
@@ -786,6 +787,7 @@ struct CheckConfigRow: View {
         _draftName = State(initialValue: name)
         _command = State(initialValue: config.command)
         _message = State(initialValue: config.message)
+        _watch = State(initialValue: config.watch ?? "")
     }
 
     private var valid: Bool {
@@ -794,7 +796,8 @@ struct CheckConfigRow: View {
     }
 
     private var edited: CheckConfig {
-        CheckConfig(command: command, message: message.trimmingCharacters(in: .whitespaces))
+        CheckConfig(command: command, message: message.trimmingCharacters(in: .whitespaces),
+                    watch: watch.trimmingCharacters(in: .whitespaces))
     }
 
     var body: some View {
@@ -803,6 +806,7 @@ struct CheckConfigRow: View {
                 TextField("Name", text: $draftName)
                 TextField("Command", text: $command)
                 TextField("Message (what to do when it trips)", text: $message)
+                TextField("Watch file (optional, re-run only when it changes)", text: $watch)
                 if rejected {
                     Label("Another check already uses that name.",
                           systemImage: "exclamationmark.triangle.fill")
@@ -834,6 +838,7 @@ struct CheckConfigRow: View {
         draftName = name
         command = config.command
         message = config.message
+        watch = config.watch ?? ""
         rejected = false
         isEditing = false
     }
@@ -844,7 +849,8 @@ struct CheckConfigRow: View {
     }
 }
 
-/// The add form under the check list: name, command, and an optional message.
+/// The add form under the check list: name, command, an optional message, and an
+/// optional watch file.
 struct AddCheckForm: View {
     let onAdd: (String, CheckConfig) -> Bool
     var onAdded: () -> Void = {}
@@ -852,18 +858,21 @@ struct AddCheckForm: View {
     @State private var name = ""
     @State private var command = ""
     @State private var message = ""
+    @State private var watch = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             TextField("Name", text: $name)
             TextField("Command", text: $command)
             TextField("Message (what to do when it trips)", text: $message)
+            TextField("Watch file (optional, re-run only when it changes)", text: $watch)
             HStack {
                 Spacer()
                 Button("Add check") {
                     if onAdd(name, CheckConfig(command: command,
-                                               message: message.trimmingCharacters(in: .whitespaces))) {
-                        name = ""; command = ""; message = ""; onAdded()
+                                               message: message.trimmingCharacters(in: .whitespaces),
+                                               watch: watch.trimmingCharacters(in: .whitespaces))) {
+                        name = ""; command = ""; message = ""; watch = ""; onAdded()
                     }
                 }
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
