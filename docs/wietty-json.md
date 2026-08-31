@@ -14,8 +14,8 @@ window, environment and PATH), see the "Processes" section of the top level
 
 Most of this file is shell lines Wietty will run in the workspace's folder, as you:
 an agent's `type` is typed into that row's shell, a process or test `command` is run
-by the supervisor, `shell_init` runs before each of those, and a process with
-`auto_start` needs no click at all.
+by the supervisor, a `checks` command is run on the poll tick, `shell_init` runs before
+each of those, and a process with `auto_start` needs no click at all.
 
 A file the user wrote is not the only kind there is. A `wietty.json` arrives with a
 clone, and nothing in the file says which kind it is, so the first time a workspace's
@@ -77,9 +77,9 @@ workspace card.
 - **Terminals and agents are kept in sync.** When a file exists (sync is on), the
   app writes the file to mirror the workspace's current rows, and it applies edits
   you make to the file back into the layout.
-- **Processes and tests are preserved across rewrites.** When the app rewrites the
-  file for a row change, it writes back the process and test definitions it last
-  read, so definitions you added by hand are not lost.
+- **Processes, tests and checks are preserved across rewrites.** When the app rewrites
+  the file for a row change, it writes back the process, test and check definitions it
+  last read, so definitions you added by hand are not lost.
 
 There are two ways to change the file: edit it on disk, or edit it in the app from
 "Edit workspace…" in the workspace's card menu.
@@ -89,7 +89,7 @@ a change indicator. Clicking it applies the change: new processes appear, remove
 ones are dropped, and changed commands take effect on the next start.
 
 The "Edit workspace…" page (see `AsciiScreens/WorkspaceSettingsView.md`) edits every
-section of the file directly: `shell_init`, agents, terminals, processes and tests.
+section of the file directly: `shell_init`, agents, terminals, processes, tests and checks.
 It is the reverse of the read path, writing the same pretty-printed, defaults-omitted
 file described below. Because the file runs shell lines, an edit made on the page is
 also agreed to on your behalf (see [The file runs commands](#the-file-runs-commands-so-it-is-agreed-to-first)),
@@ -126,6 +126,7 @@ A minimal file:
   "terminals": [],
   "processes": {},
   "tests": {},
+  "checks": {},
   "shell_init": []
 }
 ```
@@ -143,6 +144,7 @@ out.
 | `terminals` | array | required | Terminal sessions to open, in order. |
 | `processes` | object | `{}` | Supervised processes, keyed by name. |
 | `tests` | object | `{}` | Test-processes, keyed by name (run-to-completion checks). |
+| `checks` | object | `{}` | Freshness checks, keyed by name. |
 | `shell_init` | array | `[]` | Shell lines run before every process and test command. |
 
 ### `name`
@@ -319,6 +321,53 @@ Example:
   "phpunit": { "command": "php artisan test" }
 }
 ```
+
+### `checks`
+
+An object keyed by check name. Each value is a freshness check: a shell command
+run in the workspace folder on the poll tick. It is the inverse of a test. Exit
+code 0 means the workspace is fine, so nothing is shown. A non-zero exit means the
+check needs attention: a red `!` marker appears next to the workspace name on its
+card, and clicking it opens a popover listing every check that tripped, each with
+its `message` (or its name when the message is empty) and, when the command printed
+anything, that output as a secondary line.
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `command` | string | required | The command to run, in the workspace directory. Non-zero exit means attention needed. |
+| `message` | string | `""` | What to do when the check trips, shown in the marker's popover. When empty the check's name is shown instead. |
+
+The command runs in a login shell rooted at the workspace folder, the same way a
+process or test command does, so `PATH` and your tooling resolve. Unlike a process
+or test, a check carries no `env`, `shell_init`, or `allow_empty_vars`: it is a
+single line whose exit code is the whole signal. Because the file runs commands, a
+`checks` command added on disk is agreed to the same way a process or test command
+is (see [The file runs commands](#the-file-runs-commands-so-it-is-agreed-to-first)).
+
+Checks are run by the periodic scheduler, tiered like the other per-workspace
+checks (slower while the card is collapsed). See `docs/periodic-checks.md`.
+
+```json
+"checks": {
+  "behind": {
+    "command": "test \"$(git rev-list --count HEAD..@{u} 2>/dev/null)\" -eq 0",
+    "message": "branch is behind origin, git pull"
+  },
+  "composer": {
+    "command": "git diff --quiet HEAD -- composer.lock",
+    "message": "composer.lock changed, run composer install"
+  },
+  "npm": {
+    "command": "git diff --quiet HEAD -- package-lock.json",
+    "message": "package-lock.json changed, run npm install"
+  }
+}
+```
+
+Nothing is built in yet: every check is a command you write. The examples above are
+the common cases (a branch behind origin, a changed `composer.lock` or
+`package-lock.json`, and a migration check would be a framework-specific command),
+not presets the app ships. A workspace with no `checks` shows no marker.
 
 ### `shell_init`
 

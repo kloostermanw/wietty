@@ -107,21 +107,23 @@ struct WorkspaceConfig: Codable, Equatable {
     var terminals: [String]
     var processes: [String: ProcessConfig]?
     var tests: [String: TestConfig]?
+    var checks: [String: CheckConfig]?
     var shellInit: [String]?
 
-    init(name: String?, agents: [Agent], terminals: [String], processes: [String: ProcessConfig]? = nil, tests: [String: TestConfig]? = nil, shellInit: [String]? = nil) {
+    init(name: String?, agents: [Agent], terminals: [String], processes: [String: ProcessConfig]? = nil, tests: [String: TestConfig]? = nil, checks: [String: CheckConfig]? = nil, shellInit: [String]? = nil) {
         self.name = name
         self.agents = agents
         self.terminals = terminals
         self.processes = processes
         self.tests = tests
+        self.checks = checks
         self.shellInit = shellInit
     }
 
     /// Spelled out so `shellInit` maps to the file's `shell_init`; the rest keep
     /// the names the synthesized conformance would have used.
     private enum CodingKeys: String, CodingKey {
-        case name, agents, terminals, processes, tests
+        case name, agents, terminals, processes, tests, checks
         case shellInit = "shell_init"
     }
 

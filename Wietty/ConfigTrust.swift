@@ -40,6 +40,11 @@ enum ConfigTrust {
             found.append(test.command)
             found.append(contentsOf: test.shellInit)
         }
+        // A check's command runs shell in the workspace on the poll tick, so it is
+        // agreed to the same way a test's command is, not left to run unapproved.
+        for (_, check) in (config.checks ?? [:]).sorted(by: { $0.key < $1.key }) {
+            found.append(check.command)
+        }
         return found.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
