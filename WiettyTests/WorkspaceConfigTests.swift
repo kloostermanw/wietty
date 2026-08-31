@@ -295,4 +295,34 @@ import Foundation
         let restored = try WorkspaceConfig.parse(config.encoded())
         #expect(restored == config)
     }
+
+    /// A check's `watch` file is parsed, so a passing run can be remembered against
+    /// it and the command skipped until the file changes.
+    @Test func parsesCheckWatch() throws {
+        let json = Data("""
+        { "agents": [], "terminals": [],
+          "checks": { "vendor": { "command": "check", "watch": "composer.lock" } } }
+        """.utf8)
+        let config = try WorkspaceConfig.parse(json)
+        #expect(config.checks?["vendor"]?.watch == "composer.lock")
+    }
+
+    /// An empty `watch` reads as none, so a blank field does not turn caching half on.
+    @Test func blankCheckWatchDecodesAsNil() throws {
+        let json = Data("""
+        { "agents": [], "terminals": [], "checks": { "x": { "command": "check", "watch": "" } } }
+        """.utf8)
+        #expect(try WorkspaceConfig.parse(json).checks?["x"]?.watch == nil)
+    }
+
+    /// A check with no `watch` is not written with a null one, so an ordinary check
+    /// does not gain `"watch"` noise the first time the file is rewritten.
+    @Test func encodingOmitsAbsentCheckWatch() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [], terminals: [],
+            checks: ["npm": CheckConfig(command: "check-npm")]
+        )
+        let text = String(decoding: try config.encoded(), as: UTF8.self)
+        #expect(!text.contains("watch"))
+    }
 }

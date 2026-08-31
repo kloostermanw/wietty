@@ -111,9 +111,11 @@ These edits are the reverse of the read path documented in wietty-json.md. Each 
 save calls a `ProjectStore` mutator (`setShellInit`, `addProcess`/`updateProcess`/
 `removeProcess`, the `Test` and `Check` equivalents, `addAgentRow`/`addTerminalRow`/
 `updateConfigRow`/`moveConfigRows`), which changes the live `Project`, rebuilds the
-file through `ConfigReconcile.config`, and writes it. A check carries only a command
-and a message (the row is `CheckConfigRow`/`AddCheckForm`), so it has none of the
-env, shell-init or empty-variable fields a process or test row shows.
+file through `ConfigReconcile.config`, and writes it. A check carries only a command,
+a message, and an optional watch file (the row is `CheckConfigRow`/`AddCheckForm`), so
+it has none of the env, shell-init or empty-variable fields a process or test row
+shows. The watch file, when filled, is the file whose change re-runs the check;
+leaving it blank runs the command on every tick.
 
 The agent and terminal rows are draggable: dragging one reorders it within its kind
 (`ReorderableForEach` calling `moveConfigRows`), which is the order the file lists

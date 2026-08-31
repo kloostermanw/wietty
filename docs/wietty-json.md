@@ -336,6 +336,7 @@ anything, that output as a secondary line.
 | --- | --- | --- | --- |
 | `command` | string | required | The command to run, in the workspace directory. Non-zero exit means attention needed. |
 | `message` | string | `""` | What to do when the check trips, shown in the marker's popover. When empty the check's name is shown instead. |
+| `watch` | string | none | A workspace-relative file that gates re-running. When set, a passing run is remembered and the command is skipped until this file changes. |
 
 The command runs in a login shell rooted at the workspace folder, the same way a
 process or test command does, so `PATH` and your tooling resolve. Unlike a process
@@ -343,6 +344,15 @@ or test, a check carries no `env`, `shell_init`, or `allow_empty_vars`: it is a
 single line whose exit code is the whole signal. Because the file runs commands, a
 `checks` command added on disk is agreed to the same way a process or test command
 is (see [The file runs commands](#the-file-runs-commands-so-it-is-agreed-to-first)).
+
+`watch` is for a command too slow to run on every tick. Give it a file the command
+depends on (for example `composer.lock` for a composer install check), relative to
+the workspace folder. When the check passes, the file's hash is remembered, and the
+command is not run again until the hash changes. A failing check is never remembered,
+so it keeps running until it passes, and editing the check's `command` invalidates a
+remembered pass. The remembered pass lives in memory only, so every check runs once
+after the app launches and then settles. Leave `watch` out to run the command on
+every tick.
 
 Checks are run by the periodic scheduler, tiered like the other per-workspace
 checks (slower while the card is collapsed). See `docs/periodic-checks.md`.
@@ -356,6 +366,11 @@ checks (slower while the card is collapsed). See `docs/periodic-checks.md`.
   "composer": {
     "command": "git diff --quiet HEAD -- composer.lock",
     "message": "composer.lock changed, run composer install"
+  },
+  "vendor": {
+    "command": "composer install --dry-run --no-scripts --no-interaction 2>&1 | grep -q 'Nothing to install, update or remove'",
+    "message": "vendor is out of date, run composer install",
+    "watch": "composer.lock"
   },
   "npm": {
     "command": "git diff --quiet HEAD -- package-lock.json",

@@ -42,6 +42,10 @@ final class ProjectStore {
     /// check. Drives the card's `!` marker and its detail popover. Absent or empty
     /// means nothing to show.
     private(set) var freshness: [UUID: [FreshnessResult]] = [:]
+    /// Per-workspace freshness cache: the passing results a `watch` check remembers
+    /// against its file's hash, so an unchanged file skips re-running the command.
+    /// In memory only, like `freshness` itself, so it is rebuilt from launch.
+    private var freshnessCache: [UUID: FreshnessCache] = [:]
     private(set) var attention: Set<UUID> = [] {
         didSet {
             // Every path that clears a flag, in one place. There are a dozen of them
@@ -747,6 +751,7 @@ final class ProjectStore {
         projects.removeAll { $0.id == project.id }
         gitInfo[project.id] = nil
         freshness[project.id] = nil
+        freshnessCache[project.id] = nil
         for id in terminalIds {
             attention.remove(id)
             jobNames[id] = nil
@@ -1561,9 +1566,13 @@ final class ProjectStore {
             // the observable dictionary on every tick.
             guard !checks.isEmpty else {
                 if freshness[key.projectId] != nil { freshness[key.projectId] = nil }
+                if freshnessCache[key.projectId] != nil { freshnessCache[key.projectId] = nil }
                 return
             }
-            freshness[key.projectId] = await freshProvider.run(checks: checks, in: url)
+            let (results, cache) = await freshProvider.run(
+                checks: checks, in: url, cache: freshnessCache[key.projectId] ?? [:])
+            freshness[key.projectId] = results
+            freshnessCache[key.projectId] = cache
         }
     }
 
@@ -1979,6 +1988,7 @@ final class ProjectStore {
         checks[name] = nil
         projects[index].configChecks = checks.isEmpty ? nil : checks
         freshness[projectId] = freshness[projectId]?.filter { $0.name != name }
+        freshnessCache[projectId]?[name] = nil
         commitConfigEdits(for: projectId)
     }
 

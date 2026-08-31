@@ -18,30 +18,40 @@ struct CheckConfig: Codable, Equatable {
     /// none, and the check's name is shown instead, mirroring how an agent's empty
     /// `prefix` means "no prefix" rather than a written-out blank.
     var message: String
+    /// A workspace-relative file whose contents gate re-running the command. When
+    /// set, a passing run is remembered against the file's hash, and later ticks
+    /// reuse that result without running the command until the file changes. `nil`
+    /// (the common case) means the command runs on every tick. Empty is treated as
+    /// `nil`, so a blank field in the editor does not turn caching half on.
+    var watch: String?
 
-    init(command: String, message: String = "") {
+    init(command: String, message: String = "", watch: String? = nil) {
         self.command = command
         self.message = message
+        self.watch = (watch?.isEmpty ?? true) ? nil : watch
     }
 
     private enum CodingKeys: String, CodingKey {
-        case command, message
+        case command, message, watch
     }
 
-    /// `message` is optional in the file and defaults to empty, so a check written
-    /// with only a `command` reads, the same way a test written with only a command
-    /// does.
+    /// `message` and `watch` are optional in the file, so a check written with only a
+    /// `command` reads, the same way a test written with only a command does.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         command = try c.decode(String.self, forKey: .command)
         message = try c.decodeIfPresent(String.self, forKey: .message) ?? ""
+        let watch = try c.decodeIfPresent(String.self, forKey: .watch)
+        self.watch = (watch?.isEmpty ?? true) ? nil : watch
     }
 
-    /// An empty `message` is omitted, so re-encoding a decoded definition does not
-    /// add `"message": ""` as noise. `command` is always written.
+    /// An empty `message` and an absent `watch` are omitted, so re-encoding a decoded
+    /// definition does not add `"message": ""` or a null `watch` as noise. `command`
+    /// is always written.
     func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(command, forKey: .command)
         if !message.isEmpty { try c.encode(message, forKey: .message) }
+        if let watch, !watch.isEmpty { try c.encode(watch, forKey: .watch) }
     }
 }
