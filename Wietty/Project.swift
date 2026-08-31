@@ -22,6 +22,10 @@ struct Project: Identifiable, Equatable {
     var configName: String?
     var configProcesses: [String: ProcessConfig]?
     var configTests: [String: TestConfig]?
+    /// The file's `checks` section: the workspace's freshness checks, keyed by name.
+    /// Held like `configTests`, re-established from the file by `reconcileWithFile`,
+    /// and read by the `.freshness` check to know what to run.
+    var configChecks: [String: CheckConfig]?
     /// The file's workspace-wide `shell_init` lines. Held so a rewrite of the
     /// file preserves them; like `configName`, re-established from the file by
     /// `reconcileWithFile` rather than persisted.
@@ -57,6 +61,7 @@ struct Project: Identifiable, Equatable {
         configName: String? = nil,
         configProcesses: [String: ProcessConfig]? = nil,
         configTests: [String: TestConfig]? = nil,
+        configChecks: [String: CheckConfig]? = nil,
         configShellInit: [String]? = nil
     ) {
         self.id = id
@@ -71,6 +76,7 @@ struct Project: Identifiable, Equatable {
         self.configName = configName
         self.configProcesses = configProcesses
         self.configTests = configTests
+        self.configChecks = configChecks
         self.configShellInit = configShellInit
     }
 }

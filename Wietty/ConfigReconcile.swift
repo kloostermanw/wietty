@@ -20,7 +20,8 @@ enum ConfigReconcile {
     /// agent row rewrote a Codex row as a Claude row on the next apply.
     static func config(
         from terminals: [TerminalRef], name: String?, processes: [String: ProcessConfig]? = nil,
-        tests: [String: TestConfig]? = nil, shellInit: [String]? = nil
+        tests: [String: TestConfig]? = nil, checks: [String: CheckConfig]? = nil,
+        shellInit: [String]? = nil
     ) -> WorkspaceConfig {
         let agents = terminals
             .filter { $0.kind == .claude }
@@ -31,7 +32,7 @@ enum ConfigReconcile {
             .map(\.slot)
         return WorkspaceConfig(
             name: name, agents: agents, terminals: iterm, processes: processes, tests: tests,
-            shellInit: shellInit
+            checks: checks, shellInit: shellInit
         )
     }
 

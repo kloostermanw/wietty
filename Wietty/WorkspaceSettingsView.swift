@@ -23,6 +23,7 @@ struct WorkspaceSettingsView: View {
     static let terminalsSectionTitle = "Terminals"
     static let processesSectionTitle = "Processes"
     static let testsSectionTitle = "Tests"
+    static let checksSectionTitle = "Checks"
     /// The button shown when sync is off, and the same wording as the card menu's
     /// item so the two read as the one action.
     static let enableSyncTitle = "Enable config sync"
@@ -120,6 +121,7 @@ struct WorkspaceSettingsView: View {
         let terminals = current.terminals.filter { $0.kind == .terminal }
         let processNames = (current.configProcesses ?? [:]).keys.sorted()
         let testNames = (current.configTests ?? [:]).keys.sorted()
+        let checkNames = (current.configChecks ?? [:]).keys.sorted()
 
         Section(Self.shellInitSectionTitle) {
             ShellInitEditor(lines: current.configShellInit ?? []) { store.setShellInit($0, for: id) }
@@ -186,6 +188,20 @@ struct WorkspaceSettingsView: View {
         } footer: {
             caption("Run-to-completion checks. Exit code 0 passes, anything else fails. "
                     + "They show as the row of buttons on the workspace card.")
+        }
+
+        ListSettingsSection(title: Self.checksSectionTitle, isEmpty: checkNames.isEmpty) {
+            ForEach(checkNames, id: \.self) { name in
+                CheckConfigRow(name: name, config: current.configChecks?[name] ?? CheckConfig(command: ""),
+                               onSave: { store.updateCheck(originalName: $0, name: $1, config: $2, for: id) },
+                               onDelete: { store.removeCheck(name: name, for: id) })
+            }
+        } addForm: { collapse in
+            AddCheckForm(onAdd: { store.addCheck(name: $0, config: $1, for: id) }, onAdded: collapse)
+        } footer: {
+            caption("Freshness checks, run on the poll tick in the workspace folder. A "
+                    + "non-zero exit means the check needs attention and lights the red "
+                    + "marker on the card; the message is what the card tells you to do.")
         }
     }
 
@@ -735,6 +751,120 @@ struct AddTestForm: View {
                 Spacer()
                 Button("Add test") {
                     if onAdd(name, TestConfig(command: command)) { name = ""; command = ""; onAdded() }
+                }
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
+                          || command.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+}
+
+// MARK: - Check rows
+
+/// One freshness-check row: a summary with edit and delete buttons, or an inline
+/// form for the command and the message. The sibling of `TestConfigRow`, minus the
+/// env, shell-init and empty-variable fields a check does not carry.
+struct CheckConfigRow: View {
+    let name: String
+    let config: CheckConfig
+    let onSave: (String, String, CheckConfig) -> Bool
+    let onDelete: () -> Void
+
+    @State private var isEditing: Bool
+    @State private var draftName: String
+    @State private var command: String
+    @State private var message: String
+    @State private var rejected = false
+
+    init(name: String, config: CheckConfig, isEditing: Bool = false,
+         onSave: @escaping (String, String, CheckConfig) -> Bool, onDelete: @escaping () -> Void) {
+        self.name = name
+        self.config = config
+        self.onSave = onSave
+        self.onDelete = onDelete
+        _isEditing = State(initialValue: isEditing)
+        _draftName = State(initialValue: name)
+        _command = State(initialValue: config.command)
+        _message = State(initialValue: config.message)
+    }
+
+    private var valid: Bool {
+        !draftName.trimmingCharacters(in: .whitespaces).isEmpty
+            && !command.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var edited: CheckConfig {
+        CheckConfig(command: command, message: message.trimmingCharacters(in: .whitespaces))
+    }
+
+    var body: some View {
+        if isEditing {
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("Name", text: $draftName)
+                TextField("Command", text: $command)
+                TextField("Message (what to do when it trips)", text: $message)
+                if rejected {
+                    Label("Another check already uses that name.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.red)
+                }
+                HStack {
+                    Button("Cancel") { cancel() }
+                    Spacer()
+                    Button("Save") { save() }.disabled(!valid)
+                }
+            }
+            .settingsFormBox()
+        } else {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                    Text(config.command).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { isEditing = true } label: { Image(systemName: "pencil") }
+                    .buttonStyle(.borderless).help("Edit check")
+                Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
+                    .buttonStyle(.borderless).help("Remove check")
+            }
+        }
+    }
+
+    private func cancel() {
+        draftName = name
+        command = config.command
+        message = config.message
+        rejected = false
+        isEditing = false
+    }
+
+    private func save() {
+        guard valid else { return }
+        if onSave(name, draftName, edited) { rejected = false; isEditing = false } else { rejected = true }
+    }
+}
+
+/// The add form under the check list: name, command, and an optional message.
+struct AddCheckForm: View {
+    let onAdd: (String, CheckConfig) -> Bool
+    var onAdded: () -> Void = {}
+
+    @State private var name = ""
+    @State private var command = ""
+    @State private var message = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("Name", text: $name)
+            TextField("Command", text: $command)
+            TextField("Message (what to do when it trips)", text: $message)
+            HStack {
+                Spacer()
+                Button("Add check") {
+                    if onAdd(name, CheckConfig(command: command,
+                                               message: message.trimmingCharacters(in: .whitespaces))) {
+                        name = ""; command = ""; message = ""; onAdded()
+                    }
                 }
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
                           || command.trimmingCharacters(in: .whitespaces).isEmpty)

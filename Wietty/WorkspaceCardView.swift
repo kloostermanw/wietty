@@ -11,6 +11,10 @@ struct WorkspaceCardView: View {
     /// it out.
     var isRunning: (TerminalRef) -> Bool = { _ in false }
     let needsAttention: (TerminalRef) -> Bool
+    /// This workspace's last freshness-check results. The red `!` marker appears
+    /// when any is asking for action. Defaulted to empty so a caller that never runs
+    /// checks (a remote card) simply shows no marker.
+    var freshness: [FreshnessResult] = []
     let syncEnabled: Bool
     let configChanged: Bool
     let isLocalOnly: (TerminalRef) -> Bool
@@ -69,6 +73,9 @@ struct WorkspaceCardView: View {
     let onOpenTestLog: (ManagedProcess) -> Void
 
     @Environment(\.sidebarColors) private var sidebarColors
+
+    /// Whether the freshness detail popover is open, anchored on the `!` marker.
+    @State private var showingFreshness = false
 
     /// The card is active when it owns the terminal the pane is showing, which is what
     /// the active-workspace colours highlight. Derived from the same `isSelected` the
@@ -156,6 +163,17 @@ struct WorkspaceCardView: View {
                         .help("wietty.json changed on disk. Click to apply.")
                 }
                 .buttonStyle(.plain)
+            }
+            if freshness.needsAttention {
+                Button { showingFreshness = true } label: {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(.red)
+                        .help("A workspace check needs attention. Click for details.")
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showingFreshness, arrowEdge: .bottom) {
+                    FreshnessDetailView(results: freshness)
+                }
             }
             Spacer(minLength: 8)
             if !collapsed {

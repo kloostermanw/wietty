@@ -7,6 +7,7 @@ enum CheckKind: CaseIterable, Hashable {
     case ciChecks       // gh pr checks -> ChecksLineView
     case processStatus  // daemon status probes
     case workingTree    // local working-tree fingerprint -> test staleness
+    case freshness      // per-workspace freshness checks -> the "!" marker
     case jobNames       // a terminal's foreground command -> agent status
 }
 
