@@ -15,7 +15,8 @@ window, environment and PATH), see the "Processes" section of the top level
 Most of this file is shell lines Wietty will run in the workspace's folder, as you:
 an agent's `type` is typed into that row's shell, a process or test `command` is run
 by the supervisor, a `checks` command is run on the poll tick, `shell_init` runs before
-each of those, and a process with `auto_start` needs no click at all.
+the process, test, and check commands (not the typed `type`), and a process with
+`auto_start` needs no click at all.
 
 A file the user wrote is not the only kind there is. A `wietty.json` arrives with a
 clone, and nothing in the file says which kind it is, so the first time a workspace's
@@ -145,7 +146,7 @@ out.
 | `processes` | object | `{}` | Supervised processes, keyed by name. |
 | `tests` | object | `{}` | Test-processes, keyed by name (run-to-completion checks). |
 | `checks` | object | `{}` | Freshness checks, keyed by name. |
-| `shell_init` | array | `[]` | Shell lines run before every process and test command. |
+| `shell_init` | array | `[]` | Shell lines run before every process, test, and check command. |
 
 ### `name`
 
@@ -339,8 +340,9 @@ anything, that output as a secondary line.
 | `watch` | string | none | A workspace-relative file that gates re-running. When set, a passing run is remembered and the command is skipped until this file changes. |
 
 The command runs in a login shell rooted at the workspace folder, the same way a
-process or test command does, so `PATH` and your tooling resolve. Unlike a process
-or test, a check carries no `env`, `shell_init`, or `allow_empty_vars`: it is a
+process or test command does, with the workspace-wide `shell_init` prepended, so
+`PATH` and your tooling resolve. Unlike a process or test, a check carries no `env`
+or `allow_empty_vars` and has no per-check `shell_init` field of its own: it is a
 single line whose exit code is the whole signal. Because the file runs commands, a
 `checks` command added on disk is agreed to the same way a process or test command
 is (see [The file runs commands](#the-file-runs-commands-so-it-is-agreed-to-first)).
