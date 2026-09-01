@@ -208,9 +208,10 @@ before it, so its exports and `source` lines are visible to the command:
 
 Unlike `env`, whose values are set verbatim and never shell evaluated, these lines are shell code.
 That is what makes `$HOME`, `$PATH`, and `source` work here. The workspace wide key applies to every
-process and test (and to a process's `stop` and `status` commands); a process or test can add its own
-`shell_init`, which is appended after the workspace wide lines rather than replacing them. Terminal
-and agent sessions are unaffected, since they run your real interactive shell.
+process and test (and to a process's `stop` and `status` commands) and to every check; a process or
+test can add its own `shell_init`, which is appended after the workspace wide lines rather than
+replacing them, while a check has no per-check `shell_init` field of its own. Terminal and agent
+sessions are unaffected, since they run your real interactive shell.
 
 See `docs/wietty-json.md` for the full field reference.
 
