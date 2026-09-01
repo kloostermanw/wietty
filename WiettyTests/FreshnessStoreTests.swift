@@ -10,13 +10,16 @@ final class FakeFreshnessProvider: FreshnessChecking, @unchecked Sendable {
     private(set) var lastChecks: [String: CheckConfig] = [:]
     private(set) var lastCache: FreshnessCache = [:]
     private(set) var lastShellInit: [String] = []
+    private(set) var lastVariables: [String: String] = [:]
     private(set) var runCount = 0
 
-    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache, shellInit: [String])
+    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache,
+             shellInit: [String], variables: [String: String])
         async -> (results: [FreshnessResult], cache: FreshnessCache) {
         lastChecks = checks
         lastCache = cache
         lastShellInit = shellInit
+        lastVariables = variables
         runCount += 1
         return (results, returnedCache)
     }
@@ -68,6 +71,22 @@ final class FakeFreshnessProvider: FreshnessChecking, @unchecked Sendable {
         await store.refreshAllGitInfo()
 
         #expect(fresh.lastShellInit == ["export PATH=/opt/bin:$PATH"])
+    }
+
+    /// The store hands the workspace's `WIETTY_*` variables to the provider, so a
+    /// scheduled check reads the same values the run-now path injects. `WIETTY_WORKSPACE_PATH`
+    /// is always present (it comes from the project URL), so it stands in for the set.
+    @Test func passesWorkspaceVariablesToProvider() async {
+        let fresh = FakeFreshnessProvider()
+        fresh.results = [FreshnessResult(name: "composer", actionNeeded: false, message: "composer")]
+        let store = store(fresh)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        let id = store.projects[0].id
+        store.addCheck(name: "composer", config: CheckConfig(command: "check"), for: id)
+
+        await store.refreshAllGitInfo()
+
+        #expect(fresh.lastVariables["WIETTY_WORKSPACE_PATH"] == store.projects[0].url.path)
     }
 
     /// The store keeps each workspace's freshness cache and passes it back into the

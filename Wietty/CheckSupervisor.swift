@@ -10,9 +10,11 @@ import Observation
 /// The scheduled `!` marker is a separate path (`ProjectStore` drives
 /// `FreshnessService` on a tick), so this type carries none of that path's
 /// watch-file caching or staleness tracking: a check here runs when the user asks
-/// and its output is what "Open log" shows. Both paths run the same command with
-/// the same workspace-wide `shell_init`, so they cannot disagree about what a check
-/// is. The file is the source of truth; this type never writes definitions back.
+/// and its output is what "Open log" shows. Both paths run the same command with the
+/// same workspace-wide `shell_init` and the same injected `WIETTY_*` variables, and
+/// both expand an unset variable to empty rather than blocking, so they cannot
+/// disagree about what a check is. The file is the source of truth; this type never
+/// writes definitions back.
 @MainActor
 @Observable
 final class CheckSupervisor {
@@ -35,8 +37,13 @@ final class CheckSupervisor {
     /// `message` and `watch` belong to the marker path, not the run), so the mapping
     /// is simpler than a test's: no env, no per-check `shell_init`. The workspace-wide
     /// lines are folded in per launch by `ManagedProcess`, as for tests and processes.
+    ///
+    /// `allowEmptyVars` is on so an unset `WIETTY_*` reference expands to empty rather
+    /// than blocking the run. This is what keeps the run-now path in step with the
+    /// scheduled `FreshnessService` path, which hands the command straight to the shell
+    /// and so cannot block: a check must behave the same whichever path runs it.
     private func processConfig(_ def: CheckConfig) -> ProcessConfig {
-        ProcessConfig(command: def.command, kind: .shortRunning)
+        ProcessConfig(command: def.command, kind: .shortRunning, allowEmptyVars: true)
     }
 
     /// Reconciles check definitions for one workspace: adds new, updates existing,

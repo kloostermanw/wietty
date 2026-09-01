@@ -59,6 +59,21 @@ import Foundation
         #expect(captured.args == ["-l", "-c", "git status"])
     }
 
+    /// The per-project `WIETTY_*` variables are injected into the check's command
+    /// environment, so a scheduled check reads the same values the run-now path
+    /// (`CheckSupervisor`) injects. Without this the two paths would disagree about a
+    /// check that references `$WIETTY_BRANCH` and the like.
+    @Test func injectsWorkspaceVariablesIntoTheCommandEnvironment() async {
+        let runner = FakeCommandRunner(handler: { _, _ in CommandResult(stdout: "", stderr: "", status: 0) })
+        let svc = FreshnessService(runner: runner, shell: "/bin/zsh")
+        _ = await svc.run(
+            checks: ["c": CheckConfig(command: "check")],
+            in: URL(fileURLWithPath: "/tmp/ws"), cache: [:],
+            variables: ["WIETTY_BRANCH": "feature/x"]
+        )
+        #expect(runner.lastEnvironment["WIETTY_BRANCH"] == "feature/x")
+    }
+
     /// The workspace-wide `shell_init` is prepended to the check's command, composed
     /// into one script the same way a process or test command is, so a check sees the
     /// `PATH` and tooling those lines set up.

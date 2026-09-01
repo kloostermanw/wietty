@@ -5,7 +5,8 @@ import Foundation
 /// Scripts git/gh command output by matching on argument fragments.
 private final class ScriptedRunner: CommandRunning, @unchecked Sendable {
     var responses: [(match: String, result: CommandResult)] = []
-    func run(_ executable: String, _ arguments: [String], workingDirectory: URL?) -> CommandResult {
+    func run(_ executable: String, _ arguments: [String], workingDirectory: URL?,
+             environment: [String: String]) -> CommandResult {
         let joined = arguments.joined(separator: " ")
         for r in responses where joined.contains(r.match) { return r.result }
         return CommandResult(stdout: "", stderr: "", status: 1)
