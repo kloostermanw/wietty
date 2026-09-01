@@ -1,10 +1,10 @@
 # Periodic Checks and Scheduling
 
-The Wietty app continuously monitors each workspace through a tiered scheduler that runs five independent checks at different intervals depending on the workspace's state, plus one app-wide poll described separately below.
+The Wietty app continuously monitors each workspace through a tiered scheduler that runs six independent checks at different intervals depending on the workspace's state, plus one app-wide poll described separately below.
 
 ## The Workspace Checks
 
-Wietty performs these five checks per workspace, each refreshing a different aspect of workspace information:
+Wietty performs these six checks per workspace, each refreshing a different aspect of workspace information:
 
 **Git Sync** (local)
 Runs `git fetch` and computes the branch's ahead/behind status relative to its upstream. Also extracts branch metadata including any linked issue number. In addition to its scheduled runs, Git Sync is poked immediately by the `.git` watcher (see "Real-Time Git Watcher" below) so local commits and checkouts show up without waiting for the next tick.
@@ -20,6 +20,9 @@ Re-probes daemon-kind processes that declare a status command by running that co
 
 **Working Tree** (local)
 Computes a fingerprint of the workspace's working tree and forwards it to `TestSupervisor`, which stales any test whose last passing run was baselined against a different fingerprint. Local operation, but its tier does not follow the Decision Matrix below: like the app-wide job name poll, it runs Fast whenever its workspace is expanded and Slow when collapsed, and is not sped up further by the CI-pending or needs-attention overlays (`CheckTier.swift`, `checkTier(for:collapsed:ciPending:needsAttention:)`).
+
+**Freshness** (local)
+Runs the workspace's configured freshness checks: each is a shell command (from the `checks` section of `wietty.json`) run in the workspace folder. A non-zero exit means the check needs attention, which lights the red `!` marker next to the workspace name on its card; clicking the marker lists the checks that tripped. A workspace with no `checks` runs nothing and shows no marker. A check with a `watch` file is the exception to running on every tick: once it passes, its result is remembered against the file's hash and the command is skipped until the file changes (`FreshnessService`, the in-memory cache in `ProjectStore`). Local operation, tiered like Git Sync and the other per-workspace checks in the Decision Matrix below (bumped by needs-attention, unaffected by CI-pending). See the `checks` key in `wietty-json.md`.
 
 ## The App-Wide Job Name Poll
 
@@ -44,7 +47,7 @@ Used for collapsed (hidden) workspaces where changes are less urgent to detect.
 
 **Instant** (immediate, event-driven)
 Not a repeating interval. Triggered by specific user actions:
-  * Un-collapsing a workspace runs all five of its checks immediately, then returns to the normal schedule. The app-wide job name poll is reset alongside them.
+  * Un-collapsing a workspace runs all six of its checks immediately, then returns to the normal schedule. The app-wide job name poll is reset alongside them.
   * The manual refresh button (top-right) runs all checks across all workspaces immediately, including the app-wide job name poll.
 
 Note: Collapsing a workspace does not trigger Instant checks.
@@ -66,18 +69,18 @@ The scheduler decides each check's tier by examining the workspace's current sta
 
 **Base Tier**
 
-When the workspace is collapsed, Git Sync, Pull Request, CI Checks, and Process Status default to Slow (300s). When expanded, they default to Normal (60s).
+When the workspace is collapsed, Git Sync, Pull Request, CI Checks, Process Status, and Freshness default to Slow (300s). When expanded, they default to Normal (60s).
 
 **Tier Bumps**
 
 Two overlays can bump a check one tier faster (from Slow to Normal, or from Normal to Fast). These bumps are cumulative and capped at Fast (the fastest interval).
 
   * CI-pending: When the pull request has pending or running CI checks, the CI Checks check bumps one tier faster. Does not affect other checks.
-  * Needs-attention: When a terminal session in the workspace has sent a bell signal, Git Sync, Pull Request, CI Checks, and Process Status all bump one tier faster. Working Tree and the app-wide job name poll are not part of this overlay; they use the simpler two-tier rule described above.
+  * Needs-attention: When a terminal session in the workspace has sent a bell signal, Git Sync, Pull Request, CI Checks, Process Status, and Freshness all bump one tier faster. Working Tree and the app-wide job name poll are not part of this overlay; they use the simpler two-tier rule described above.
 
 **Matrix Table**
 
-The table below applies to Git Sync, Pull Request, CI Checks, and Process Status. Working Tree and the job name poll are not shown; see their own sections above.
+The table below applies to Git Sync, Pull Request, CI Checks, Process Status, and Freshness. Working Tree and the job name poll are not shown; see their own sections above. Freshness follows the Git Sync column (bumped by needs-attention, unaffected by CI-pending).
 
 | Workspace State | Git Sync | Pull Request | CI Checks | Process Status |
 |---|---|---|---|---|
@@ -94,7 +97,7 @@ The table below applies to Git Sync, Pull Request, CI Checks, and Process Status
 
 Un-collapsing a workspace or pressing the manual refresh button causes all affected checks to run immediately:
 
-  * **Un-collapse:** When you expand a collapsed workspace, all five of its checks are marked as due and execute at once, together with the app-wide job name poll. This is useful for quickly verifying the current state after the workspace was hidden.
+  * **Un-collapse:** When you expand a collapsed workspace, all six of its checks are marked as due and execute at once, together with the app-wide job name poll. This is useful for quickly verifying the current state after the workspace was hidden.
   * **Manual Refresh:** The refresh button (↻) at the top right of the window resets all checks in all workspaces as due, plus the app-wide job name poll, then executes them. This is a full sync across the entire project.
 
 ## Dynamic Tier Recomputation

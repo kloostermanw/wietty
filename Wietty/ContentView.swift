@@ -414,6 +414,7 @@ struct ContentView: View {
                     runState: { store.runState(for: $0) },
                     isRunning: { store.isSessionRunning($0) },
                     needsAttention: { store.attention.contains($0.id) },
+                    freshness: store.freshness[project.id] ?? [],
                     syncEnabled: store.isSyncEnabled(project),
                     configChanged: store.configChangedOnDisk.contains(project.id),
                     isLocalOnly: { store.localOnlyTerminals.contains($0.id) },

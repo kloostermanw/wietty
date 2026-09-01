@@ -241,4 +241,117 @@ import Foundation
         let restored = try WorkspaceConfig.parse(config.encoded())
         #expect(restored == config)
     }
+
+    @Test func parsesChecksSection() throws {
+        let json = Data("""
+        {
+          "agents": [], "terminals": [],
+          "checks": {
+            "composer": { "command": "check-composer", "message": "run composer install" },
+            "npm": { "command": "check-npm" }
+          }
+        }
+        """.utf8)
+        let config = try WorkspaceConfig.parse(json)
+        #expect(config.checks?["composer"]?.command == "check-composer")
+        #expect(config.checks?["composer"]?.message == "run composer install")
+        #expect(config.checks?["npm"]?.command == "check-npm")
+    }
+
+    /// A check with only a `command` reads, its `message` defaulting to empty, the
+    /// same way a test written with only a command does.
+    @Test func checkMessageDefaultsToEmptyWhenOmitted() throws {
+        let json = Data("""
+        { "agents": [], "terminals": [], "checks": { "npm": { "command": "check-npm" } } }
+        """.utf8)
+        let config = try WorkspaceConfig.parse(json)
+        #expect(config.checks?["npm"]?.message == "")
+    }
+
+    @Test func absentChecksSectionIsNil() throws {
+        let json = Data("""
+        { "name": "x", "agents": [], "terminals": [] }
+        """.utf8)
+        #expect(try WorkspaceConfig.parse(json).checks == nil)
+    }
+
+    /// An empty `message` is not written back, so a check defined with only a
+    /// command does not gain `"message": ""` noise the first time the file is
+    /// rewritten.
+    @Test func encodingOmitsEmptyCheckMessage() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [], terminals: [],
+            checks: ["npm": CheckConfig(command: "check-npm")]
+        )
+        let text = String(decoding: try config.encoded(), as: UTF8.self)
+        #expect(!text.contains("message"))
+    }
+
+    @Test func roundTripsChecksSection() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [], terminals: [],
+            checks: ["composer": CheckConfig(command: "check-composer", message: "run composer install")]
+        )
+        let restored = try WorkspaceConfig.parse(config.encoded())
+        #expect(restored == config)
+    }
+
+    /// A check's `watch` file is parsed, so a passing run can be remembered against
+    /// it and the command skipped until the file changes.
+    @Test func parsesCheckWatch() throws {
+        let json = Data("""
+        { "agents": [], "terminals": [],
+          "checks": { "vendor": { "command": "check", "watch": "composer.lock" } } }
+        """.utf8)
+        let config = try WorkspaceConfig.parse(json)
+        #expect(config.checks?["vendor"]?.watch == "composer.lock")
+    }
+
+    /// An empty `watch` reads as none, so a blank field does not turn caching half on.
+    @Test func blankCheckWatchDecodesAsNil() throws {
+        let json = Data("""
+        { "agents": [], "terminals": [], "checks": { "x": { "command": "check", "watch": "" } } }
+        """.utf8)
+        #expect(try WorkspaceConfig.parse(json).checks?["x"]?.watch == nil)
+    }
+
+    /// A whitespace-only `watch` is treated as none too: a hand-edited file with a
+    /// blank-looking value must not resolve to an unreadable path that silently runs
+    /// the command on every tick.
+    @Test func whitespaceCheckWatchDecodesAsNil() throws {
+        let json = Data("""
+        { "agents": [], "terminals": [], "checks": { "x": { "command": "check", "watch": "   " } } }
+        """.utf8)
+        #expect(try WorkspaceConfig.parse(json).checks?["x"]?.watch == nil)
+    }
+
+    /// A `watch` with surrounding whitespace is stored trimmed, so the path resolves
+    /// the same whether it came from the file or the editor.
+    @Test func checkWatchIsTrimmed() throws {
+        #expect(CheckConfig(command: "x", watch: "  composer.lock ").watch == "composer.lock")
+        #expect(CheckConfig(command: "x", watch: "   ").watch == nil)
+    }
+
+    /// A check's `watch` survives a write-then-read, so the caching gate is not lost
+    /// the first time the file is rewritten.
+    @Test func roundTripsCheckWatch() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [], terminals: [],
+            checks: ["vendor": CheckConfig(command: "check", watch: "composer.lock")]
+        )
+        let restored = try WorkspaceConfig.parse(config.encoded())
+        #expect(restored.checks?["vendor"]?.watch == "composer.lock")
+        #expect(restored == config)
+    }
+
+    /// A check with no `watch` is not written with a null one, so an ordinary check
+    /// does not gain `"watch"` noise the first time the file is rewritten.
+    @Test func encodingOmitsAbsentCheckWatch() throws {
+        let config = WorkspaceConfig(
+            name: nil, agents: [], terminals: [],
+            checks: ["npm": CheckConfig(command: "check-npm")]
+        )
+        let text = String(decoding: try config.encoded(), as: UTF8.self)
+        #expect(!text.contains("watch"))
+    }
 }

@@ -26,6 +26,7 @@ import SwiftUI
         #expect(!WorkspaceSettingsView.terminalsSectionTitle.isEmpty)
         #expect(!WorkspaceSettingsView.processesSectionTitle.isEmpty)
         #expect(!WorkspaceSettingsView.testsSectionTitle.isEmpty)
+        #expect(!WorkspaceSettingsView.checksSectionTitle.isEmpty)
         #expect(!WorkspaceSettingsView.enableSyncTitle.isEmpty)
     }
 
@@ -47,6 +48,7 @@ import SwiftUI
             terminals: ["Terminal 1"],
             processes: ["web": ProcessConfig(command: "npm run dev")],
             tests: ["unit": TestConfig(command: "phpunit")],
+            checks: ["composer": CheckConfig(command: "check", message: "run composer install")],
             shellInit: ["export PATH=$HOME/bin:$PATH"]
         ), in: folder)
         store.addProject(url: folder)
@@ -106,11 +108,19 @@ import SwiftUI
                                      onSave: { _, _, _ in true }, onDelete: {})))
     }
 
+    @Test func checkRowRendersBothStates() {
+        let config = CheckConfig(command: "check-composer", message: "run composer install")
+        #expect(render(CheckConfigRow(name: "composer", config: config, onSave: { _, _, _ in true }, onDelete: {})))
+        #expect(render(CheckConfigRow(name: "composer", config: config, isEditing: true,
+                                      onSave: { _, _, _ in true }, onDelete: {})))
+    }
+
     @Test func addFormsAndShellInitEditorRender() {
         #expect(render(AddAgentForm { _, _, _, _ in true }))
         #expect(render(AddTerminalForm { _ in true }))
         #expect(render(AddProcessForm { _, _ in true }))
         #expect(render(AddTestForm { _, _ in true }))
+        #expect(render(AddCheckForm { _, _ in true }))
         #expect(render(ShellInitEditor(lines: ["export X=1"], onSave: { _ in })))
     }
 }

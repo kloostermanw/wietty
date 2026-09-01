@@ -38,6 +38,14 @@ final class ProjectStore {
     private(set) var projects: [Project] = []
     var lastError: String?
     private(set) var gitInfo: [UUID: GitInfo] = [:]
+    /// The last freshness-check results per workspace, produced by the `.freshness`
+    /// check. Drives the card's `!` marker and its detail popover. Absent or empty
+    /// means nothing to show.
+    private(set) var freshness: [UUID: [FreshnessResult]] = [:]
+    /// Per-workspace freshness cache: the passing results a `watch` check remembers
+    /// against its file's hash, so an unchanged file skips re-running the command.
+    /// In memory only, like `freshness` itself, so it is rebuilt from launch.
+    private var freshnessCache: [UUID: FreshnessCache] = [:]
     private(set) var attention: Set<UUID> = [] {
         didSet {
             // Every path that clears a flag, in one place. There are a dozen of them
@@ -128,6 +136,7 @@ final class ProjectStore {
     private var settingsPersistable = true
     private let service: TerminalService
     private let gitProvider: GitInfoProviding
+    private let freshProvider: FreshnessChecking
     let processes: ProcessSupervisor
     let testSupervisor: TestSupervisor
     // The old `UserDefaults` keys, read once during migration and then removed. Their
@@ -474,6 +483,7 @@ final class ProjectStore {
         service: TerminalService,
         jobEvents: @escaping @MainActor () -> [MonitorEvent] = { [] },
         gitProvider: GitInfoProviding = GitInfoService(),
+        freshProvider: FreshnessChecking = FreshnessService(),
         processSupervisor: ProcessSupervisor = ProcessSupervisor(),
         testSupervisor: TestSupervisor = TestSupervisor()
     ) {
@@ -482,6 +492,7 @@ final class ProjectStore {
         self.service = service
         self.jobEvents = jobEvents
         self.gitProvider = gitProvider
+        self.freshProvider = freshProvider
         self.processes = processSupervisor
         self.testSupervisor = testSupervisor
         // The secret stays in `UserDefaults`; the config file never holds it.
@@ -739,6 +750,8 @@ final class ProjectStore {
         releaseOrphaned(rows.map(\.sessionId))
         projects.removeAll { $0.id == project.id }
         gitInfo[project.id] = nil
+        freshness[project.id] = nil
+        freshnessCache[project.id] = nil
         for id in terminalIds {
             attention.remove(id)
             jobNames[id] = nil
@@ -1545,6 +1558,21 @@ final class ProjectStore {
         case .workingTree:
             guard let fingerprint = await gitProvider.workingTreeFingerprint(for: url) else { return }
             forwardWorkingTreeFingerprint(fingerprint, projectId: key.projectId)
+        case .freshness:
+            let checks = projects.first(where: { $0.id == key.projectId })?.configChecks ?? [:]
+            // No checks configured means nothing to run and nothing to show, so the
+            // slot is cleared rather than left holding a stale result. Only write when
+            // there is something to clear, so a workspace with no checks does not churn
+            // the observable dictionary on every tick.
+            guard !checks.isEmpty else {
+                if freshness[key.projectId] != nil { freshness[key.projectId] = nil }
+                if freshnessCache[key.projectId] != nil { freshnessCache[key.projectId] = nil }
+                return
+            }
+            let (results, cache) = await freshProvider.run(
+                checks: checks, in: url, cache: freshnessCache[key.projectId] ?? [:])
+            freshness[key.projectId] = results
+            freshnessCache[key.projectId] = cache
         }
     }
 
@@ -1635,6 +1663,7 @@ final class ProjectStore {
             name: projects[index].configName,
             processes: projects[index].configProcesses,
             tests: projects[index].configTests,
+            checks: projects[index].configChecks,
             shellInit: projects[index].configShellInit
         )
         // Written from what this workspace is already running, so there is nothing
@@ -1658,7 +1687,7 @@ final class ProjectStore {
         guard ConfigFile.exists(in: project.url) else { return }
         let config = ConfigReconcile.config(
             from: project.terminals, name: project.configName, processes: project.configProcesses,
-            tests: project.configTests, shellInit: project.configShellInit
+            tests: project.configTests, checks: project.configChecks, shellInit: project.configShellInit
         )
         guard let data = try? config.encoded() else { return }
         if lastConfigData[projectId] == data { return }
@@ -1711,6 +1740,7 @@ final class ProjectStore {
         projects[index].configName = config.name
         projects[index].configProcesses = config.processes
         projects[index].configTests = config.tests
+        projects[index].configChecks = config.checks
         projects[index].configShellInit = config.shellInit
         processes.apply(config, projectId: projectId, directory: url) { [weak self] in
             self?.processVariables(for: projectId) ?? [:]
@@ -1810,7 +1840,7 @@ final class ProjectStore {
         let project = projects[index]
         let config = ConfigReconcile.config(
             from: project.terminals, name: project.configName, processes: project.configProcesses,
-            tests: project.configTests, shellInit: project.configShellInit
+            tests: project.configTests, checks: project.configChecks, shellInit: project.configShellInit
         )
         // The edit is the user asking for it, so nothing here needs a second question.
         approve(ConfigTrust.commands(in: config), for: projectId)
@@ -1914,6 +1944,51 @@ final class ProjectStore {
               var tests = projects[index].configTests, tests[name] != nil else { return }
         tests[name] = nil
         projects[index].configTests = tests.isEmpty ? nil : tests
+        commitConfigEdits(for: projectId)
+    }
+
+    /// Adds a freshness-check definition under a new name. Same refusals as
+    /// `addTest`: an empty name or one already taken is rejected so the add form
+    /// keeps what the user typed.
+    @discardableResult
+    func addCheck(name: String, config: CheckConfig, for projectId: UUID) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return false }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        var checks = projects[index].configChecks ?? [:]
+        guard checks[trimmed] == nil else { return false }
+        checks[trimmed] = config
+        projects[index].configChecks = checks
+        commitConfigEdits(for: projectId)
+        return true
+    }
+
+    /// Applies an edit to an existing check row, renaming it when the name changed.
+    /// Same refusals as `updateTest`.
+    @discardableResult
+    func updateCheck(originalName: String, name: String, config: CheckConfig,
+                     for projectId: UUID) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }),
+              var checks = projects[index].configChecks, checks[originalName] != nil else { return false }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed == originalName || checks[trimmed] == nil else { return false }
+        checks[originalName] = nil
+        checks[trimmed] = config
+        projects[index].configChecks = checks
+        commitConfigEdits(for: projectId)
+        return true
+    }
+
+    /// Removes a check definition. Clears the section to absent when it empties, and
+    /// drops any stored result for it so the marker does not keep asking for a check
+    /// that no longer exists.
+    func removeCheck(name: String, for projectId: UUID) {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }),
+              var checks = projects[index].configChecks, checks[name] != nil else { return }
+        checks[name] = nil
+        projects[index].configChecks = checks.isEmpty ? nil : checks
+        freshness[projectId] = freshness[projectId]?.filter { $0.name != name }
+        freshnessCache[projectId]?[name] = nil
         commitConfigEdits(for: projectId)
     }
 

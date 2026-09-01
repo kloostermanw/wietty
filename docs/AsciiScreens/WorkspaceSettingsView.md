@@ -37,10 +37,14 @@ other page goes.
 │    unit                                  ✎  🗑    │
 │      phpunit                                      │
 │                                                    │
+│  Checks                                     Add   │
+│    composer                              ✎  🗑    │
+│      git diff --quiet HEAD -- composer.lock       │
+│                                                    │
 └──────────────────────────────────────────────────┘
 ```
 
-Each list section (Agents, Terminals, Processes, Tests) is a `ListSettingsSection`:
+Each list section (Agents, Terminals, Processes, Tests, Checks) is a `ListSettingsSection`:
 the title on the left and an Add button on the right, then the rows, each with a
 pencil and a trash icon. The add form is hidden until it is needed. It appears when
 the list is empty (there is nothing to do but add the first item) or when Add is
@@ -95,8 +99,8 @@ workspace's `wietty.json`.
 ### The `wietty.json` sections
 
 Everything under Group edits the workspace's committed `wietty.json`: its
-workspace-wide `shell_init`, its agent and terminal rows, and its supervised
-processes and run-to-completion tests. Each section follows the same editable-list
+workspace-wide `shell_init`, its agent and terminal rows, its supervised
+processes and run-to-completion tests, and its freshness checks. Each section follows the same editable-list
 idiom the app's Settings tabs use (see SettingsView.md): a row per item with a pencil
 and a trash icon, a reading summary that becomes an inline form when the pencil is
 clicked, and an add form at the bottom. The multi-value fields (`env` as
@@ -105,13 +109,17 @@ are edited as text through `ConfigTextEditor`, parsed by `ConfigFieldText`.
 
 These edits are the reverse of the read path documented in wietty-json.md. Each row's
 save calls a `ProjectStore` mutator (`setShellInit`, `addProcess`/`updateProcess`/
-`removeProcess`, the `Test` equivalents, `addAgentRow`/`addTerminalRow`/
+`removeProcess`, the `Test` and `Check` equivalents, `addAgentRow`/`addTerminalRow`/
 `updateConfigRow`/`moveConfigRows`), which changes the live `Project`, rebuilds the
-file through `ConfigReconcile.config`, and writes it.
+file through `ConfigReconcile.config`, and writes it. A check carries only a command,
+a message, and an optional watch file (the row is `CheckConfigRow`/`AddCheckForm`), so
+it has none of the env, shell-init or empty-variable fields a process or test row
+shows. The watch file, when filled, is the file whose change re-runs the check;
+leaving it blank runs the command on every tick.
 
 The agent and terminal rows are draggable: dragging one reorders it within its kind
 (`ReorderableForEach` calling `moveConfigRows`), which is the order the file lists
-them in and the card lays them out in. Processes and tests are not draggable, because
+them in and the card lays them out in. Processes, tests and checks are not draggable, because
 the file stores them as objects keyed by name and writes them with sorted keys, so
 their order is always alphabetical. Because a `wietty.json` runs
 shell lines, the store also agrees to the lines the config now runs on the user's
@@ -123,14 +131,14 @@ never re-raises that prompt.
 Two rules carry over from the read path. An agent row's `type` (the line it runs) is
 editable only while the row is idle, because a running session keeps the line it was
 started with; the field is disabled with a hint on an open row, matching
-`ConfigReconcile.apply`. And a slot or a process/test name must stay unique, so a
+`ConfigReconcile.apply`. And a slot or a process, test or check name must stay unique, so a
 colliding rename is refused and the row stays in edit mode with a red note rather
 than silently dropping the change.
 
 The section titles are statics on the view (`WorkspaceSettingsView.groupSectionTitle`,
 `.shellInitSectionTitle`, `.agentsSectionTitle`, `.terminalsSectionTitle`,
-`.processesSectionTitle`, `.testsSectionTitle`, `.enableSyncTitle`, plus `.noGroupTitle`
-and `.systemImage`) for the same reason `SettingsTab` is a pure type: what a screen
+`.processesSectionTitle`, `.testsSectionTitle`, `.checksSectionTitle`, `.enableSyncTitle`,
+plus `.noGroupTitle` and `.systemImage`) for the same reason `SettingsTab` is a pure type: what a screen
 says is a fact about the app, and a fact about the app belongs in CI
 (`WorkspacePaneTests`, `WorkspaceConfigEditorViewTests`).
 

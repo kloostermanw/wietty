@@ -9,9 +9,19 @@ import Foundation
     private func config(agents: [WorkspaceConfig.Agent] = [],
                         processes: [String: ProcessConfig]? = nil,
                         tests: [String: TestConfig]? = nil,
+                        checks: [String: CheckConfig]? = nil,
                         shellInit: [String]? = nil) -> WorkspaceConfig {
         WorkspaceConfig(name: nil, agents: agents, terminals: [],
-                        processes: processes, tests: tests, shellInit: shellInit)
+                        processes: processes, tests: tests, checks: checks, shellInit: shellInit)
+    }
+
+    /// A check's command runs shell on the poll tick, so it is one of the lines the
+    /// user has to agree to, the same as a test's command.
+    @Test func aCheckCommandNeedsAgreement() {
+        let found = ConfigTrust.commands(in: config(
+            checks: ["composer": CheckConfig(command: "check-composer", message: "run composer install")]
+        ))
+        #expect(found == ["check-composer"])
     }
 
     /// Everything the file can choose to run, from all four places it can say so.

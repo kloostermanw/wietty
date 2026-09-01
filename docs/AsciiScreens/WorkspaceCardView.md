@@ -6,9 +6,9 @@ so the intended structure stays readable without running the app.
 ## Expanded card
 
 A project renders as a `WorkspaceCardView`. The header carries the collapse
-chevron, the project name, and the git ahead/behind indicators. Below the header
-sit the Issue/PR pills, the CI checks line, the test buttons line, the
-Processes group, and the terminal tree.
+chevron, the project name, the config-changed (`⟳`) and freshness (`!`) markers,
+and the git ahead/behind indicators. Below the header sit the Issue/PR pills, the
+CI checks line, the test buttons line, the Processes group, and the terminal tree.
 
 The ahead/behind indicators are two stacked, right aligned rows. Each row is
 labeled with the remote ref it compares against: the base row against the remote
@@ -17,7 +17,7 @@ default branch (`origin/develop`), the upstream row against the branch upstream
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ ▾ laravel-test                  ⟳   origin/develop            ↑1 ↓0 │
+│ ▾ laravel-test               ⟳ !   origin/develop            ↑1 ↓0 │
 │                                      origin/feature/issue-15   ↑1 ↓0 │
 │   (Issue #15)  (PR #16)                                             │
 │   1 failing, 1 successfull checks                                   │
@@ -38,7 +38,10 @@ Legend:
   baseline, so the project name keeps the same position whether the card is
   collapsed or expanded and whether the ahead/behind block has one row or two.
 - `origin/... ↑a ↓b`: `AheadBehindView`, one row per comparison, label plus the
-  up (ahead) and down (behind) counts.
+  up (ahead) and down (behind) counts. When the row is behind (`↓b` with `b > 0`)
+  the down arrow and its count turn red (`AheadBehindView.behindColor`), since a
+  behind count is the one number on the card that asks the user to pull; the label
+  and the ahead group stay secondary.
 - `(Issue #N)` / `(PR #N)`: filled pills from `IssuePRLineView`. When no issue is
   linked to the branch, the issue pill is replaced by the branch name rendered as
   plain, secondary text (no pill), so the line always shows some branch context. The
@@ -115,6 +118,15 @@ Legend:
   a shell running that nothing can reach (`ProjectStore.releaseOrphaned`).
 - `⟳`: appears only when `wietty.json` changed on disk. Clicking it applies
   the file to the rows (`WorkspaceCardView.header`, `onApplyConfig`).
+- `!`: a red freshness marker (`exclamationmark.circle.fill`), shown only when one
+  or more of the workspace's configured `checks` reported that action is needed
+  (`freshness.needsAttention`). Clicking it opens a popover (`FreshnessDetailView`)
+  listing each check that tripped, with its message and any command output. When
+  every check is clean, or none are configured, no marker is shown. The marker sits
+  in the header beside the name, so it stays visible whether the card is expanded or
+  collapsed. The freshness results come from the `.freshness` periodic check; see
+  `docs/periodic-checks.md` and the `checks` key in `docs/wietty-json.md`. A remote
+  card never shows it: freshness is local and the LAN protocol does not carry it.
 - `(local)`: a row tracked locally but absent from `wietty.json`, kept alive
   after an external removal (`TerminalRowView`, `isLocalOnly`).
 - The card draws no background of its own by default. When it owns the terminal the
@@ -185,8 +197,10 @@ workspace's current rows.
 
 When collapsed, the chevron flips and everything below and beside the header is
 hidden: the terminal tree, the Processes group, the Issue/PR pills, the checks
-line, and the ahead/behind indicators. Only the chevron and project name
-remain.
+line, and the ahead/behind indicators. The chevron and project name remain, and so
+do the header's `⟳` and `!` markers, which are not gated by the collapsed state:
+a config change or a freshness check needing attention is worth seeing on a
+collapsed card too.
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
