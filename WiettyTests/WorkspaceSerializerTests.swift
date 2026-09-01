@@ -40,4 +40,15 @@ import Foundation
         guard case let .object(m) = json else { Issue.record("expected object"); return }
         #expect(m["label"] == .string("[default] Claude 5"))
     }
+
+    /// A live agent-reported title reaches the wire, so a client shows the same name
+    /// this app's sidebar does rather than the stored base label. Issue #60.
+    @Test func terminalLabelReflectsTheLiveOverride() {
+        let ref = TerminalRef(label: "Claude 5", sessionId: "s1", kind: .claude, slot: "Claude 5")
+        let json = WorkspaceSerializer.terminal(ref, projectId: UUID(), projectName: "demo",
+                                                displayLabel: "running tests",
+                                                runState: .running, needsAttention: false, jobName: nil)
+        guard case let .object(m) = json else { Issue.record("expected object"); return }
+        #expect(m["label"] == .string("running tests"))
+    }
 }

@@ -76,6 +76,17 @@ final class ProjectStore {
     var onAttentionCleared: ((Set<UUID>) -> Void)?
     private(set) var jobNames: [UUID: String] = [:]
 
+    /// Live agent-reported tab titles, keyed by terminal id. Display-only and
+    /// ephemeral (rebuilt from launch), mirroring `jobNames`.
+    ///
+    /// A `.title` event lands here rather than in `TerminalRef.label`, so a busy
+    /// agent retitling constantly no longer mutates `projects`, re-renders the whole
+    /// sidebar, and tears down an open workspace-card context menu. The persisted
+    /// `label` stays the configured name; this is the name the row shows on top of
+    /// it. Read through `displayName(for:)`. A `fixed_naming` row is never written
+    /// here because `handle(.title)` ignores its reported title. Issue #60.
+    private(set) var liveLabels: [UUID: String] = [:]
+
     /// Subscribers to `workspaceChanges()`, keyed by subscription id.
     private var changeSubscribers: [UUID: AsyncStream<Void>.Continuation] = [:]
     /// Whether `armChangeTracking()` currently has an active `withObservationTracking`
@@ -1039,13 +1050,24 @@ final class ProjectStore {
             // A `fixed_naming` agent row keeps its slot and ignores the reported
             // title, which is the whole point of the flag: the row is pinned to its
             // configured name rather than following what the agent renames its tab to.
-            if projects[p].terminals[t].kind == .claude, !name.isEmpty,
-               !projects[p].terminals[t].fixedNaming,
-               name != projects[p].name,
-               projects[p].terminals[t].label != name {
-                projects[p].terminals[t].label = name
-                save()
-            }
+            // Only a Claude row's own reported title is eligible. An empty title, a
+            // `fixed_naming` row, or the workspace badge echoing back through
+            // `select-pane -T` is not a real title, and leaves any existing override
+            // exactly as it was.
+            let ref = projects[p].terminals[t]
+            guard ref.kind == .claude, !name.isEmpty, !ref.fixedNaming,
+                  name != projects[p].name else { return }
+            // The title lands in `liveLabels` (display-only, ephemeral), not in
+            // `label`, and never touches the disk. Mutating `projects` here would
+            // re-render the whole sidebar and dismiss any open card menu, which an
+            // active agent retitling constantly did dozens of times a second; see
+            // `liveLabels`. A title equal to the base `label` means "show the
+            // configured name", so the override is cleared rather than set: that is
+            // how a row recovers to its base once the agent stops retitling, which the
+            // old handler got for free by writing `label` directly. The inequality
+            // check keeps `@Observable` from notifying on a no-op. Issue #60.
+            let resolved: String? = (name == ref.label) ? nil : name
+            if liveLabels[ref.id] != resolved { liveLabels[ref.id] = resolved }
         case .bell(let sessionId):
             guard let (p, t) = indexOfSession(sessionId) else { return }
             // Only the transition is reported. `insert` says whether the flag was
@@ -1067,7 +1089,13 @@ final class ProjectStore {
             onNotification?(projects[p], projects[p].terminals[t], title, body)
         case .job(let sessionId, let jobName):
             guard let (p, t) = indexOfSession(sessionId) else { return }
-            jobNames[projects[p].terminals[t].id] = jobName
+            // Change-guarded: the poll emits an event for every terminal every 15s,
+            // and `@Observable` notifies on assignment regardless of equality, so an
+            // unguarded write re-rendered every expanded card (and dismissed any open
+            // menu) even when nothing changed. The sibling `.title` handler already
+            // guards; this now matches it. Issue #60.
+            let id = projects[p].terminals[t].id
+            if jobNames[id] != jobName { jobNames[id] = jobName }
         case .terminated(let sessionId):
             guard let (p, t) = indexOfSession(sessionId) else { return }
             jobNames[projects[p].terminals[t].id] = ""
@@ -1104,6 +1132,14 @@ final class ProjectStore {
     func isSessionRunning(_ ref: TerminalRef) -> Bool {
         guard let job = jobNames[ref.id], !job.isEmpty else { return false }
         return ref.kind == .claude ? claudeIsRunning(jobName: job) : true
+    }
+
+    /// The name a sidebar row shows: its stored `displayName`, overridden by any live
+    /// agent-reported title in `liveLabels`. Resolved here rather than on `TerminalRef`
+    /// because the override lives on the store, so a caller with a `ref` asks this.
+    /// Issue #60.
+    func displayName(for ref: TerminalRef) -> String {
+        ref.displayName(liveLabel: liveLabels[ref.id])
     }
 
     /// The workspace and row with this row id.
@@ -1266,6 +1302,7 @@ final class ProjectStore {
     private func forgetTerminal(_ refId: UUID) {
         attention.remove(refId)
         jobNames[refId] = nil
+        liveLabels[refId] = nil
         localOnlyTerminals.remove(refId)
     }
 
@@ -1296,6 +1333,10 @@ final class ProjectStore {
         if projects[pIndex].terminals[tIndex].kind == .terminal {
             projects[pIndex].terminals[tIndex].slot = label
         }
+        // Drop any live agent-reported title so the deliberate rename shows at once
+        // rather than staying masked by a stale override until the next title event.
+        // Issue #60.
+        liveLabels[ref.id] = nil
         save()
         emitConfig(for: projects[pIndex].id)
     }
