@@ -71,6 +71,14 @@ struct WorkspaceCardView: View {
     let onTestRun: (ManagedProcess) -> Void
     let onTestRunAll: () -> Void
     let onOpenTestLog: (ManagedProcess) -> Void
+    /// The workspace's configured checks, in menu order. Empty on a remote card (a
+    /// remote workspace's checks are not this app's to run) and on any workspace with
+    /// no `checks`, which draws the disabled empty-state row.
+    var checks: [ManagedProcess] = []
+    /// Runs one check now, on demand, independent of the scheduled freshness tick.
+    var onRunCheck: (ManagedProcess) -> Void = { _ in }
+    /// Puts one check's output in the pane, the same log view a test or process uses.
+    var onOpenCheckLog: (ManagedProcess) -> Void = { _ in }
 
     @Environment(\.sidebarColors) private var sidebarColors
 
@@ -217,6 +225,8 @@ struct WorkspaceCardView: View {
             agentSubmenu(item, action: onAddAgent)
         case .addAgentWithArgs:
             agentSubmenu(item, action: onAddAgentWithArgs)
+        case .checks:
+            checksSubmenu(item)
         case .addClaude:
             Button(item.title, action: onOpenClaude)
         case .addWorkspace:
@@ -253,6 +263,26 @@ struct WorkspaceCardView: View {
             } else {
                 ForEach(agents) { agent in
                     Button(agent.displayName) { action(agent) }
+                }
+            }
+        }
+    }
+
+    /// The `Checks` submenu: one entry per configured check, each a submenu offering
+    /// "Run" and "Open log". Empty is drawn the same way an empty agent submenu is: a
+    /// disabled row that says where checks come from, so it does not read as a menu
+    /// that failed to build.
+    @ViewBuilder private func checksSubmenu(_ item: WorkspaceMenuItem) -> some View {
+        Menu(item.title) {
+            if checks.isEmpty {
+                Button(WorkspaceMenu.noChecks) {}.disabled(true)
+            } else {
+                ForEach(checks) { check in
+                    Menu(check.name) {
+                        Button("Run") { onRunCheck(check) }
+                        Divider()
+                        Button("Open log") { onOpenCheckLog(check) }
+                    }
                 }
             }
         }

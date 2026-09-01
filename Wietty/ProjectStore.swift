@@ -139,6 +139,7 @@ final class ProjectStore {
     private let freshProvider: FreshnessChecking
     let processes: ProcessSupervisor
     let testSupervisor: TestSupervisor
+    let checkSupervisor: CheckSupervisor
     // The old `UserDefaults` keys, read once during migration and then removed. Their
     // values now live in `~/.config/wietty/config`; see `SettingsKeys`.
     private let storageKey = "wietty.projects.bookmarks"
@@ -485,7 +486,8 @@ final class ProjectStore {
         gitProvider: GitInfoProviding = GitInfoService(),
         freshProvider: FreshnessChecking = FreshnessService(),
         processSupervisor: ProcessSupervisor = ProcessSupervisor(),
-        testSupervisor: TestSupervisor = TestSupervisor()
+        testSupervisor: TestSupervisor = TestSupervisor(),
+        checkSupervisor: CheckSupervisor = CheckSupervisor()
     ) {
         self.defaults = defaults
         self.configFile = config ?? Self.defaultConfig(for: defaults)
@@ -495,6 +497,7 @@ final class ProjectStore {
         self.freshProvider = freshProvider
         self.processes = processSupervisor
         self.testSupervisor = testSupervisor
+        self.checkSupervisor = checkSupervisor
         // The secret stays in `UserDefaults`; the config file never holds it.
         self.remoteToken = RemoteAccessToken(defaults: defaults)
 
@@ -760,6 +763,7 @@ final class ProjectStore {
         stopGitWatching(project.id)
         processes.removeWorkspace(project.id)
         testSupervisor.removeWorkspace(project.id)
+        checkSupervisor.removeWorkspace(project.id)
         lastConfigData[project.id] = nil
         configChangedOnDisk.remove(project.id)
         schedule.forget(projectId: project.id)
@@ -1749,6 +1753,9 @@ final class ProjectStore {
         testSupervisor.apply(config, projectId: projectId, directory: url) { [weak self] in
             self?.processVariables(for: projectId) ?? [:]
         }
+        checkSupervisor.apply(config, projectId: projectId, directory: url) { [weak self] in
+            self?.processVariables(for: projectId) ?? [:]
+        }
         localOnlyTerminals.formUnion(result.localOnly)
         lastConfigData[projectId] = ConfigFile.rawData(in: url)
         save()
@@ -1849,6 +1856,9 @@ final class ProjectStore {
             self?.processVariables(for: projectId) ?? [:]
         }
         testSupervisor.apply(config, projectId: projectId, directory: project.url) { [weak self] in
+            self?.processVariables(for: projectId) ?? [:]
+        }
+        checkSupervisor.apply(config, projectId: projectId, directory: project.url) { [weak self] in
             self?.processVariables(for: projectId) ?? [:]
         }
         save()

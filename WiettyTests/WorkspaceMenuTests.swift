@@ -16,14 +16,21 @@ import SwiftUI
     }
 
     @Test func theLocalMenuOpensWithTheThingsThatAddSomething() {
-        #expect(local().prefix(4) == [.addTerminal, .addAgent, .addAgentWithArgs, .addWorkspace])
+        #expect(local().prefix(4) == [.addTerminal, .addAgent, .addAgentWithArgs, .checks])
+    }
+
+    /// The `Checks` submenu sits with the other "add"/action submenus, after the two
+    /// agent ones and before `Add workspace…`, matching the mockup in issue #59.
+    @Test func checksSubmenuFollowsTheAgentSubmenus() {
+        #expect(local().prefix(5)
+            == [.addTerminal, .addAgent, .addAgentWithArgs, .checks, .addWorkspace])
     }
 
     /// A separator, and everything that acts on the workspace itself below it. The
     /// four above it all add something; mixing "Remove" in with them is how a click
     /// meant for one lands on the other.
     @Test func actingOnTheWorkspaceItselfIsBelowASeparator() {
-        #expect(local() == [.addTerminal, .addAgent, .addAgentWithArgs, .addWorkspace,
+        #expect(local() == [.addTerminal, .addAgent, .addAgentWithArgs, .checks, .addWorkspace,
                             .separator, .editWorkspace, .renameWorkspace, .removeWorkspace])
     }
 
@@ -33,6 +40,12 @@ import SwiftUI
         #expect(local(syncEnabled: false).contains(.enableConfigSync))
         #expect(!local(syncEnabled: true).contains(.enableConfigSync))
         #expect(local(syncEnabled: false).last == .removeWorkspace)
+    }
+
+    /// An empty checks submenu, like the agent ones, says a check is configured in
+    /// `wietty.json` rather than reading as a menu that failed to build.
+    @Test func anEmptyChecksSubmenuSaysWhereChecksComeFrom() {
+        #expect(WorkspaceMenu.noChecks.contains("wietty.json"))
     }
 
     /// A remote card is another Mac's workspace, served over the LAN protocol, and
@@ -73,7 +86,19 @@ import SwiftUI
 /// construction failure in any of them surfaces here.
 @MainActor
 @Suite struct WorkspaceCardMenuRenderTests {
-    private func card(agents: [AgentDefinition], isLocal: Bool) -> WorkspaceCardView {
+    /// A real check to drive the non-empty branch of the "Checks" submenu, a `Menu`
+    /// nested three deep that nothing else in the app builds.
+    private func oneCheck() -> [ManagedProcess] {
+        let sup = CheckSupervisor(launcher: FakeProcessLauncher())
+        let pid = UUID()
+        sup.apply(WorkspaceConfig(name: nil, agents: [], terminals: [],
+                                  checks: ["lint": CheckConfig(command: "lint")]),
+                  projectId: pid, directory: URL(fileURLWithPath: "/tmp"))
+        return sup.checks(for: pid)
+    }
+
+    private func card(agents: [AgentDefinition], isLocal: Bool,
+                      checks: [ManagedProcess] = []) -> WorkspaceCardView {
         WorkspaceCardView(
             project: Project(url: URL(fileURLWithPath: "/tmp/proj")),
             collapsed: false,
@@ -108,12 +133,22 @@ import SwiftUI
             tests: [],
             onTestRun: { _ in },
             onTestRunAll: {},
-            onOpenTestLog: { _ in })
+            onOpenTestLog: { _ in },
+            checks: checks,
+            onRunCheck: { _ in },
+            onOpenCheckLog: { _ in })
     }
 
     @Test func theCardRendersWithAgentsAndWithout() {
         for agents in [[AgentDefinition.claude], []] {
             let view = card(agents: agents, isLocal: true)
+            #expect(ImageRenderer(content: view.frame(width: 300)).nsImage != nil)
+        }
+    }
+
+    @Test func theCardRendersWithChecksAndWithout() {
+        for checks in [oneCheck(), []] {
+            let view = card(agents: [], isLocal: true, checks: checks)
             #expect(ImageRenderer(content: view.frame(width: 300)).nsImage != nil)
         }
     }

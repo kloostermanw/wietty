@@ -11,7 +11,10 @@ struct ProcessLogView: View {
     let log: ProcessLogRef
 
     private var process: ManagedProcess? {
-        log.isTest
+        if log.isCheck {
+            return store.checkSupervisor.check(projectId: log.projectId, name: log.name)
+        }
+        return log.isTest
             ? store.testSupervisor.test(projectId: log.projectId, name: log.name)
             : store.processes.process(projectId: log.projectId, name: log.name)
     }
