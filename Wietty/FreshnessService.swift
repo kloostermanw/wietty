@@ -3,8 +3,9 @@ import Foundation
 
 /// One entry in a workspace's freshness cache: the result of a passing check kept
 /// against the hash of its `watch` file, so a later tick can reuse the result
-/// without running the command while the file is unchanged. `command` is stored too,
-/// so editing the check's script invalidates a stale passing result.
+/// without running the command while the file is unchanged. The effective script
+/// (the command with the workspace-wide `shell_init` prepended) is stored too, so
+/// editing the command or a `shell_init` line invalidates a stale passing result.
 struct FreshnessCacheEntry: Equatable, Sendable {
     var watchHash: String
     var command: String
@@ -28,7 +29,12 @@ protocol FreshnessChecking: Sendable {
     /// `cache` carries the prior run's remembered passing results; the returned cache
     /// replaces it. A check with a `watch` file whose hash matches its cached entry
     /// is not run again, its stored result is reused.
-    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache)
+    ///
+    /// `shellInit` is the workspace-wide `shell_init`, prepended to each check's command
+    /// the same way it is to a process or test command, so a check sees the same `PATH`
+    /// and tooling the shell lines set up. A check has no per-check `shell_init` field;
+    /// only these workspace-wide lines apply.
+    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache, shellInit: [String])
         async -> (results: [FreshnessResult], cache: FreshnessCache)
 }
 
@@ -54,42 +60,48 @@ struct FreshnessService: FreshnessChecking {
         self.hashFile = hashFile
     }
 
-    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache)
+    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache, shellInit: [String] = [])
         async -> (results: [FreshnessResult], cache: FreshnessCache) {
         var results: [FreshnessResult] = []
         var updated: FreshnessCache = [:]
         for name in checks.keys.sorted() {
             let config = checks[name]!
+            // The effective script prepends the workspace-wide `shell_init`, so the
+            // cache keys on what actually runs: editing either the command or a
+            // `shell_init` line changes the script and busts a stale passing result.
+            let script = ShellPrelude.script(lines: shellInit, command: config.command)
 
             // A check with a readable `watch` file caches its passing result against
-            // the file's hash: while the hash (and the command) is unchanged, the
+            // the file's hash: while the hash (and the script) is unchanged, the
             // stored result is reused and the command is not run. A file that cannot
             // be hashed falls through to running every tick.
             if let watch = config.watch,
                let hash = hashFile(folder.appendingPathComponent(watch)) {
-                if let cached = cache[name], cached.watchHash == hash, cached.command == config.command {
+                if let cached = cache[name], cached.watchHash == hash, cached.command == script {
                     results.append(cached.result)
                     updated[name] = cached
                     continue
                 }
-                let result = execute(config, name: name, in: folder)
+                let result = execute(config, script: script, name: name, in: folder)
                 results.append(result)
                 // Only a passing run is remembered; a failing check keeps re-running
                 // until it is fixed rather than sticking on a cached failure.
                 if !result.actionNeeded {
-                    updated[name] = FreshnessCacheEntry(watchHash: hash, command: config.command, result: result)
+                    updated[name] = FreshnessCacheEntry(watchHash: hash, command: script, result: result)
                 }
                 continue
             }
 
-            results.append(execute(config, name: name, in: folder))
+            results.append(execute(config, script: script, name: name, in: folder))
         }
         return (results, updated)
     }
 
-    /// Runs one check's command and turns its exit code and output into a result.
-    private func execute(_ config: CheckConfig, name: String, in folder: URL) -> FreshnessResult {
-        let result = runner.run(shell, ["-l", "-c", config.command], workingDirectory: folder)
+    /// Runs one check's already-composed `script` and turns its exit code and output
+    /// into a result. `script` is the command with the workspace-wide `shell_init`
+    /// prepended, run in the same login shell a process or test uses.
+    private func execute(_ config: CheckConfig, script: String, name: String, in folder: URL) -> FreshnessResult {
+        let result = runner.run(shell, ["-l", "-c", script], workingDirectory: folder)
         return FreshnessResult(
             name: name,
             actionNeeded: result.status != 0,

@@ -9,12 +9,14 @@ final class FakeFreshnessProvider: FreshnessChecking, @unchecked Sendable {
     var returnedCache: FreshnessCache = [:]
     private(set) var lastChecks: [String: CheckConfig] = [:]
     private(set) var lastCache: FreshnessCache = [:]
+    private(set) var lastShellInit: [String] = []
     private(set) var runCount = 0
 
-    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache)
+    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache, shellInit: [String])
         async -> (results: [FreshnessResult], cache: FreshnessCache) {
         lastChecks = checks
         lastCache = cache
+        lastShellInit = shellInit
         runCount += 1
         return (results, returnedCache)
     }
@@ -50,6 +52,22 @@ final class FakeFreshnessProvider: FreshnessChecking, @unchecked Sendable {
         #expect(fresh.lastChecks["composer"]?.command == "check")
         #expect(store.freshness[id]?.first?.actionNeeded == true)
         #expect(store.freshness[id].map(\.needsAttention) == true)
+    }
+
+    /// The store hands the workspace's `shell_init` to the provider, so a check runs
+    /// with the same shell lines a process or test does.
+    @Test func passesWorkspaceShellInitToProvider() async {
+        let fresh = FakeFreshnessProvider()
+        fresh.results = [FreshnessResult(name: "composer", actionNeeded: false, message: "composer")]
+        let store = store(fresh)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        let id = store.projects[0].id
+        store.addCheck(name: "composer", config: CheckConfig(command: "check"), for: id)
+        store.setShellInit(["export PATH=/opt/bin:$PATH"], for: id)
+
+        await store.refreshAllGitInfo()
+
+        #expect(fresh.lastShellInit == ["export PATH=/opt/bin:$PATH"])
     }
 
     /// The store keeps each workspace's freshness cache and passes it back into the

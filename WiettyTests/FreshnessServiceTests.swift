@@ -59,6 +59,57 @@ import Foundation
         #expect(captured.args == ["-l", "-c", "git status"])
     }
 
+    /// The workspace-wide `shell_init` is prepended to the check's command, composed
+    /// into one script the same way a process or test command is, so a check sees the
+    /// `PATH` and tooling those lines set up.
+    @Test func prependsShellInitBeforeCommand() async {
+        let folder = URL(fileURLWithPath: "/tmp/ws")
+        let captured = Captured()
+        let svc = FreshnessService(
+            runner: FakeCommandRunner(handler: { exe, args in
+                captured.record(exe: exe, args: args)
+                return CommandResult(stdout: "", stderr: "", status: 0)
+            }),
+            shell: "/bin/zsh"
+        )
+        _ = await svc.run(
+            checks: ["c": CheckConfig(command: "git status")], in: folder, cache: [:],
+            shellInit: ["export PATH=/opt/bin:$PATH", "source .env"]
+        )
+        #expect(captured.args == ["-l", "-c", "export PATH=/opt/bin:$PATH\nsource .env\ngit status"])
+    }
+
+    /// With no `shell_init`, the command runs verbatim: the prelude adds nothing and
+    /// leaves the single-line command untouched.
+    @Test func emptyShellInitLeavesCommandUnchanged() async {
+        let folder = URL(fileURLWithPath: "/tmp/ws")
+        let captured = Captured()
+        let svc = FreshnessService(
+            runner: FakeCommandRunner(handler: { exe, args in
+                captured.record(exe: exe, args: args)
+                return CommandResult(stdout: "", stderr: "", status: 0)
+            }),
+            shell: "/bin/zsh"
+        )
+        _ = await svc.run(
+            checks: ["c": CheckConfig(command: "git status")], in: folder, cache: [:], shellInit: [])
+        #expect(captured.args == ["-l", "-c", "git status"])
+    }
+
+    /// Editing a `shell_init` line invalidates a cached passing result even when the
+    /// `watch` file is unchanged, because the effective script is what changed.
+    @Test func changedShellInitBustsWatchCache() async {
+        let runs = Counter()
+        let svc = countingService(hash: { _ in "hash-1" }, onRun: { runs.bump() })
+        let checks = ["composer": CheckConfig(command: "check", watch: "composer.lock")]
+        let folder = URL(fileURLWithPath: "/tmp/x")
+
+        let first = await svc.run(checks: checks, in: folder, cache: [:], shellInit: ["export A=1"])
+        _ = await svc.run(checks: checks, in: folder, cache: first.cache, shellInit: ["export A=2"])
+
+        #expect(runs.value == 2)
+    }
+
     /// Results are name-sorted, so the marker's popover keeps a stable order across
     /// runs rather than following the dictionary's hashing.
     @Test func resultsAreNameSorted() async {
