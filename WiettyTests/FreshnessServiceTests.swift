@@ -200,6 +200,26 @@ import Foundation
         #expect(captured.path == "/tmp/ws/src/composer.lock")
     }
 
+    /// The real hasher is stable for identical contents and changes when the file
+    /// changes, which is the whole basis of "skip until the file changes", and a
+    /// missing file hashes to nil so an unreadable watch falls back to running.
+    @Test func hashFileContentsIsStableAndContentSensitive() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("composer.lock")
+
+        try "one".write(to: file, atomically: true, encoding: .utf8)
+        let first = FreshnessService.hashFileContents(file)
+        #expect(first != nil)
+        #expect(FreshnessService.hashFileContents(file) == first)
+
+        try "two".write(to: file, atomically: true, encoding: .utf8)
+        #expect(FreshnessService.hashFileContents(file) != first)
+
+        #expect(FreshnessService.hashFileContents(dir.appendingPathComponent("missing")) == nil)
+    }
+
     private final class Captured: @unchecked Sendable {
         var exe = ""
         var args: [String] = []

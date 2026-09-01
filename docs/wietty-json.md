@@ -345,11 +345,16 @@ single line whose exit code is the whole signal. Because the file runs commands,
 `checks` command added on disk is agreed to the same way a process or test command
 is (see [The file runs commands](#the-file-runs-commands-so-it-is-agreed-to-first)).
 
-`watch` is for a command too slow to run on every tick. Give it a file the command
-depends on (for example `composer.lock` for a composer install check), relative to
-the workspace folder. When the check passes, the file's hash is remembered, and the
-command is not run again until the hash changes. A failing check is never remembered,
-so it keeps running until it passes, and editing the check's `command` invalidates a
+`watch` is for a command too slow to run on every tick. Give it a file, relative to
+the workspace folder, that is a complete stand in for everything the command inspects.
+If the command's result can change while that file does not, the change is missed
+until the file next changes. So `watch` fits a command whose only input is that file
+(validating or linting one file), not a command that also reads derived state.
+Watching `composer.lock` for a `composer install` check is the trap: that check also
+reads `vendor/`, so a deleted or half installed `vendor/` stays hidden while the lock
+is untouched. When the check passes, the file's hash is remembered, and the command
+is not run again until the hash changes. A failing check is never remembered, so it
+keeps running until it passes, and editing the check's `command` invalidates a
 remembered pass. The remembered pass lives in memory only, so every check runs once
 after the app launches and then settles. Leave `watch` out to run the command on
 every tick.
@@ -367,10 +372,10 @@ checks (slower while the card is collapsed). See `docs/periodic-checks.md`.
     "command": "git diff --quiet HEAD -- composer.lock",
     "message": "composer.lock changed, run composer install"
   },
-  "vendor": {
-    "command": "composer install --dry-run --no-scripts --no-interaction 2>&1 | grep -q 'Nothing to install, update or remove'",
-    "message": "vendor is out of date, run composer install",
-    "watch": "composer.lock"
+  "schema": {
+    "command": "spectral lint openapi.yaml",
+    "message": "openapi.yaml is invalid, run spectral lint to see why",
+    "watch": "openapi.yaml"
   },
   "npm": {
     "command": "git diff --quiet HEAD -- package-lock.json",

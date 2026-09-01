@@ -13,22 +13,24 @@ import Foundation
 /// Edit workspace page (`ProjectStore.updateCheck`) is the one path that changes a
 /// definition from inside the app.
 struct CheckConfig: Codable, Equatable {
-    var command: String
+    let command: String
     /// What the user should do when this check reports action needed. Empty means
     /// none, and the check's name is shown instead, mirroring how an agent's empty
     /// `prefix` means "no prefix" rather than a written-out blank.
-    var message: String
+    let message: String
     /// A workspace-relative file whose contents gate re-running the command. When
     /// set, a passing run is remembered against the file's hash, and later ticks
     /// reuse that result without running the command until the file changes. `nil`
-    /// (the common case) means the command runs on every tick. Empty is treated as
-    /// `nil`, so a blank field in the editor does not turn caching half on.
-    var watch: String?
+    /// (the common case) means the command runs on every tick. A blank or
+    /// whitespace-only value is normalized to `nil`, so a blank field in the editor
+    /// or a hand-edited file does not turn caching half on. The fields are `let`, so
+    /// every value is built through the normalizing init and cannot drift after.
+    let watch: String?
 
     init(command: String, message: String = "", watch: String? = nil) {
         self.command = command
         self.message = message
-        self.watch = (watch?.isEmpty ?? true) ? nil : watch
+        self.watch = Self.normalized(watch)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -41,8 +43,15 @@ struct CheckConfig: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         command = try c.decode(String.self, forKey: .command)
         message = try c.decodeIfPresent(String.self, forKey: .message) ?? ""
-        let watch = try c.decodeIfPresent(String.self, forKey: .watch)
-        self.watch = (watch?.isEmpty ?? true) ? nil : watch
+        watch = Self.normalized(try c.decodeIfPresent(String.self, forKey: .watch))
+    }
+
+    /// A `watch` collapses to `nil` when it is absent or trims to empty, and is
+    /// stored trimmed otherwise, so the file path and the editor path agree and a
+    /// blank-looking value never survives as a would-be file name.
+    private static func normalized(_ watch: String?) -> String? {
+        let trimmed = watch?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// An empty `message` and an absent `watch` are omitted, so re-encoding a decoded
