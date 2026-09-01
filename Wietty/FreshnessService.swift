@@ -34,13 +34,7 @@ protocol FreshnessChecking: Sendable {
     /// the same way it is to a process or test command, so a check sees the same `PATH`
     /// and tooling the shell lines set up. A check has no per-check `shell_init` field;
     /// only these workspace-wide lines apply.
-    ///
-    /// `variables` are the per-project `WIETTY_*` values, injected into each check's
-    /// environment exactly as the run-now path (`CheckSupervisor`) injects them, so a
-    /// check reads the same values whichever path runs it. An unset reference expands
-    /// to empty here; the run-now path opts into the same via `allow_empty_vars`.
-    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache,
-             shellInit: [String], variables: [String: String])
+    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache, shellInit: [String])
         async -> (results: [FreshnessResult], cache: FreshnessCache)
 }
 
@@ -66,8 +60,7 @@ struct FreshnessService: FreshnessChecking {
         self.hashFile = hashFile
     }
 
-    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache,
-             shellInit: [String] = [], variables: [String: String] = [:])
+    func run(checks: [String: CheckConfig], in folder: URL, cache: FreshnessCache, shellInit: [String] = [])
         async -> (results: [FreshnessResult], cache: FreshnessCache) {
         var results: [FreshnessResult] = []
         var updated: FreshnessCache = [:]
@@ -89,7 +82,7 @@ struct FreshnessService: FreshnessChecking {
                     updated[name] = cached
                     continue
                 }
-                let result = execute(config, script: script, name: name, in: folder, variables: variables)
+                let result = execute(config, script: script, name: name, in: folder)
                 results.append(result)
                 // Only a passing run is remembered; a failing check keeps re-running
                 // until it is fixed rather than sticking on a cached failure.
@@ -99,19 +92,16 @@ struct FreshnessService: FreshnessChecking {
                 continue
             }
 
-            results.append(execute(config, script: script, name: name, in: folder, variables: variables))
+            results.append(execute(config, script: script, name: name, in: folder))
         }
         return (results, updated)
     }
 
     /// Runs one check's already-composed `script` and turns its exit code and output
     /// into a result. `script` is the command with the workspace-wide `shell_init`
-    /// prepended, run in the same login shell a process or test uses. `variables` are
-    /// injected into the environment so `$WIETTY_*` references resolve the same way
-    /// they do on the run-now path.
-    private func execute(_ config: CheckConfig, script: String, name: String, in folder: URL,
-                         variables: [String: String]) -> FreshnessResult {
-        let result = runner.run(shell, ["-l", "-c", script], workingDirectory: folder, environment: variables)
+    /// prepended, run in the same login shell a process or test uses.
+    private func execute(_ config: CheckConfig, script: String, name: String, in folder: URL) -> FreshnessResult {
+        let result = runner.run(shell, ["-l", "-c", script], workingDirectory: folder)
         return FreshnessResult(
             name: name,
             actionNeeded: result.status != 0,

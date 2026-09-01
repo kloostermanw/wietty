@@ -341,16 +341,11 @@ anything, that output as a secondary line.
 
 The command runs in a login shell rooted at the workspace folder, the same way a
 process or test command does, with the workspace-wide `shell_init` prepended, so
-`PATH` and your tooling resolve. The `WIETTY_*` variables are injected too (see
-[Variables](#variables)), so a check command can reference `$WIETTY_BRANCH` and the
-like. Unlike a process or test, a check carries no `env` or `allow_empty_vars` and
-has no per-check `shell_init` field of its own: it is a single line whose exit code
-is the whole signal. Because it has no `allow_empty_vars` toggle, an unset variable
-always expands to empty rather than blocking the run (the opposite of a process or
-test's default), and it does so the same way whether the scheduled marker or the
-card's "Run" menu runs it. Because the file runs commands, a `checks` command added
-on disk is agreed to the same way a process or test command is (see [The file runs
-commands](#the-file-runs-commands-so-it-is-agreed-to-first)).
+`PATH` and your tooling resolve. Unlike a process or test, a check carries no `env`
+or `allow_empty_vars` and has no per-check `shell_init` field of its own: it is a
+single line whose exit code is the whole signal. Because the file runs commands, a
+`checks` command added on disk is agreed to the same way a process or test command
+is (see [The file runs commands](#the-file-runs-commands-so-it-is-agreed-to-first)).
 
 `watch` is for a command too slow to run on every tick. Give it a file, relative to
 the workspace folder, that is a complete stand in for everything the command inspects.
@@ -468,11 +463,6 @@ The same injection and blocking rules apply to a test's `command`: a test can
 reference any `WIETTY_*` variable, and `allow_empty_vars` controls whether
 a missing one blocks the run or expands to empty, exactly as it does for a
 process.
-
-A check's `command` gets the same variables injected, on both the scheduled marker
-path and the card's "Run" menu, so a check reads the same values whichever runs it.
-A check has no `allow_empty_vars` toggle, so a missing variable always expands to
-empty rather than blocking (see [`checks`](#checks)).
 
 ```json
 "processes": {

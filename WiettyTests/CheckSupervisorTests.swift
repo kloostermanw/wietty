@@ -58,32 +58,6 @@ import Foundation
         #expect(launcher.launches.count == 1)
     }
 
-    /// A check command referencing a `WIETTY_*` variable that is currently unset must
-    /// still run, expanding the variable to empty, so the run-now path agrees with the
-    /// scheduled `FreshnessService` path (which has no way to block and always expands
-    /// empty). A test/process would block here; a check opts into empty expansion.
-    @Test func runExpandsUnsetVariablesRatherThanBlocking() {
-        let launcher = FakeProcessLauncher()
-        let sup = CheckSupervisor(launcher: launcher)
-        sup.apply(config(["c": CheckConfig(command: "echo $WIETTY_NOPE")]), projectId: pid, directory: dir)
-        sup.run(projectId: pid, name: "c")
-        #expect(launcher.launches.map(\.command).contains("echo $WIETTY_NOPE"))
-        #expect(sup.check(projectId: pid, name: "c")?.state == .running)
-    }
-
-    /// The per-project `WIETTY_*` variables are injected into a check's launch
-    /// environment, the same as a test or process, so a check command can read them.
-    /// This is the run-now half of the equivalence the type's doc claims: both this
-    /// path and `FreshnessService` inject the same variables.
-    @Test func appliesVariablesToCheckLaunch() {
-        let launcher = FakeProcessLauncher()
-        let sup = CheckSupervisor(launcher: launcher)
-        sup.apply(config(["c": CheckConfig(command: "run")]), projectId: pid, directory: dir,
-                  variables: { ["WIETTY_WORKSPACE_PATH": "/repos/app"] })
-        sup.run(projectId: pid, name: "c")
-        #expect(launcher.last.environment["WIETTY_WORKSPACE_PATH"] == "/repos/app")
-    }
-
     @Test func foldsWorkspaceShellInitInAheadOfTheCommand() {
         let launcher = FakeProcessLauncher()
         let sup = CheckSupervisor(launcher: launcher)

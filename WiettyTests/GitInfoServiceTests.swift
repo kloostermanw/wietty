@@ -2,18 +2,10 @@ import Testing
 import Foundation
 @testable import Wietty
 
-final class FakeCommandRunner: CommandRunning, @unchecked Sendable {
+struct FakeCommandRunner: CommandRunning {
     let handler: @Sendable (String, [String]) -> CommandResult
-    /// The environment handed to the most recent run, so a test can assert which
-    /// `WIETTY_*` values reached the command.
-    private(set) var lastEnvironment: [String: String] = [:]
-    init(handler: @escaping @Sendable (String, [String]) -> CommandResult) {
-        self.handler = handler
-    }
-    func run(_ executable: String, _ arguments: [String], workingDirectory: URL?,
-             environment: [String: String]) -> CommandResult {
-        lastEnvironment = environment
-        return handler(executable, arguments)
+    func run(_ executable: String, _ arguments: [String], workingDirectory: URL?) -> CommandResult {
+        handler(executable, arguments)
     }
 }
 

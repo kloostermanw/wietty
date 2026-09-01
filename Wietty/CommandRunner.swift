@@ -7,32 +7,15 @@ struct CommandResult: Equatable, Sendable {
 }
 
 protocol CommandRunning: Sendable {
-    func run(_ executable: String, _ arguments: [String], workingDirectory: URL?,
-             environment: [String: String]) -> CommandResult
-}
-
-extension CommandRunning {
-    /// Runs with no injected variables, inheriting the app's environment. The common
-    /// case for callers (like `GitInfoService`) that do not need `WIETTY_*` values.
-    func run(_ executable: String, _ arguments: [String], workingDirectory: URL?) -> CommandResult {
-        run(executable, arguments, workingDirectory: workingDirectory, environment: [:])
-    }
+    func run(_ executable: String, _ arguments: [String], workingDirectory: URL?) -> CommandResult
 }
 
 struct ProcessCommandRunner: CommandRunning {
-    func run(_ executable: String, _ arguments: [String], workingDirectory: URL?,
-             environment: [String: String]) -> CommandResult {
+    func run(_ executable: String, _ arguments: [String], workingDirectory: URL?) -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         if let workingDirectory { process.currentDirectoryURL = workingDirectory }
-        // Layer the injected variables over the inherited environment (injected values
-        // win), so the login shell still sees PATH/HOME while gaining the `WIETTY_*`
-        // values. Left untouched when nothing is injected, to inherit as before.
-        if !environment.isEmpty {
-            process.environment = ProcessInfo.processInfo.environment
-                .merging(environment) { _, injected in injected }
-        }
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe

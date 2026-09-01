@@ -1575,8 +1575,7 @@ final class ProjectStore {
             }
             let shellInit = projects.first(where: { $0.id == key.projectId })?.configShellInit ?? []
             let (results, cache) = await freshProvider.run(
-                checks: checks, in: url, cache: freshnessCache[key.projectId] ?? [:],
-                shellInit: shellInit, variables: processVariables(for: key.projectId))
+                checks: checks, in: url, cache: freshnessCache[key.projectId] ?? [:], shellInit: shellInit)
             freshness[key.projectId] = results
             freshnessCache[key.projectId] = cache
         }
