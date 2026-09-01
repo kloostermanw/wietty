@@ -55,8 +55,18 @@ struct TerminalRef: Identifiable, Equatable, Codable {
     ///
     /// The prefix is trimmed so a stray trailing space in the config does not double
     /// up the separator, and a prefix that is only whitespace reads as none. Issue #37.
-    var displayName: String {
-        let base = fixedNaming ? slot : label
+    var displayName: String { displayName(liveLabel: nil) }
+
+    /// The name a row shows, given an optional live agent-reported title.
+    ///
+    /// The base is `slot` under `fixedNaming` (a pinned row ignores reported titles,
+    /// live or stored), the `liveLabel` when one is supplied, otherwise the stored
+    /// `label`. The prefix is applied to whichever base wins. A live title is a
+    /// display-only override held outside the model (`ProjectStore.liveLabels`), so a
+    /// busy agent retitling constantly no longer mutates the row and re-renders the
+    /// sidebar. Issue #60.
+    func displayName(liveLabel: String?) -> String {
+        let base = fixedNaming ? slot : (liveLabel ?? label)
         let p = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
         return p.isEmpty ? base : "\(p) \(base)"
     }

@@ -89,6 +89,32 @@ import Foundation
         #expect(ref.displayName == "[default] Claude 5")
     }
 
+    // MARK: Live title override (issue #60)
+
+    /// A live agent-reported title overrides the stored `label` for display without
+    /// changing the row's persisted name. The prefix still sits in front of it, the
+    /// same as it does for the stored label.
+    @Test func displayNameWithLiveLabelShowsTheReportedTitle() {
+        let ref = TerminalRef(label: "Claude 5", sessionId: "s", kind: .claude,
+                              slot: "Claude 5", prefix: "[default]")
+        #expect(ref.displayName(liveLabel: "running tests") == "[default] running tests")
+    }
+
+    /// No override is the stored name: `displayName(liveLabel: nil)` is exactly the
+    /// `displayName` property.
+    @Test func displayNameWithNilLiveLabelIsTheStoredName() {
+        let ref = TerminalRef(label: "Claude 5", sessionId: "s", kind: .claude, prefix: "[default]")
+        #expect(ref.displayName(liveLabel: nil) == ref.displayName)
+    }
+
+    /// A `fixed_naming` row ignores the live title the same way it ignores a reported
+    /// title that reached `label`: the slot wins. The live override never applies.
+    @Test func displayNameWithLiveLabelIsIgnoredWhenFixed() {
+        let ref = TerminalRef(label: "Claude 5", sessionId: "s", kind: .claude,
+                              slot: "Claude 5", fixedNaming: true, prefix: "[default]")
+        #expect(ref.displayName(liveLabel: "running tests") == "[default] Claude 5")
+    }
+
     /// A row stored before the naming fields decodes with the defaults: dynamic
     /// naming, no prefix.
     @Test func decodesLegacyRefWithoutNamingFields() throws {

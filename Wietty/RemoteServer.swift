@@ -65,7 +65,8 @@ final class RemoteServer {
                 return Response(status: .unauthorized)
             }
             let data = await MainActor.run { () -> Data? in
-                let payload = RemoteSessionList.json(projects: store.projects)
+                let payload = RemoteSessionList.json(projects: store.projects,
+                                                     liveLabels: store.liveLabels)
                 return try? JSONSerialization.data(withJSONObject: payload)
             }
             guard let data else { return Response(status: .internalServerError) }
@@ -375,6 +376,7 @@ final class RemoteServer {
     @MainActor
     private static func terminalJSON(_ ref: TerminalRef, in project: Project, store: ProjectStore) -> JSONValue {
         WorkspaceSerializer.terminal(ref, projectId: project.id, projectName: project.name,
+                                     displayLabel: store.displayName(for: ref),
                                      runState: store.runState(for: ref),
                                      needsAttention: store.attention.contains(ref.id),
                                      jobName: store.jobNames[ref.id])

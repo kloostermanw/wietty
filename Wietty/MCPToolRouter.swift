@@ -381,6 +381,7 @@ final class MCPToolRouter {
 
     private func terminalJSON(_ ref: TerminalRef, in project: Project) -> JSONValue {
         WorkspaceSerializer.terminal(ref, projectId: project.id, projectName: project.name,
+                                     displayLabel: store.displayName(for: ref),
                                      runState: store.runState(for: ref),
                                      needsAttention: store.attention.contains(ref.id),
                                      jobName: store.jobNames[ref.id])

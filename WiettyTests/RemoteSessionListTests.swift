@@ -18,4 +18,17 @@ import Foundation
         #expect(sessions?[0]["id"] as? String == "sess-1")
         #expect(sessions?[1]["kind"] as? String == "claude")
     }
+
+    /// A live agent-reported title is applied on top of the stored name, so a client
+    /// listing sessions shows what this app's sidebar shows. Issue #60.
+    @Test func sessionLabelReflectsTheLiveOverride() {
+        var project = Project(url: URL(fileURLWithPath: "/tmp/demo"))
+        let agent = TerminalRef(label: "Claude 1", sessionId: "sess-2", kind: .claude, slot: "Claude 1")
+        project.terminals = [agent]
+
+        let json = RemoteSessionList.json(projects: [project],
+                                          liveLabels: [agent.id: "running tests"])
+        let sessions = json[0]["sessions"] as? [[String: Any]]
+        #expect(sessions?[0]["label"] as? String == "running tests")
+    }
 }

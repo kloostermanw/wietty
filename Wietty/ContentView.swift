@@ -428,6 +428,7 @@ struct ContentView: View {
                         paneSelection.selects(processLog: ProcessLogRef(projectId: project.id,
                                                                         name: $0))
                     },
+                    displayName: { store.displayName(for: $0) },
                     agents: store.agents,
                     onActivate: { activate($0, in: project) },
                     onRestartTerminal: { restartTerminal($0, in: project) },

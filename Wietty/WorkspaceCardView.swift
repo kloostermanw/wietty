@@ -25,6 +25,12 @@ struct WorkspaceCardView: View {
     /// The same question for a process row, by name. Defaulted for the same reason:
     /// a remote card's processes are not this app's to show.
     var isProcessSelected: (String) -> Bool = { _ in false }
+    /// The name a row shows, resolved through `ProjectStore.displayName(for:)` so a
+    /// live agent-reported title is applied on top of the stored name. Called inside
+    /// the leaf row rather than the card body, so a busy agent's retitling re-renders
+    /// only that row and leaves the card's context menu open. Defaulted to the row's
+    /// stored name for a caller with no live overrides, such as a remote card. Issue #60.
+    var displayName: (TerminalRef) -> String = { $0.displayName }
     /// The agents the two "Add Agent" submenus offer, in menu order. Empty on a
     /// remote card, which offers neither: those are this Mac's agents.
     var agents: [AgentDefinition] = []
@@ -323,22 +329,25 @@ struct WorkspaceCardView: View {
                 }
             }
             ForEach(project.terminals) { ref in
-                TerminalRowView(
-                    label: ref.displayName,
-                    kind: ref.kind,
-                    isExited: ref.kind == .claude && runState(ref) == .exited,
-                    isRunning: isRunning(ref),
-                    needsAttention: needsAttention(ref),
-                    isLocalOnly: isLocalOnly(ref),
-                    isSelected: isSelected(ref),
-                    onPlay: { onActivate(ref) },
+                // The reading closures are handed down, not called here: calling them
+                // in this card body is what let a job/title/attention change re-render
+                // the card and tear down an open menu. `TerminalRow` hosts the row's
+                // tap and context menu without reading them; `TerminalRowContent`, one
+                // level down, does the reading. Issue #60.
+                TerminalRow(
+                    ref: ref,
+                    displayName: displayName,
+                    runState: runState,
+                    isRunning: isRunning,
+                    needsAttention: needsAttention,
+                    isSelected: isSelected,
+                    isLocalOnly: isLocalOnly,
+                    canStop: canStopTerminal,
+                    onActivate: { onActivate(ref) },
                     onStop: { onStopTerminal(ref) },
                     onRestart: { onRestartTerminal(ref) },
-                    onClose: { onCloseTerminal(ref) },
-                    canStop: canStopTerminal
-                )
-                .onTapGesture { onActivate(ref) }
-                .contextMenu {
+                    onClose: { onCloseTerminal(ref) }
+                ) {
                     // Built from `TerminalRowMenu` rather than written out here, so
                     // which items a row offers is asserted in CI (`TerminalRowMenuTests`)
                     // rather than only by right clicking one, the same as the header menu.
@@ -348,5 +357,84 @@ struct WorkspaceCardView: View {
                 }
             }
         }
+    }
+}
+
+/// The stable host for one terminal row's tap target and context menu.
+///
+/// It reads none of the ticking store state, so a job, title, or attention change
+/// does not re-run this body and cannot dismiss an open row menu. The reading is done
+/// one level down in `TerminalRowContent`, whose internal re-render leaves this view's
+/// `.contextMenu` attachment untouched. This is the row-level half of the fix that
+/// keeps the workspace-card menus from dismissing themselves. Issue #60.
+private struct TerminalRow<Menu: View>: View {
+    let ref: TerminalRef
+    let displayName: (TerminalRef) -> String
+    let runState: (TerminalRef) -> ClaudeRunState
+    let isRunning: (TerminalRef) -> Bool
+    let needsAttention: (TerminalRef) -> Bool
+    let isSelected: (TerminalRef) -> Bool
+    let isLocalOnly: (TerminalRef) -> Bool
+    let canStop: Bool
+    let onActivate: () -> Void
+    let onStop: () -> Void
+    let onRestart: () -> Void
+    let onClose: () -> Void
+    @ViewBuilder let menu: () -> Menu
+
+    var body: some View {
+        TerminalRowContent(
+            ref: ref,
+            displayName: displayName,
+            runState: runState,
+            isRunning: isRunning,
+            needsAttention: needsAttention,
+            isSelected: isSelected,
+            isLocalOnly: isLocalOnly,
+            canStop: canStop,
+            onActivate: onActivate,
+            onStop: onStop,
+            onRestart: onRestart,
+            onClose: onClose
+        )
+        .onTapGesture { onActivate() }
+        .contextMenu { menu() }
+    }
+}
+
+/// The leaf that renders one terminal row and reads the ticking store state for it.
+///
+/// Calling the reading closures here rather than in the card body is what confines a
+/// job/title/attention re-render to this view. It hosts no menu, so its re-rendering
+/// dismisses nothing. Issue #60.
+private struct TerminalRowContent: View {
+    let ref: TerminalRef
+    let displayName: (TerminalRef) -> String
+    let runState: (TerminalRef) -> ClaudeRunState
+    let isRunning: (TerminalRef) -> Bool
+    let needsAttention: (TerminalRef) -> Bool
+    let isSelected: (TerminalRef) -> Bool
+    let isLocalOnly: (TerminalRef) -> Bool
+    let canStop: Bool
+    let onActivate: () -> Void
+    let onStop: () -> Void
+    let onRestart: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        TerminalRowView(
+            label: displayName(ref),
+            kind: ref.kind,
+            isExited: ref.kind == .claude && runState(ref) == .exited,
+            isRunning: isRunning(ref),
+            needsAttention: needsAttention(ref),
+            isLocalOnly: isLocalOnly(ref),
+            isSelected: isSelected(ref),
+            onPlay: onActivate,
+            onStop: onStop,
+            onRestart: onRestart,
+            onClose: onClose,
+            canStop: canStop
+        )
     }
 }
