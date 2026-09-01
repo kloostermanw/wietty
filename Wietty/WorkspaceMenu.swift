@@ -12,6 +12,9 @@ enum WorkspaceMenuItem: Equatable, Identifiable {
     case addAgent
     /// The same list, each entry first asking what to run the agent with.
     case addAgentWithArgs
+    /// A submenu over the workspace's configured `checks`, each a submenu of its own
+    /// offering "Run" (run that check now) and "Open log" (its output in the pane).
+    case checks
     /// The other Mac's Claude, on a remote card. The agent list is this Mac's
     /// preference and cannot be sent over the protocol, which offers a terminal and
     /// Claude and nothing else.
@@ -31,6 +34,7 @@ enum WorkspaceMenuItem: Equatable, Identifiable {
         case .addTerminal: return "Add Terminal"
         case .addAgent: return "Add Agent"
         case .addAgentWithArgs: return "Add Agent with args"
+        case .checks: return "Checks"
         case .addClaude: return "Claude"
         case .addWorkspace: return "Add workspace…"
         case .separator: return ""
@@ -53,6 +57,11 @@ enum WorkspaceMenu {
     /// configured instead.
     static let noAgents = "No agents yet. Add one in Settings › Agents."
 
+    /// What an empty `Checks` submenu says, disabled. Checks are defined in the
+    /// workspace's `wietty.json` rather than in Settings, so unlike `noAgents` it
+    /// points there instead.
+    static let noChecks = "No checks configured. Add them in wietty.json."
+
     /// - Parameters:
     ///   - isLocal: false for a card belonging to another Mac. Those workspaces are
     ///     not this app's to edit, rename or remove, and the two "add" entries it
@@ -65,7 +74,7 @@ enum WorkspaceMenu {
         // that acts on the workspace itself: "Remove" sitting among the four "add"
         // entries is how a click meant for one lands on the other.
         var items: [WorkspaceMenuItem] = [
-            .addTerminal, .addAgent, .addAgentWithArgs, .addWorkspace,
+            .addTerminal, .addAgent, .addAgentWithArgs, .checks, .addWorkspace,
             .separator, .editWorkspace, .renameWorkspace
         ]
         if !syncEnabled { items.append(.enableConfigSync) }

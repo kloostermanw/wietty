@@ -85,6 +85,20 @@ import WiettyShared
         #expect(router.override == log)
     }
 
+    /// A process, a test and a check can share a name within one workspace, so the
+    /// namespace flags are part of a log's identity: a check log and a test log with
+    /// the same name are different refs, and neither is the process log. Without this,
+    /// "Open log" on a check would land on the process's output.
+    @Test func aCheckLogIsADistinctNamespaceFromTestAndProcess() {
+        let process = ProcessLogRef(projectId: workspace, name: "lint")
+        let test = ProcessLogRef(projectId: workspace, name: "lint", isTest: true)
+        let check = ProcessLogRef(projectId: workspace, name: "lint", isCheck: true)
+        #expect(process != check)
+        #expect(test != check)
+        #expect(PaneSelection.processLog(check).selects(processLog: check))
+        #expect(!PaneSelection.processLog(check).selects(processLog: process))
+    }
+
     /// The page carries a Group section now rather than a placeholder. Asserted rather
     /// than only visible by opening it, the same reason `SettingsTab` is a pure type.
     @Test func thePageOffersAGroupSection() {

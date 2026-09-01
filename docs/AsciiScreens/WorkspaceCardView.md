@@ -148,13 +148,15 @@ supplies the actions, which is the half that needs a card.
 │ Add Terminal           │┌────────────────────────────┐
 │ Add Agent            > ││ Claude                     │
 │ Add Agent with args  > ││ Codex                      │
-│ Add workspace...       │└────────────────────────────┘
-│ ────────────────────── │  one entry per configured agent,
-│ Edit workspace...      │  from Settings › Agents
-│ Rename workspace...    │
-│ Enable config sync     │  (only while sync is off)
-│ Remove                 │
-└────────────────────────┘
+│ Checks               > │└────────────────────────────┘
+│ Add workspace...       │  one entry per configured agent,
+│ ────────────────────── │  from Settings › Agents
+│ Edit workspace...      │
+│ Rename workspace...    │┌──────────────────┐
+│ Enable config sync     ││ lint           > │┌──────────────┐
+│ Remove                 ││ deps           > ││ Run          │
+└────────────────────────┘└──────────────────┘│ Open log     │
+   (Checks: one entry per configured check)    └──────────────┘
 ```
 
 - Everything above the separator adds something; everything below it acts on the
@@ -169,6 +171,15 @@ supplies the actions, which is the half that needs a card.
   under both. With no agents configured, each submenu holds one disabled line
   pointing at Settings (`WorkspaceMenu.noAgents`), because a submenu with nothing
   in it reads as a menu that failed to build.
+- "Checks" is a submenu over the workspace's configured `checks` (from
+  `wietty.json`), one entry per check, each itself a submenu offering "Run"
+  (`onRunCheck`, runs that check now, on demand, independent of the scheduled
+  freshness tick that drives the `!` marker) and "Open log" (`onOpenCheckLog`, puts
+  that check's output in the pane, the same log view a test or process row uses). A
+  check runs as a `short_running` `ManagedProcess` held by `CheckSupervisor`, the
+  run-now twin of the `FreshnessService` path. With no checks configured the submenu
+  holds one disabled line pointing at `wietty.json` (`WorkspaceMenu.noChecks`), for
+  the same reason the empty agent submenus do.
 - "Add workspace…" (`onAddWorkspace`) is the `+` in the Local header, offered here
   too because a right click on a card is where a user already is when they want one
   more.
