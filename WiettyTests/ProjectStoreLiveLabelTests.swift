@@ -195,4 +195,39 @@ private final class ChangeFlag: @unchecked Sendable {
         store.handle(.job(sessionId: "sess-A", jobName: "vim"))
         #expect(flag.fired == true)
     }
+
+    // MARK: The .title no-op guard (the issue #60 scenario: an agent repeating a title)
+
+    /// A repeated identical title is not written, so `@Observable` does not notify and
+    /// the sidebar does not re-render (and dismiss an open card menu). This is the
+    /// title counterpart of `anUnchangedJobDoesNotNotify`, and the exact case issue #60
+    /// exists to fix: a busy agent reporting the same title on every tick.
+    @Test func anUnchangedTitleDoesNotNotify() {
+        let (store, _) = makeStore(terminals: [
+            TerminalRef(label: "Claude 1", sessionId: "sess-A", kind: .claude),
+        ])
+        store.handle(.title(sessionId: "sess-A", name: "running tests"))
+
+        let flag = ChangeFlag()
+        withObservationTracking { _ = store.liveLabels } onChange: { flag.fired = true }
+        store.handle(.title(sessionId: "sess-A", name: "running tests"))
+        #expect(flag.fired == false)
+    }
+
+    // MARK: A terminated row keeps its override (pins the deliberate .terminated choice)
+
+    /// An exited row keeps showing the agent's last reported title, as it did when the
+    /// title lived in `label`. `.terminated` zeroes the job but leaves the override, so
+    /// this behavior is deliberate rather than an oversight. Issue #60.
+    @Test func aTerminatedRowKeepsItsLiveOverride() {
+        let (store, _) = makeStore(terminals: [
+            TerminalRef(label: "Claude 1", sessionId: "sess-A", kind: .claude),
+        ])
+        store.handle(.title(sessionId: "sess-A", name: "running tests"))
+        let ref = store.projects[0].terminals[0]
+
+        store.handle(.terminated(sessionId: "sess-A"))
+        #expect(store.liveLabels[ref.id] == "running tests")
+        #expect(store.displayName(for: store.projects[0].terminals[0]) == "running tests")
+    }
 }

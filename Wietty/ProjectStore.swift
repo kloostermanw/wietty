@@ -83,8 +83,12 @@ final class ProjectStore {
     /// agent retitling constantly no longer mutates `projects`, re-renders the whole
     /// sidebar, and tears down an open workspace-card context menu. The persisted
     /// `label` stays the configured name; this is the name the row shows on top of
-    /// it. Read through `displayName(for:)`. A `fixed_naming` row is never written
-    /// here because `handle(.title)` ignores its reported title. Issue #60.
+    /// it. Read through `displayName(for:)` for the sidebar and the serializers, or
+    /// directly by `RemoteServer` when it hands the dictionary to `RemoteSessionList`.
+    /// The bell/notification banners and the workspace settings list deliberately keep
+    /// the configured `label` instead, so a notification's identity and the config view
+    /// do not follow the live title. A `fixed_naming` row is never written here because
+    /// `handle(.title)` ignores its reported title. Issue #60.
     private(set) var liveLabels: [UUID: String] = [:]
 
     /// Subscribers to `workspaceChanges()`, keyed by subscription id.
@@ -1039,21 +1043,17 @@ final class ProjectStore {
         switch event {
         case .title(let sessionId, let name):
             guard let (p, t) = indexOfSession(sessionId) else { return }
-            // A title equal to this workspace's badge is not a real title: with
-            // "show workspace name as pane title" on, `TmuxService.open`/
-            // `activate`/`restart` pass that same name as the badge, so a title
-            // equal to it is the badge coming back rather than the agent reporting
-            // one. Relabelling from it would flip a Claude row's label to the
-            // workspace name the instant the terminal opens. The price is that an
-            // agent that really did report its workspace's name is ignored, which is
-            // indistinguishable from the badge and much rarer.
-            // A `fixed_naming` agent row keeps its slot and ignores the reported
-            // title, which is the whole point of the flag: the row is pinned to its
-            // configured name rather than following what the agent renames its tab to.
-            // Only a Claude row's own reported title is eligible. An empty title, a
-            // `fixed_naming` row, or the workspace badge echoing back through
-            // `select-pane -T` is not a real title, and leaves any existing override
-            // exactly as it was.
+            // Only a Claude row's own reported title is eligible, and the guards below
+            // drop the rest without touching any existing override:
+            //   - A `fixed_naming` row is pinned to its slot and ignores reported
+            //     titles, which is the whole point of the flag.
+            //   - A title equal to the workspace name is the badge coming back, not a
+            //     real title. With "show workspace name as pane title" on, the badge
+            //     travels as the surface's initial title (`GhosttyService`, passed on
+            //     `open`/`activate`/`restart`) and the poll reads it straight back;
+            //     acting on it would flip the row to the workspace name the instant the
+            //     terminal opens. The price is that an agent that genuinely reports its
+            //     workspace's own name is ignored, which is indistinguishable and rarer.
             let ref = projects[p].terminals[t]
             guard ref.kind == .claude, !name.isEmpty, !ref.fixedNaming,
                   name != projects[p].name else { return }
@@ -1089,15 +1089,22 @@ final class ProjectStore {
             onNotification?(projects[p], projects[p].terminals[t], title, body)
         case .job(let sessionId, let jobName):
             guard let (p, t) = indexOfSession(sessionId) else { return }
-            // Change-guarded: the poll emits an event for every terminal every 15s,
-            // and `@Observable` notifies on assignment regardless of equality, so an
-            // unguarded write re-rendered every expanded card (and dismissed any open
-            // menu) even when nothing changed. The sibling `.title` handler already
-            // guards; this now matches it. Issue #60.
+            // Change-guarded: the poll emits an event for every terminal on every
+            // tick (every 15s while a workspace is expanded, 300s when all are
+            // collapsed), and `@Observable` notifies on assignment regardless of
+            // equality, so an unguarded write re-rendered every expanded card (and
+            // dismissed any open menu) even when nothing changed. The sibling `.title`
+            // handler already guards; this now matches it. Issue #60.
             let id = projects[p].terminals[t].id
             if jobNames[id] != jobName { jobNames[id] = jobName }
         case .terminated(let sessionId):
             guard let (p, t) = indexOfSession(sessionId) else { return }
+            // The job is zeroed so the row reads as not running, but any live title is
+            // deliberately kept: an exited row keeps showing the name the agent last
+            // reported (as it did when the title lived in `label`), and a restart that
+            // reuses the row inherits it until a new reported title supersedes it or a
+            // title equal to the base name clears it. `forgetTerminal` drops it when the
+            // row itself goes away. Issue #60.
             jobNames[projects[p].terminals[t].id] = ""
         }
     }

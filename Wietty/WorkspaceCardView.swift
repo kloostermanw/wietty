@@ -367,6 +367,11 @@ struct WorkspaceCardView: View {
 /// one level down in `TerminalRowContent`, whose internal re-render leaves this view's
 /// `.contextMenu` attachment untouched. This is the row-level half of the fix that
 /// keeps the workspace-card menus from dismissing themselves. Issue #60.
+///
+/// This view and `TerminalRowContent` carry the same per-row inputs, forwarded field
+/// for field: the closures must be read in the leaf, not here, so adding or removing a
+/// row input means editing the `children` call site, this struct, and `TerminalRowContent`
+/// in lockstep. The compiler checks arity but not that each field is wired to its match.
 private struct TerminalRow<Menu: View>: View {
     let ref: TerminalRef
     let displayName: (TerminalRef) -> String

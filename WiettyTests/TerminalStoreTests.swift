@@ -737,13 +737,16 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
 
         store.handle(.bell(sessionId: "sess-A"))
         store.handle(.job(sessionId: "sess-A", jobName: "zsh"))
+        store.handle(.title(sessionId: "sess-A", name: "refactor parser"))
         let ref = store.projects[0].terminals[0]
         #expect(store.attention.contains(ref.id))
         #expect(store.runState(for: ref) == .exited)
+        #expect(store.liveLabels[ref.id] == "refactor parser")
 
         store.removeTerminal(ref, in: store.projects[0])
         #expect(!store.attention.contains(ref.id))
         #expect(store.runState(for: ref) == .running) // jobNames entry purged -> optimistic default
+        #expect(store.liveLabels[ref.id] == nil)       // liveLabels override purged too
     }
 
     @Test func workspaceBadgeSettingDefaultsOff() {

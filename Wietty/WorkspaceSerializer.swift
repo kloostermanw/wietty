@@ -28,15 +28,18 @@ struct WorkspaceSerializer {
 
     /// `displayLabel` is the name a client shows for the row, resolved by the caller
     /// through `ProjectStore.displayName(for:)` so a live agent-reported title reaches
-    /// every client and not only this app's sidebar. Defaulted to the row's stored
-    /// `displayName` for callers with no live override to apply. Issue #60.
+    /// every client and not only this app's sidebar. Required, like the sibling
+    /// store-derived `runState`/`needsAttention`/`jobName`: a defaulted fallback to
+    /// `ref.displayName` would let a future caller silently ship the stored name and
+    /// break cross-client consistency without a compile error. Pass `ref.displayName`
+    /// explicitly where there is no override to apply. Issue #60.
     static func terminal(_ ref: TerminalRef, projectId: UUID, projectName: String,
-                         displayLabel: String? = nil,
+                         displayLabel: String,
                          runState: ClaudeRunState, needsAttention: Bool, jobName: String?) -> JSONValue {
         var members: [String: JSONValue] = [
             "id": .string(ref.id.uuidString),
             "session_id": .string(ref.sessionId),
-            "label": .string(displayLabel ?? ref.displayName),
+            "label": .string(displayLabel),
             "kind": .string(ref.kind.rawValue),
             "run_state": .string(runState == .running ? "running" : "exited"),
             "needs_attention": .bool(needsAttention),
