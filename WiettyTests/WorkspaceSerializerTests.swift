@@ -21,6 +21,7 @@ import Foundation
     @Test func serializesTerminal() {
         let ref = TerminalRef(label: "shell", sessionId: "s1", kind: .terminal, slot: "0")
         let json = WorkspaceSerializer.terminal(ref, projectId: UUID(), projectName: "demo",
+                                                displayLabel: ref.displayName,
                                                 runState: .running, needsAttention: true, jobName: "vim")
         guard case let .object(m) = json else { Issue.record("expected object"); return }
         #expect(m["session_id"] == .string("s1"))
@@ -36,6 +37,7 @@ import Foundation
         let ref = TerminalRef(label: "Claude 5", sessionId: "s1", kind: .claude, slot: "Claude 5",
                               prefix: "[default]")
         let json = WorkspaceSerializer.terminal(ref, projectId: UUID(), projectName: "demo",
+                                                displayLabel: ref.displayName,
                                                 runState: .running, needsAttention: false, jobName: nil)
         guard case let .object(m) = json else { Issue.record("expected object"); return }
         #expect(m["label"] == .string("[default] Claude 5"))
