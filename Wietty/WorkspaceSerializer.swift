@@ -17,6 +17,7 @@ struct WorkspaceSerializer {
         ]
         members["terminals"] = .array(project.terminals.map { ref in
             Self.terminal(ref, projectId: project.id, projectName: project.name,
+                          displayLabel: store.displayName(for: ref),
                           runState: store.runState(for: ref),
                           needsAttention: store.attention.contains(ref.id),
                           jobName: store.jobNames[ref.id])
@@ -25,12 +26,20 @@ struct WorkspaceSerializer {
         return .object(members)
     }
 
+    /// `displayLabel` is the name a client shows for the row, resolved by the caller
+    /// through `ProjectStore.displayName(for:)` so a live agent-reported title reaches
+    /// every client and not only this app's sidebar. Required, like the sibling
+    /// store-derived `runState`/`needsAttention`/`jobName`: a defaulted fallback to
+    /// `ref.displayName` would let a future caller silently ship the stored name and
+    /// break cross-client consistency without a compile error. Pass `ref.displayName`
+    /// explicitly where there is no override to apply. Issue #60.
     static func terminal(_ ref: TerminalRef, projectId: UUID, projectName: String,
+                         displayLabel: String,
                          runState: ClaudeRunState, needsAttention: Bool, jobName: String?) -> JSONValue {
         var members: [String: JSONValue] = [
             "id": .string(ref.id.uuidString),
             "session_id": .string(ref.sessionId),
-            "label": .string(ref.displayName),
+            "label": .string(displayLabel),
             "kind": .string(ref.kind.rawValue),
             "run_state": .string(runState == .running ? "running" : "exited"),
             "needs_attention": .bool(needsAttention),

@@ -532,7 +532,7 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(store.projects[0].collapsed == false)
     }
 
-    @Test func titleEventUpdatesClaudeLabel() async {
+    @Test func titleEventShowsAsTheDisplayNameNotTheStoredLabel() async {
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
         let store = ProjectStore(defaults: makeDefaults(), service: fake)
@@ -540,7 +540,12 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         await store.openClaude(for: store.projects[0])
 
         store.handle(.title(sessionId: "sess-A", name: "refactor parser"))
-        #expect(store.projects[0].terminals[0].label == "refactor parser")
+        // The reported title is a display-only override now (`liveLabels`), not a
+        // rewrite of the stored label: the row shows it, but `label` (and the disk)
+        // keep the configured name so a busy agent's retitling never mutates
+        // `projects` and dismisses an open card menu. Issue #60.
+        #expect(store.displayName(for: store.projects[0].terminals[0]) == "refactor parser")
+        #expect(store.projects[0].terminals[0].label == "Claude 1")
     }
 
     /// The counterpart to `titleEventUpdatesClaudeLabel`: a `fixed_naming` row ignores
@@ -714,11 +719,13 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         store.addProject(url: makeTempFolder(named: "proj"))
         await store.openClaude(for: store.projects[0])
 
+        // A title equal to the base label writes no override, so the row still shows
+        // the base name.
         store.handle(.title(sessionId: "sess-A", name: "Claude 1"))
-        #expect(store.projects[0].terminals[0].label == "Claude 1")
+        #expect(store.displayName(for: store.projects[0].terminals[0]) == "Claude 1")
 
         store.handle(.title(sessionId: "sess-A", name: "refactor parser"))
-        #expect(store.projects[0].terminals[0].label == "refactor parser")
+        #expect(store.displayName(for: store.projects[0].terminals[0]) == "refactor parser")
     }
 
     @Test func removeTerminalPurgesAttentionAndJobNames() async {
@@ -730,13 +737,16 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
 
         store.handle(.bell(sessionId: "sess-A"))
         store.handle(.job(sessionId: "sess-A", jobName: "zsh"))
+        store.handle(.title(sessionId: "sess-A", name: "refactor parser"))
         let ref = store.projects[0].terminals[0]
         #expect(store.attention.contains(ref.id))
         #expect(store.runState(for: ref) == .exited)
+        #expect(store.liveLabels[ref.id] == "refactor parser")
 
         store.removeTerminal(ref, in: store.projects[0])
         #expect(!store.attention.contains(ref.id))
         #expect(store.runState(for: ref) == .running) // jobNames entry purged -> optimistic default
+        #expect(store.liveLabels[ref.id] == nil)       // liveLabels override purged too
     }
 
     @Test func workspaceBadgeSettingDefaultsOff() {
@@ -794,7 +804,8 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
 
     @Test func genuineTitleStillAppliesWithBadgeSettingOn() async {
         // A title that differs from the workspace badge is a real one (from
-        // Claude's own OSC title) and must still relabel the row.
+        // Claude's own OSC title) and must still show on the row, now as the
+        // display-only override rather than a rewrite of `label`. Issue #60.
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
         let store = ProjectStore(defaults: makeDefaults(), service: fake)
@@ -803,7 +814,7 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         await store.openClaude(for: store.projects[0])
 
         store.handle(.title(sessionId: "sess-A", name: "refactor parser"))
-        #expect(store.projects[0].terminals[0].label == "refactor parser")
+        #expect(store.displayName(for: store.projects[0].terminals[0]) == "refactor parser")
     }
 
     @Test func reopeningDeadSessionCarriesBadgeWhenSettingOn() async {

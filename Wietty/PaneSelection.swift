@@ -13,13 +13,15 @@ struct RemoteSessionRef: Equatable, Hashable {
 /// One process's log, by the workspace it belongs to and its name there.
 ///
 /// The workspace is part of the identity because two workspaces routinely declare
-/// a process under the same name. `isTest` is too: processes and tests are
-/// separate namespaces that may share a name, so a test called `npm` is not the
-/// process called `npm`.
+/// a process under the same name. `isTest` and `isCheck` are too: processes, tests
+/// and checks are separate namespaces that may share a name, so a test called `npm`
+/// is not the process called `npm`, nor the check. At most one of the two flags is
+/// set; both false is a process.
 struct ProcessLogRef: Equatable, Hashable {
     let projectId: UUID
     let name: String
     var isTest: Bool = false
+    var isCheck: Bool = false
 }
 
 /// What is covering the local terminal, if anything.

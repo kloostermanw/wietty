@@ -428,6 +428,7 @@ struct ContentView: View {
                         paneSelection.selects(processLog: ProcessLogRef(projectId: project.id,
                                                                         name: $0))
                     },
+                    displayName: { store.displayName(for: $0) },
                     agents: store.agents,
                     onActivate: { activate($0, in: project) },
                     onRestartTerminal: { restartTerminal($0, in: project) },
@@ -455,7 +456,10 @@ struct ContentView: View {
                     tests: store.testSupervisor.tests(for: project.id),
                     onTestRun: { store.testSupervisor.run(projectId: project.id, name: $0.name) },
                     onTestRunAll: { store.testSupervisor.runAll(projectId: project.id) },
-                    onOpenTestLog: { openTestLog($0, in: project) }
+                    onOpenTestLog: { openTestLog($0, in: project) },
+                    checks: store.checkSupervisor.checks(for: project.id),
+                    onRunCheck: { store.checkSupervisor.run(projectId: project.id, name: $0.name) },
+                    onOpenCheckLog: { openCheckLog($0, in: project) }
                 )
                 .overlay(alignment: .top) {
                     WorkspaceInsertionIndicator()
@@ -642,6 +646,10 @@ struct ContentView: View {
 
     private func openTestLog(_ test: ManagedProcess, in project: Project) {
         router.show(.log(ProcessLogRef(projectId: project.id, name: test.name, isTest: true)))
+    }
+
+    private func openCheckLog(_ check: ManagedProcess, in project: Project) {
+        router.show(.log(ProcessLogRef(projectId: project.id, name: check.name, isCheck: true)))
     }
 
     /// Clicking a remote row does what clicking a local one does: the serving Mac

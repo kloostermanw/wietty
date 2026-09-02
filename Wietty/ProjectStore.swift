@@ -76,6 +76,21 @@ final class ProjectStore {
     var onAttentionCleared: ((Set<UUID>) -> Void)?
     private(set) var jobNames: [UUID: String] = [:]
 
+    /// Live agent-reported tab titles, keyed by terminal id. Display-only and
+    /// ephemeral (rebuilt from launch), mirroring `jobNames`.
+    ///
+    /// A `.title` event lands here rather than in `TerminalRef.label`, so a busy
+    /// agent retitling constantly no longer mutates `projects`, re-renders the whole
+    /// sidebar, and tears down an open workspace-card context menu. The persisted
+    /// `label` stays the configured name; this is the name the row shows on top of
+    /// it. Read through `displayName(for:)` for the sidebar and the serializers, or
+    /// directly by `RemoteServer` when it hands the dictionary to `RemoteSessionList`.
+    /// The bell/notification banners and the workspace settings list deliberately keep
+    /// the configured `label` instead, so a notification's identity and the config view
+    /// do not follow the live title. A `fixed_naming` row is never written here because
+    /// `handle(.title)` ignores its reported title. Issue #60.
+    private(set) var liveLabels: [UUID: String] = [:]
+
     /// Subscribers to `workspaceChanges()`, keyed by subscription id.
     private var changeSubscribers: [UUID: AsyncStream<Void>.Continuation] = [:]
     /// Whether `armChangeTracking()` currently has an active `withObservationTracking`
@@ -139,6 +154,7 @@ final class ProjectStore {
     private let freshProvider: FreshnessChecking
     let processes: ProcessSupervisor
     let testSupervisor: TestSupervisor
+    let checkSupervisor: CheckSupervisor
     // The old `UserDefaults` keys, read once during migration and then removed. Their
     // values now live in `~/.config/wietty/config`; see `SettingsKeys`.
     private let storageKey = "wietty.projects.bookmarks"
@@ -485,7 +501,8 @@ final class ProjectStore {
         gitProvider: GitInfoProviding = GitInfoService(),
         freshProvider: FreshnessChecking = FreshnessService(),
         processSupervisor: ProcessSupervisor = ProcessSupervisor(),
-        testSupervisor: TestSupervisor = TestSupervisor()
+        testSupervisor: TestSupervisor = TestSupervisor(),
+        checkSupervisor: CheckSupervisor = CheckSupervisor()
     ) {
         self.defaults = defaults
         self.configFile = config ?? Self.defaultConfig(for: defaults)
@@ -495,6 +512,7 @@ final class ProjectStore {
         self.freshProvider = freshProvider
         self.processes = processSupervisor
         self.testSupervisor = testSupervisor
+        self.checkSupervisor = checkSupervisor
         // The secret stays in `UserDefaults`; the config file never holds it.
         self.remoteToken = RemoteAccessToken(defaults: defaults)
 
@@ -760,6 +778,7 @@ final class ProjectStore {
         stopGitWatching(project.id)
         processes.removeWorkspace(project.id)
         testSupervisor.removeWorkspace(project.id)
+        checkSupervisor.removeWorkspace(project.id)
         lastConfigData[project.id] = nil
         configChangedOnDisk.remove(project.id)
         schedule.forget(projectId: project.id)
@@ -1024,24 +1043,31 @@ final class ProjectStore {
         switch event {
         case .title(let sessionId, let name):
             guard let (p, t) = indexOfSession(sessionId) else { return }
-            // A title equal to this workspace's badge is not a real title: with
-            // "show workspace name as pane title" on, `TmuxService.open`/
-            // `activate`/`restart` pass that same name as the badge, so a title
-            // equal to it is the badge coming back rather than the agent reporting
-            // one. Relabelling from it would flip a Claude row's label to the
-            // workspace name the instant the terminal opens. The price is that an
-            // agent that really did report its workspace's name is ignored, which is
-            // indistinguishable from the badge and much rarer.
-            // A `fixed_naming` agent row keeps its slot and ignores the reported
-            // title, which is the whole point of the flag: the row is pinned to its
-            // configured name rather than following what the agent renames its tab to.
-            if projects[p].terminals[t].kind == .claude, !name.isEmpty,
-               !projects[p].terminals[t].fixedNaming,
-               name != projects[p].name,
-               projects[p].terminals[t].label != name {
-                projects[p].terminals[t].label = name
-                save()
-            }
+            // Only a Claude row's own reported title is eligible, and the guards below
+            // drop the rest without touching any existing override:
+            //   - A `fixed_naming` row is pinned to its slot and ignores reported
+            //     titles, which is the whole point of the flag.
+            //   - A title equal to the workspace name is the badge coming back, not a
+            //     real title. With "show workspace name as pane title" on, the badge
+            //     travels as the surface's initial title (`GhosttyService`, passed on
+            //     `open`/`activate`/`restart`) and the poll reads it straight back;
+            //     acting on it would flip the row to the workspace name the instant the
+            //     terminal opens. The price is that an agent that genuinely reports its
+            //     workspace's own name is ignored, which is indistinguishable and rarer.
+            let ref = projects[p].terminals[t]
+            guard ref.kind == .claude, !name.isEmpty, !ref.fixedNaming,
+                  name != projects[p].name else { return }
+            // The title lands in `liveLabels` (display-only, ephemeral), not in
+            // `label`, and never touches the disk. Mutating `projects` here would
+            // re-render the whole sidebar and dismiss any open card menu, which an
+            // active agent retitling constantly did dozens of times a second; see
+            // `liveLabels`. A title equal to the base `label` means "show the
+            // configured name", so the override is cleared rather than set: that is
+            // how a row recovers to its base once the agent stops retitling, which the
+            // old handler got for free by writing `label` directly. The inequality
+            // check keeps `@Observable` from notifying on a no-op. Issue #60.
+            let resolved: String? = (name == ref.label) ? nil : name
+            if liveLabels[ref.id] != resolved { liveLabels[ref.id] = resolved }
         case .bell(let sessionId):
             guard let (p, t) = indexOfSession(sessionId) else { return }
             // Only the transition is reported. `insert` says whether the flag was
@@ -1063,9 +1089,22 @@ final class ProjectStore {
             onNotification?(projects[p], projects[p].terminals[t], title, body)
         case .job(let sessionId, let jobName):
             guard let (p, t) = indexOfSession(sessionId) else { return }
-            jobNames[projects[p].terminals[t].id] = jobName
+            // Change-guarded: the poll emits an event for every terminal on every
+            // tick (every 15s while a workspace is expanded, 300s when all are
+            // collapsed), and `@Observable` notifies on assignment regardless of
+            // equality, so an unguarded write re-rendered every expanded card (and
+            // dismissed any open menu) even when nothing changed. The sibling `.title`
+            // handler already guards; this now matches it. Issue #60.
+            let id = projects[p].terminals[t].id
+            if jobNames[id] != jobName { jobNames[id] = jobName }
         case .terminated(let sessionId):
             guard let (p, t) = indexOfSession(sessionId) else { return }
+            // The job is zeroed so the row reads as not running, but any live title is
+            // deliberately kept: an exited row keeps showing the name the agent last
+            // reported (as it did when the title lived in `label`), and a restart that
+            // reuses the row inherits it until a new reported title supersedes it or a
+            // title equal to the base name clears it. `forgetTerminal` drops it when the
+            // row itself goes away. Issue #60.
             jobNames[projects[p].terminals[t].id] = ""
         }
     }
@@ -1100,6 +1139,14 @@ final class ProjectStore {
     func isSessionRunning(_ ref: TerminalRef) -> Bool {
         guard let job = jobNames[ref.id], !job.isEmpty else { return false }
         return ref.kind == .claude ? claudeIsRunning(jobName: job) : true
+    }
+
+    /// The name a sidebar row shows: its stored `displayName`, overridden by any live
+    /// agent-reported title in `liveLabels`. Resolved here rather than on `TerminalRef`
+    /// because the override lives on the store, so a caller with a `ref` asks this.
+    /// Issue #60.
+    func displayName(for ref: TerminalRef) -> String {
+        ref.displayName(liveLabel: liveLabels[ref.id])
     }
 
     /// The workspace and row with this row id.
@@ -1262,6 +1309,7 @@ final class ProjectStore {
     private func forgetTerminal(_ refId: UUID) {
         attention.remove(refId)
         jobNames[refId] = nil
+        liveLabels[refId] = nil
         localOnlyTerminals.remove(refId)
     }
 
@@ -1292,6 +1340,10 @@ final class ProjectStore {
         if projects[pIndex].terminals[tIndex].kind == .terminal {
             projects[pIndex].terminals[tIndex].slot = label
         }
+        // Drop any live agent-reported title so the deliberate rename shows at once
+        // rather than staying masked by a stale override until the next title event.
+        // Issue #60.
+        liveLabels[ref.id] = nil
         save()
         emitConfig(for: projects[pIndex].id)
     }
@@ -1749,6 +1801,9 @@ final class ProjectStore {
         testSupervisor.apply(config, projectId: projectId, directory: url) { [weak self] in
             self?.processVariables(for: projectId) ?? [:]
         }
+        checkSupervisor.apply(config, projectId: projectId, directory: url) { [weak self] in
+            self?.processVariables(for: projectId) ?? [:]
+        }
         localOnlyTerminals.formUnion(result.localOnly)
         lastConfigData[projectId] = ConfigFile.rawData(in: url)
         save()
@@ -1849,6 +1904,9 @@ final class ProjectStore {
             self?.processVariables(for: projectId) ?? [:]
         }
         testSupervisor.apply(config, projectId: projectId, directory: project.url) { [weak self] in
+            self?.processVariables(for: projectId) ?? [:]
+        }
+        checkSupervisor.apply(config, projectId: projectId, directory: project.url) { [weak self] in
             self?.processVariables(for: projectId) ?? [:]
         }
         save()
