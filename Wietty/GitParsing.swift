@@ -142,7 +142,8 @@ enum GitParsing {
             case "StatusContext":
                 switch node.state {
                 case "SUCCESS": summary.passing += 1
-                case "PENDING": summary.pending += 1
+                // EXPECTED is a required status that has not reported yet, which is pending.
+                case "PENDING", "EXPECTED": summary.pending += 1
                 case "FAILURE", "ERROR": summary.failing += 1
                 default: break
                 }

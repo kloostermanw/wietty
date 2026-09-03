@@ -90,6 +90,7 @@ import Foundation
           {"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null},
           {"__typename":"StatusContext","state":"SUCCESS"},
           {"__typename":"StatusContext","state":"PENDING"},
+          {"__typename":"StatusContext","state":"EXPECTED"},
           {"__typename":"StatusContext","state":"FAILURE"},
           {"__typename":"StatusContext","state":"ERROR"}
         ]}}}}}}
@@ -100,7 +101,9 @@ import Foundation
         #expect(s?.failing == 6)
         #expect(s?.cancelled == 1)
         #expect(s?.skipped == 1)
-        #expect(s?.pending == 2)    // CheckRun IN_PROGRESS, StatusContext PENDING
+        // CheckRun IN_PROGRESS, StatusContext PENDING, StatusContext EXPECTED
+        // (a required status not yet reported)
+        #expect(s?.pending == 3)
     }
 
     @Test func checksSummaryFromRollupNilWhenResponseCarriesErrors() {
