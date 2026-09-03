@@ -73,76 +73,77 @@ import Foundation
         #expect(GitParsing.checksSummary(fromBucketJSON: "[]") == nil)
     }
 
-    @Test func checksSummaryFromCheckRunsMapsStatusAndConclusion() {
+    @Test func checksSummaryFromRollupMergesCheckRunsAndStatusContexts() {
+        // The GraphQL rollup returns both CheckRun and StatusContext nodes in one
+        // `contexts` list (uppercase enums), already deduped to the latest per
+        // suite and context. One parser buckets both.
         let json = """
-        {"total_count":8,"check_runs":[
-          {"status":"completed","conclusion":"success"},
-          {"status":"completed","conclusion":"neutral"},
-          {"status":"completed","conclusion":"failure"},
-          {"status":"completed","conclusion":"timed_out"},
-          {"status":"completed","conclusion":"cancelled"},
-          {"status":"completed","conclusion":"skipped"},
-          {"status":"in_progress","conclusion":null},
-          {"status":"queued","conclusion":null}
-        ]}
+        {"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"NEUTRAL"},
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"},
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"TIMED_OUT"},
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"CANCELLED"},
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"},
+          {"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null},
+          {"__typename":"StatusContext","state":"SUCCESS"},
+          {"__typename":"StatusContext","state":"PENDING"},
+          {"__typename":"StatusContext","state":"FAILURE"},
+          {"__typename":"StatusContext","state":"ERROR"}
+        ]}}}}}}
         """
-        let s = GitParsing.checksSummary(fromCheckRunsJSON: json)
-        #expect(s?.passing == 2)   // success + neutral
-        #expect(s?.failing == 2)   // failure + timed_out
+        let s = GitParsing.checksSummary(fromRollupJSON: json)
+        #expect(s?.passing == 3)    // CheckRun SUCCESS + NEUTRAL, StatusContext SUCCESS
+        #expect(s?.failing == 4)    // CheckRun FAILURE + TIMED_OUT, StatusContext FAILURE + ERROR
         #expect(s?.cancelled == 1)
         #expect(s?.skipped == 1)
-        #expect(s?.pending == 2)   // in_progress + queued
+        #expect(s?.pending == 2)    // CheckRun IN_PROGRESS, StatusContext PENDING
     }
 
-    @Test func checksSummaryFromCheckRunsNilOnEmptyOrInvalid() {
-        #expect(GitParsing.checksSummary(fromCheckRunsJSON: "") == nil)
-        #expect(GitParsing.checksSummary(fromCheckRunsJSON: "not json") == nil)
-        #expect(GitParsing.checksSummary(fromCheckRunsJSON: #"{"total_count":0,"check_runs":[]}"#) == nil)
-    }
-
-    @Test func checksSummaryAddingSumsFieldwise() {
-        let runs = ChecksSummary(passing: 1, failing: 0, cancelled: 0, skipped: 1, pending: 0)
-        let statuses = ChecksSummary(passing: 1, failing: 2, cancelled: 0, skipped: 0, pending: 1)
-        let merged = runs.adding(statuses)
-        #expect(merged.passing == 2)
-        #expect(merged.failing == 2)
-        #expect(merged.skipped == 1)
-        #expect(merged.pending == 1)
-        #expect(merged.total == 6)
-    }
-
-    @Test func checksSummaryFromCombinedStatusMapsStates() {
-        // The legacy commit-status API (what CircleCI and other status-based
-        // integrations post) has a flat `state` per context, no conclusion.
+    @Test func checksSummaryFromRollupMatchesGitHubRollupExample() {
+        // The `celery-my` develop case from issue #63: GitHub's rollup for commit
+        // 1dd340b is 5 all-green contexts (3 CheckRun + 2 CircleCI StatusContext).
         let json = """
-        {"state":"failure","total_count":5,"statuses":[
-          {"context":"ci/circleci: build","state":"success"},
-          {"context":"coverage","state":"pending"},
-          {"context":"lint","state":"failure"},
-          {"context":"deploy","state":"error"},
-          {"context":"unknown","state":"weird"}
-        ]}
+        {"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},
+          {"__typename":"StatusContext","state":"SUCCESS"},
+          {"__typename":"StatusContext","state":"SUCCESS"}
+        ]}}}}}}
         """
-        let s = GitParsing.checksSummary(fromCombinedStatusJSON: json)
-        #expect(s?.passing == 1)
-        #expect(s?.pending == 1)
-        #expect(s?.failing == 2)   // failure + error
-        #expect(s?.total == 4)     // the unrecognized state is ignored
+        let s = GitParsing.checksSummary(fromRollupJSON: json)
+        #expect(s?.passing == 5)
+        #expect(s?.total == 5)
+        #expect(s?.hasFailures == false)
+        #expect(s?.summaryText == "5 successfull checks")
     }
 
-    @Test func checksSummaryFromCombinedStatusNilOnEmptyOrInvalid() {
-        #expect(GitParsing.checksSummary(fromCombinedStatusJSON: "") == nil)
-        #expect(GitParsing.checksSummary(fromCombinedStatusJSON: "not json") == nil)
-        #expect(GitParsing.checksSummary(fromCombinedStatusJSON: #"{"state":"pending","statuses":[]}"#) == nil)
+    @Test func checksSummaryFromRollupNilOnNullObjectRollupEmptyOrInvalid() {
+        // A branch with no pushed commit resolves `object` to null.
+        #expect(GitParsing.checksSummary(fromRollupJSON: #"{"data":{"repository":{"object":null}}}"#) == nil)
+        // A pushed commit with no checks resolves `statusCheckRollup` to null.
+        #expect(GitParsing.checksSummary(fromRollupJSON: #"{"data":{"repository":{"object":{"statusCheckRollup":null}}}}"#) == nil)
+        // A rollup with no contexts is not a zero summary.
+        #expect(GitParsing.checksSummary(fromRollupJSON: #"{"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[]}}}}}}"#) == nil)
+        #expect(GitParsing.checksSummary(fromRollupJSON: "") == nil)
+        #expect(GitParsing.checksSummary(fromRollupJSON: "not json") == nil)
     }
 
-    @Test func checksSummaryFromCheckRunsIgnoresUnknownCompletedConclusion() {
-        // A completed run with an unrecognized (or null) conclusion is not
-        // counted in any bucket, matching the bucket parser's default-skip.
-        let json = #"{"total_count":1,"check_runs":[{"status":"completed","conclusion":"stale"},{"status":"completed","conclusion":null}]}"#
-        let s = GitParsing.checksSummary(fromCheckRunsJSON: json)
-        #expect(s?.failing == 1)   // stale maps to failing
-        #expect(s?.total == 1)     // the null-conclusion run is ignored
+    @Test func checksSummaryFromRollupIgnoresUnknownEnumValues() {
+        // An unrecognized conclusion/state (or a completed run with a null
+        // conclusion) is counted in no bucket, matching the bucket parser's
+        // default-skip.
+        let json = """
+        {"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"STALE"},
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":null},
+          {"__typename":"StatusContext","state":"WEIRD"}
+        ]}}}}}}
+        """
+        let s = GitParsing.checksSummary(fromRollupJSON: json)
+        #expect(s?.failing == 1)   // STALE maps to failing
+        #expect(s?.total == 1)     // the null conclusion and unknown state are ignored
     }
 
     @Test func checksSummaryTextListsNonzeroCategoriesInOrder() {

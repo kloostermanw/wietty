@@ -53,14 +53,20 @@ Legend:
   green when everything completed without failures. When the branch has an open
   pull request the summary comes from `gh pr checks`; when it does not, it comes
   from the branch head commit instead, so a pushed branch surfaces its CI before
-  a PR exists. The branch source merges the commit's two check systems the way
-  its status-details page does: check-runs (`gh api .../commits/<branch>/check-runs`,
-  GitHub Actions and GitHub-App integrations) and the legacy combined commit
-  status (`gh api .../commits/<branch>/status`, status-based CI such as
-  CircleCI). The summary names the failing, cancelled, passing and pending
-  counts, in that order. Skipped checks still count toward the total but are
-  never named, so a branch whose checks were all skipped renders the line
-  empty. The line is absent only when there are no checks at all.
+  a PR exists. The branch source is a single `gh api graphql` query for the
+  commit's `statusCheckRollup` (`GitInfoService.ciChecks(for:branch:)`), the same
+  source GitHub's own UI and the PR path use. The rollup keeps only the latest
+  run per check suite and context and already merges both check systems in one
+  list of contexts: `CheckRun` nodes (GitHub Actions and GitHub-App integrations)
+  and `StatusContext` nodes (the legacy commit status, status-based CI such as
+  CircleCI). Because it dedupes per suite, a branch head that has not moved is not
+  inflated by stale check suites (for example a fresh Dependabot suite pinned onto
+  the same commit on every scheduled run). The summary names the failing,
+  cancelled, passing and pending counts, in that order. Skipped checks still count
+  toward the total but are never named, so a branch whose checks were all skipped
+  renders the line empty. The line is absent only when there are no checks at all
+  (a null rollup), when the branch has no pushed commit (a null object), or when
+  the request fails.
 - `[phpunit] [feature-tests] ... [All]`: `TestProcessesLineView`, the test
   buttons flowing and wrapping on the left with an `All` button pinned to the
   top right. Rendered only when the workspace defines at least one test
