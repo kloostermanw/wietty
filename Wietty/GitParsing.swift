@@ -87,9 +87,10 @@ enum GitParsing {
     /// commit status, status-based CI such as CircleCI, with a flat `state`); the
     /// rollup already merges both, so no separate request or field-wise add is
     /// needed. The GraphQL enums are uppercase where the REST fields were
-    /// lowercase. Returns nil when the response is empty, invalid, has a null
-    /// `object` (no pushed commit), a null `statusCheckRollup` (the commit has no
-    /// checks), or empty contexts.
+    /// lowercase. Returns nil when the response is empty, invalid, carries a
+    /// top-level `errors` array (a partial-data response, whose `data` must not be
+    /// counted), has a null `object` (no pushed commit), a null `statusCheckRollup`
+    /// (the commit has no checks), or empty contexts.
     static func checksSummary(fromRollupJSON json: String) -> ChecksSummary? {
         let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
@@ -119,9 +120,12 @@ enum GitParsing {
                 }
                 let repository: Repository?
             }
+            struct GraphQLError: Decodable {}
             let data: DataField?
+            let errors: [GraphQLError]?
         }
         guard let payload = try? JSONDecoder().decode(Payload.self, from: data),
+              payload.errors?.isEmpty ?? true,
               let rollup = payload.data?.repository?.object?.statusCheckRollup else { return nil }
         var summary = ChecksSummary(passing: 0, failing: 0, cancelled: 0, skipped: 0, pending: 0)
         for node in rollup.contexts.nodes {
