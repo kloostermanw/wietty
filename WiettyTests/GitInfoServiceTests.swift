@@ -120,11 +120,40 @@ struct FakeCommandRunner: CommandRunning {
     }
 
     @Test func ciChecksForBranchNilWhenRequestFails() async {
-        // An unpushed branch, or a transient/auth error, exits non-zero. The line
-        // hides rather than showing a partial count.
+        // A transient/auth error (or a repo that will not resolve) exits non-zero.
+        // The line hides rather than showing a partial count. An unpushed branch is
+        // not this case: it exits 0 with a null `object`, covered by the
+        // null-rollup/null-object parser tests.
         let svc = service { _, _ in CommandResult(stdout: "", stderr: "Not Found", status: 1) }
         let checks = await svc.ciChecks(for: URL(fileURLWithPath: "/tmp/x"), branch: "feature/issue-30")
         #expect(checks == nil)
+    }
+
+    @Test func ciChecksForBranchSendsOwnerNameAsFieldsAndBranchRaw() async {
+        // owner/name must go through `-F` (gh substitutes the {owner}/{repo}
+        // placeholders only in `-F` values), while the branch must go through `-f`
+        // as a raw string so a branch named like `123` is not type-coerced.
+        final class Recorder: @unchecked Sendable { var args: [String] = [] }
+        let recorder = Recorder()
+        let svc = service { _, args in
+            recorder.args = args
+            return CommandResult(
+                stdout: #"{"data":{"repository":{"object":{"statusCheckRollup":null}}}}"#,
+                stderr: "", status: 0
+            )
+        }
+        _ = await svc.ciChecks(for: URL(fileURLWithPath: "/tmp/x"), branch: "123")
+        let a = recorder.args
+        func value(afterFlag flag: String, field: String) -> String? {
+            for i in a.indices where a[i] == flag && i + 1 < a.count && a[i + 1].hasPrefix("\(field)=") {
+                return String(a[i + 1].dropFirst(field.count + 1))
+            }
+            return nil
+        }
+        #expect(value(afterFlag: "-F", field: "owner") == "{owner}")
+        #expect(value(afterFlag: "-F", field: "name") == "{repo}")
+        #expect(value(afterFlag: "-f", field: "branch") == "123")
+        #expect(value(afterFlag: "-F", field: "branch") == nil)   // never typed
     }
 
     @Test func ciChecksForBranchNilWhenRollupIsNull() async {
@@ -144,8 +173,16 @@ struct FakeCommandRunner: CommandRunning {
     }
 
     @Test func ciChecksForBranchNilForEmptyBranch() async {
-        // The empty-branch guard returns nil before any `gh api` call.
-        let svc = service { _, _ in CommandResult(stdout: "", stderr: "", status: 0) }
+        // The empty-branch guard returns nil before any `gh api` call. The runner
+        // returns a rollup that would parse to a non-nil summary, so this fails if
+        // the guard is ever removed (the call would reach the runner and count it)
+        // rather than passing vacuously.
+        let svc = service { _, _ in
+            CommandResult(
+                stdout: #"{"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}}}}}}"#,
+                stderr: "", status: 0
+            )
+        }
         let checks = await svc.ciChecks(for: URL(fileURLWithPath: "/tmp/x"), branch: "")
         #expect(checks == nil)
     }

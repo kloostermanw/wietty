@@ -83,6 +83,8 @@ import Foundation
           {"__typename":"CheckRun","status":"COMPLETED","conclusion":"NEUTRAL"},
           {"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"},
           {"__typename":"CheckRun","status":"COMPLETED","conclusion":"TIMED_OUT"},
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"ACTION_REQUIRED"},
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"STARTUP_FAILURE"},
           {"__typename":"CheckRun","status":"COMPLETED","conclusion":"CANCELLED"},
           {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"},
           {"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null},
@@ -94,10 +96,24 @@ import Foundation
         """
         let s = GitParsing.checksSummary(fromRollupJSON: json)
         #expect(s?.passing == 3)    // CheckRun SUCCESS + NEUTRAL, StatusContext SUCCESS
-        #expect(s?.failing == 4)    // CheckRun FAILURE + TIMED_OUT, StatusContext FAILURE + ERROR
+        // CheckRun FAILURE + TIMED_OUT + ACTION_REQUIRED + STARTUP_FAILURE, StatusContext FAILURE + ERROR
+        #expect(s?.failing == 6)
         #expect(s?.cancelled == 1)
         #expect(s?.skipped == 1)
         #expect(s?.pending == 2)    // CheckRun IN_PROGRESS, StatusContext PENDING
+    }
+
+    @Test func checksSummaryFromRollupNilWhenResponseCarriesErrors() {
+        // A partial-data GraphQL response (a top-level `errors` array alongside a
+        // countable `data`) must not be counted: the checks line hides rather than
+        // showing a count built from partial data. This backstops the caller's
+        // exit-code guard so the parser's own contract does not depend on it.
+        let json = """
+        {"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[
+          {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}
+        ]}}}}},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}
+        """
+        #expect(GitParsing.checksSummary(fromRollupJSON: json) == nil)
     }
 
     @Test func checksSummaryFromRollupMatchesGitHubRollupExample() {

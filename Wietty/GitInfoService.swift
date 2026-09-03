@@ -112,10 +112,13 @@ struct GitInfoService: GitInfoProviding {
     /// 100)` fetches a single page; 100 is enough that no real branch needs a
     /// second.
     ///
-    /// The line hides unless one request succeeds with a countable rollup. A
-    /// non-zero exit (an unpushed ref, a transient or auth error) yields nil
-    /// rather than a partial count; a 200 whose `object` or `statusCheckRollup` is
-    /// null (no pushed commit, or a commit with no checks) parses to nil too.
+    /// The line hides unless the request succeeds with a countable rollup. A
+    /// non-zero exit (a transient or auth error, or a repo that will not resolve)
+    /// yields nil rather than a partial count; a 200 whose `object` or
+    /// `statusCheckRollup` is null parses to nil too. An unpushed ref is the
+    /// latter: GraphQL resolves `object` to null at 200 (it does not 4xx the way
+    /// the old REST endpoints did), so a branch with no pushed commit hides via
+    /// the null-`object` parse, not the exit check.
     func ciChecks(for folder: URL, branch: String) async -> ChecksSummary? {
         guard let ghPath, !branch.isEmpty else { return nil }
         let query = """
