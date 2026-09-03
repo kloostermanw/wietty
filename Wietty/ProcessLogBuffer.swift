@@ -38,6 +38,14 @@ func stripANSI(_ text: String) -> String {
 /// concatenates into a single ever-growing line that stalls the log pane.
 struct ProcessLogBuffer: Equatable {
     private(set) var lines: [String] = []
+    /// The absolute sequence number of `lines.first`. Older lines are only ever
+    /// appended and trimmed from the front (the open last line is overwritten in
+    /// place, which does not change any line's index), so `lines[i]` has the stable
+    /// id `firstLineNumber + i`: a value that does not change when the buffer trims.
+    /// A view keys its rows by this instead of by array index, so reaching the
+    /// line cap and dropping the oldest lines no longer shifts every id and
+    /// forces SwiftUI to re-diff and re-lay out the whole list on each append.
+    private(set) var firstLineNumber = 0
     private let limit: Int
     private let lineLimit: Int
     private var hasOpenLine = false
@@ -101,18 +109,65 @@ struct ProcessLogBuffer: Equatable {
         } else {
             openColumn = 0
         }
-        if lines.count > limit { lines.removeFirst(lines.count - limit) }
+        if lines.count > limit {
+            let trimmed = lines.count - limit
+            lines.removeFirst(trimmed)
+            firstLineNumber += trimmed
+        }
     }
 
     mutating func clear() {
         lines.removeAll()
+        firstLineNumber = 0
         hasOpenLine = false
         openColumn = 0
+    }
+
+    /// The buffered lines paired with a position-independent identity, as a
+    /// lightweight collection that a `ForEach` can key by. Constructing it copies
+    /// only the array header (the strings are shared copy-on-write, not duplicated)
+    /// and each `LogLine` is materialised lazily on subscript, so iterating it does
+    /// not allocate a parallel array of the whole buffer on every redraw.
+    var identifiedLines: IdentifiedLines {
+        IdentifiedLines(lines: lines, firstLineNumber: firstLineNumber)
     }
 
     /// Caps a line at `lineLimit` characters, keeping the most recent tail.
     private func clampedTail(_ characters: [Character]) -> String {
         guard characters.count > lineLimit else { return String(characters) }
         return String(characters.suffix(lineLimit))
+    }
+}
+
+/// One buffered line with a stable, position-independent identity. The `id` is
+/// the line's absolute sequence number, so it survives the buffer trimming older
+/// lines away underneath it.
+struct LogLine: Identifiable, Equatable {
+    let id: Int
+    let text: String
+}
+
+/// A random-access snapshot of `ProcessLogBuffer.lines` that pairs each line with
+/// its stable id without copying the strings. Rows are built on demand, so a
+/// `ForEach` over it costs no per-redraw allocation of the whole buffer.
+///
+/// Its only producer is `ProcessLogBuffer.identifiedLines`, so the fields stay
+/// `private` and the initializer `fileprivate`: nothing outside this file can
+/// re-expose the buffer's `private(set)` array or build an instance whose
+/// `firstLineNumber` disagrees with the lines it was taken from.
+struct IdentifiedLines: RandomAccessCollection {
+    private let lines: [String]
+    private let firstLineNumber: Int
+
+    fileprivate init(lines: [String], firstLineNumber: Int) {
+        self.lines = lines
+        self.firstLineNumber = firstLineNumber
+    }
+
+    var startIndex: Int { 0 }
+    var endIndex: Int { lines.count }
+
+    subscript(position: Int) -> LogLine {
+        LogLine(id: firstLineNumber + position, text: lines[position])
     }
 }

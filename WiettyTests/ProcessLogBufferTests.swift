@@ -86,4 +86,91 @@ import Testing
         buffer.append("abcdefgh\n")
         #expect(buffer.lines == ["defgh"])
     }
+
+    @Test func identifiedLinesStartAtZeroAndMatchLines() {
+        var buffer = ProcessLogBuffer(limit: 100)
+        buffer.append("one\ntwo\nthree")
+        let identified = Array(buffer.identifiedLines)
+        #expect(identified.map(\.id) == [0, 1, 2])
+        #expect(identified.map(\.text) == ["one", "two", "three"])
+    }
+
+    @Test func trimmingKeepsSurvivingLineIdentitiesStable() {
+        var buffer = ProcessLogBuffer(limit: 3)
+        buffer.append("1\n2\n3\n")
+        // "3" is the newest surviving line; capture its id before any trim.
+        let three = buffer.identifiedLines.first { $0.text == "3" }
+        #expect(three?.id == 2)
+        // Appending past the cap trims "1" and "2" from the front. "3" keeps its id.
+        buffer.append("4\n5\n")
+        #expect(buffer.lines == ["3", "4", "5"])
+        let threeAfter = buffer.identifiedLines.first { $0.text == "3" }
+        #expect(threeAfter?.id == 2)
+    }
+
+    @Test func identitiesAreStrictlyMonotonicAndUnique() {
+        var buffer = ProcessLogBuffer(limit: 3)
+        buffer.append("1\n2\n3\n4\n5\n")
+        let ids = buffer.identifiedLines.map(\.id)
+        #expect(ids == [2, 3, 4])
+        #expect(Set(ids).count == ids.count)
+    }
+
+    @Test func openTrailingLineKeepsIdentityWhileOverwritten() {
+        var buffer = ProcessLogBuffer(limit: 100)
+        buffer.append("done\n")
+        buffer.append("progress 10%")
+        let before = buffer.identifiedLines.first { $0.text.hasPrefix("progress") }
+        #expect(before?.id == 1)
+        buffer.append("\rprogress 20%")
+        let after = buffer.identifiedLines.first { $0.text.hasPrefix("progress") }
+        #expect(after?.id == 1)
+        #expect(after?.text == "progress 20%")
+    }
+
+    @Test func openTrailingLineKeepsIdentityWhenExtendedAcrossChunks() {
+        var buffer = ProcessLogBuffer(limit: 100)
+        buffer.append("par")
+        let before = buffer.identifiedLines.first
+        #expect(before?.id == 0)
+        buffer.append("tial")
+        let after = buffer.identifiedLines.first
+        #expect(after?.id == 0)
+        #expect(after?.text == "partial")
+    }
+
+    @Test func clearResetsIdentitiesToZero() {
+        var buffer = ProcessLogBuffer(limit: 100)
+        buffer.append("1\n2\n3\n")
+        buffer.clear()
+        buffer.append("fresh\n")
+        #expect(buffer.identifiedLines.map(\.id) == [0])
+    }
+
+    @Test func completingOpenLineAndStartingANewOneInOneChunkKeepsIds() {
+        var buffer = ProcessLogBuffer(limit: 100)
+        buffer.append("par")
+        // The same chunk closes the open line ("partial") and opens a new one
+        // ("next"): the completed line must keep its id and the new one takes the
+        // next id, not the other way around.
+        buffer.append("tial\nnext")
+        let identified = Array(buffer.identifiedLines)
+        #expect(identified.map(\.id) == [0, 1])
+        #expect(identified.map(\.text) == ["partial", "next"])
+    }
+
+    @Test func identifiedLinesIsEmptyForAFreshBuffer() {
+        let buffer = ProcessLogBuffer(limit: 100)
+        #expect(buffer.identifiedLines.count == 0)
+        #expect(buffer.identifiedLines.isEmpty)
+    }
+
+    @Test func identifiedLinesSupportsDirectRandomAccess() {
+        var buffer = ProcessLogBuffer(limit: 100)
+        buffer.append("a\nb\nc\n")
+        let identified = buffer.identifiedLines
+        #expect(identified.count == 3)
+        #expect(identified[1] == LogLine(id: 1, text: "b"))
+        #expect(identified.last == LogLine(id: 2, text: "c"))
+    }
 }
