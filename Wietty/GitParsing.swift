@@ -75,52 +75,73 @@ enum GitParsing {
         return summary.total > 0 ? summary : nil
     }
 
-    /// Tallies `gh api repos/{owner}/{repo}/commits/{ref}/check-runs` output into
-    /// a ChecksSummary, for a branch head that has no pull request. Maps each
-    /// run's `status`/`conclusion` onto the same buckets `gh pr checks` uses: a
-    /// run that has not completed is pending; a completed run is bucketed by its
-    /// conclusion. Returns nil when the JSON is empty, invalid, or has no runs.
-    static func checksSummary(fromCheckRunsJSON json: String) -> ChecksSummary? {
+    /// Tallies a GraphQL `statusCheckRollup` response into a ChecksSummary, for a
+    /// branch head that has no pull request. This is the same source GitHub's UI
+    /// and `gh pr checks` use: the rollup keeps only the latest run per check
+    /// suite and context, so a SHA whose head has not moved (and has collected a
+    /// fresh Dependabot check suite on every scheduled run) is not over-counted
+    /// the way the raw check-runs endpoint would be.
+    ///
+    /// Each context node is either a `CheckRun` (GitHub Actions and GitHub-App
+    /// integrations, with `status`/`conclusion`) or a `StatusContext` (the legacy
+    /// commit status, status-based CI such as CircleCI, with a flat `state`); the
+    /// rollup already merges both, so no separate request or field-wise add is
+    /// needed. The GraphQL enums are uppercase where the REST fields were
+    /// lowercase. Returns nil when the response is empty, invalid, has a null
+    /// `object` (no pushed commit), a null `statusCheckRollup` (the commit has no
+    /// checks), or empty contexts.
+    static func checksSummary(fromRollupJSON json: String) -> ChecksSummary? {
         let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
         struct Payload: Decodable {
-            struct Run: Decodable { let status: String?; let conclusion: String? }
-            let check_runs: [Run]
-        }
-        guard let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
-        var summary = ChecksSummary(passing: 0, failing: 0, cancelled: 0, skipped: 0, pending: 0)
-        for run in payload.check_runs {
-            guard run.status == "completed" else { summary.pending += 1; continue }
-            switch run.conclusion {
-            case "success", "neutral": summary.passing += 1
-            case "failure", "timed_out", "action_required", "startup_failure", "stale": summary.failing += 1
-            case "cancelled": summary.cancelled += 1
-            case "skipped": summary.skipped += 1
-            default: break
+            struct DataField: Decodable {
+                struct Repository: Decodable {
+                    struct Object: Decodable {
+                        struct Rollup: Decodable {
+                            struct Contexts: Decodable {
+                                struct Node: Decodable {
+                                    let typename: String?
+                                    let status: String?
+                                    let conclusion: String?
+                                    let state: String?
+                                    enum CodingKeys: String, CodingKey {
+                                        case typename = "__typename"
+                                        case status, conclusion, state
+                                    }
+                                }
+                                let nodes: [Node]
+                            }
+                            let contexts: Contexts
+                        }
+                        let statusCheckRollup: Rollup?
+                    }
+                    let object: Object?
+                }
+                let repository: Repository?
             }
+            let data: DataField?
         }
-        return summary.total > 0 ? summary : nil
-    }
-
-    /// Tallies `gh api repos/{owner}/{repo}/commits/{ref}/status` (the legacy
-    /// combined commit status, one entry per context) into a ChecksSummary.
-    /// This is where status-based CI such as CircleCI reports, separate from
-    /// check-runs. Returns nil when the JSON is empty, invalid, or has no
-    /// statuses.
-    static func checksSummary(fromCombinedStatusJSON json: String) -> ChecksSummary? {
-        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
-        struct Payload: Decodable {
-            struct Status: Decodable { let state: String? }
-            let statuses: [Status]
-        }
-        guard let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
+        guard let payload = try? JSONDecoder().decode(Payload.self, from: data),
+              let rollup = payload.data?.repository?.object?.statusCheckRollup else { return nil }
         var summary = ChecksSummary(passing: 0, failing: 0, cancelled: 0, skipped: 0, pending: 0)
-        for status in payload.statuses {
-            switch status.state {
-            case "success": summary.passing += 1
-            case "pending": summary.pending += 1
-            case "failure", "error": summary.failing += 1
+        for node in rollup.contexts.nodes {
+            switch node.typename {
+            case "CheckRun":
+                guard node.status == "COMPLETED" else { summary.pending += 1; continue }
+                switch node.conclusion {
+                case "SUCCESS", "NEUTRAL": summary.passing += 1
+                case "FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE": summary.failing += 1
+                case "CANCELLED": summary.cancelled += 1
+                case "SKIPPED": summary.skipped += 1
+                default: break
+                }
+            case "StatusContext":
+                switch node.state {
+                case "SUCCESS": summary.passing += 1
+                case "PENDING": summary.pending += 1
+                case "FAILURE", "ERROR": summary.failing += 1
+                default: break
+                }
             default: break
             }
         }
