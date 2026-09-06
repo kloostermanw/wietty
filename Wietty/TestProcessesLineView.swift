@@ -32,6 +32,7 @@ struct TestProcessesLineView: View {
                         }
                         Divider()
                         Button("Open log") { onOpenLog(test) }
+                        Button("Clear log") { test.clearLog() }
                         Button("Copy ID for agent") { onCopyId(test) }
                     }
                 }
