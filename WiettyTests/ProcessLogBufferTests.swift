@@ -140,8 +140,11 @@ import Testing
     }
 
     @Test func clearResetsIdentitiesToZero() {
-        var buffer = ProcessLogBuffer(limit: 100)
-        buffer.append("1\n2\n3\n")
+        // Trim first so `firstLineNumber` has advanced past zero (to 2) before the
+        // clear: otherwise a clear that only emptied `lines` without resetting
+        // `firstLineNumber` would still leave ids at zero and pass this test.
+        var buffer = ProcessLogBuffer(limit: 3)
+        buffer.append("1\n2\n3\n4\n5\n")
         buffer.clear()
         buffer.append("fresh\n")
         #expect(buffer.identifiedLines.map(\.id) == [0])
