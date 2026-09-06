@@ -197,7 +197,9 @@ editing the process out of `wietty.json` while its log is up.
 
 The body is a scrollable, monospaced, read-only view of the process log, one
 selectable `Text` per line inside a `LazyVStack`, with a `ScrollViewReader` jumping
-to a hidden bottom anchor whenever the line count changes. It is one row per line,
+to a hidden bottom anchor whenever new output is appended (keyed on the total lines
+ever produced, not the current line count, so it keeps following the tail after the
+buffer hits its cap and the count stops climbing). It is one row per line,
 not a single `Text` of the whole joined buffer, because a lone selectable `Text`
 lays out in O(content size) synchronously on the main thread and froze the app on a
 large log. The lazy stack only lays out the rows on screen. The trade-off is that a
