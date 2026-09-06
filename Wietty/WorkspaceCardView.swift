@@ -288,6 +288,7 @@ struct WorkspaceCardView: View {
                         Button("Run") { onRunCheck(check) }
                         Divider()
                         Button("Open log") { onOpenCheckLog(check) }
+                        Button("Clear log") { check.clearLog() }
                     }
                 }
             }
@@ -324,6 +325,7 @@ struct WorkspaceCardView: View {
                         onRestart: { onProcessRestart(process) },
                         onKill: { onProcessKill(process) },
                         onOpenLog: { onOpenProcessLog(process) },
+                        onClearLog: { process.clearLog() },
                         onCopyId: { copyManagedProcessId(process, isTest: false) }
                     )
                 }

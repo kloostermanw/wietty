@@ -75,7 +75,7 @@ Legend:
   Clicking a test button runs that test (`onTestRun`); `All` runs every test
   (`onTestRunAll`) and never shows a spinner itself; a button's context menu
   offers Run, Cancel (while running), Open log (`onOpenTestLog`, opens a
-  the pane with a `ProcessLogRef` carrying `isTest: true`), and Copy ID for agent.
+  the pane with a `ProcessLogRef` carrying `isTest: true`), Clear log, and Copy ID for agent.
   See `TestProcessesLineView.md`.
 - `●` / `○`: process status dot (`ProcessRowView`). Filled = running, open =
   not running; green = success/healthy, red = failed, gray = neutral.
@@ -162,7 +162,8 @@ supplies the actions, which is the half that needs a card.
 │ Enable config sync     ││ lint           > │┌──────────────┐
 │ Remove                 ││ deps           > ││ Run          │
 └────────────────────────┘└──────────────────┘│ Open log     │
-   (Checks: one entry per configured check)    └──────────────┘
+   (Checks: one entry per configured check)    │ Clear log    │
+                                               └──────────────┘
 ```
 
 - Everything above the separator adds something; everything below it acts on the
@@ -180,8 +181,9 @@ supplies the actions, which is the half that needs a card.
 - "Checks" is a submenu over the workspace's configured `checks` (from
   `wietty.json`), one entry per check, each itself a submenu offering "Run"
   (`onRunCheck`, runs that check now, on demand, independent of the scheduled
-  freshness tick that drives the `!` marker) and "Open log" (`onOpenCheckLog`, puts
-  that check's output in the pane, the same log view a test or process row uses). A
+  freshness tick that drives the `!` marker), "Open log" (`onOpenCheckLog`, puts
+  that check's output in the pane, the same log view a test or process row uses),
+  and "Clear log" (`check.clearLog()`, empties that check's output buffer). A
   check runs as a `short_running` `ManagedProcess` held by `CheckSupervisor`, the
   run-now twin of the `FreshnessService` path. With no checks configured the submenu
   holds one disabled line pointing at `wietty.json` (`WorkspaceMenu.noChecks`), for

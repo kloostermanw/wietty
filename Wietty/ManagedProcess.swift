@@ -161,6 +161,13 @@ final class ManagedProcess: Identifiable {
         handle?.send(signal: SIGKILL)
     }
 
+    /// Empties the output buffer. The process keeps running; only its captured
+    /// output is discarded, so an open log pane redraws from empty and starts
+    /// collecting fresh output.
+    func clearLog() {
+        log.clear()
+    }
+
     /// Daemon-only: runs the `status` probe and sets running/idle by exit code.
     func probeStatus() {
         // Flushed ahead of the guard, not after it. The guard's cases are exactly

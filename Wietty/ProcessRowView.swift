@@ -10,6 +10,9 @@ struct ProcessRowView: View {
     let onRestart: () -> Void
     let onKill: () -> Void
     let onOpenLog: () -> Void
+    /// Empties this process's output buffer. Defaulted so a caller that never wires
+    /// it (a preview, a render test) can leave it out.
+    var onClearLog: () -> Void = {}
     /// Copies this process's `ManagedProcessID` so a prompt can point an agent at its
     /// output through the MCP tools. Defaulted so a caller that never wires it (a
     /// preview, a render test) can leave it out.
@@ -48,6 +51,7 @@ struct ProcessRowView: View {
             Button("Kill", action: onKill)
             Divider()
             Button("Open log", action: onOpenLog)
+            Button("Clear log", action: onClearLog)
             Button("Copy ID for agent", action: onCopyId)
         }
     }

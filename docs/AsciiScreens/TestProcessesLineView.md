@@ -39,6 +39,7 @@ Legend:
 - Context menu per test button: Run (`onRun`); Cancel (`test.kill()`), shown
   only while that test is running; Open log (`onOpenLog`, opens a
   the pane with a `ProcessLogRef` carrying `isTest: true`, via `WorkspaceCardView.onOpenTestLog`);
+  Clear log (`test.clearLog()`), which empties the test's output buffer;
   Copy ID for agent (`onCopyId`), which copies the test's `ManagedProcessID`
   (`<workspace-id>:test:<name>`) so the MCP tools can act on it from a prompt:
   `run_test` runs it (the Run button's equivalent, as `run_all_tests` is the All
