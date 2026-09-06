@@ -89,6 +89,16 @@ final class FakeProcessLauncher: @preconcurrency ProcessLaunching, @unchecked Se
         #expect(p.log.lines == ["OK"])
     }
 
+    @Test func clearLogEmptiesTheBuffer() {
+        let launcher = FakeProcessLauncher()
+        let p = ManagedProcess(name: "t", config: ProcessConfig(command: "phpunit", kind: .shortRunning), directory: dir, launcher: launcher)
+        p.start()
+        launcher.last.onOutput("one\ntwo\n")
+        #expect(p.log.lines == ["one", "two"])
+        p.clearLog()
+        #expect(p.log.lines == [])
+    }
+
     @Test func shortRunningFailureCarriesExitCode() {
         let launcher = FakeProcessLauncher()
         let p = ManagedProcess(name: "t", config: ProcessConfig(command: "phpunit", kind: .shortRunning), directory: dir, launcher: launcher)

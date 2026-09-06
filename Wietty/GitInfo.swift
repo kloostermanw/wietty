@@ -10,18 +10,6 @@ struct ChecksSummary: Equatable, Sendable {
     var total: Int { passing + failing + cancelled + skipped + pending }
     var hasFailures: Bool { failing + cancelled > 0 }
 
-    /// Field-wise sum, used to merge a branch head's check-runs with its legacy
-    /// commit statuses (distinct contexts, so the counts simply add).
-    func adding(_ other: ChecksSummary) -> ChecksSummary {
-        ChecksSummary(
-            passing: passing + other.passing,
-            failing: failing + other.failing,
-            cancelled: cancelled + other.cancelled,
-            skipped: skipped + other.skipped,
-            pending: pending + other.pending
-        )
-    }
-
     /// Overall state of the checks. Failures always win over pending, which
     /// wins over success.
     var status: ChecksStatus {

@@ -53,14 +53,20 @@ Legend:
   green when everything completed without failures. When the branch has an open
   pull request the summary comes from `gh pr checks`; when it does not, it comes
   from the branch head commit instead, so a pushed branch surfaces its CI before
-  a PR exists. The branch source merges the commit's two check systems the way
-  its status-details page does: check-runs (`gh api .../commits/<branch>/check-runs`,
-  GitHub Actions and GitHub-App integrations) and the legacy combined commit
-  status (`gh api .../commits/<branch>/status`, status-based CI such as
-  CircleCI). The summary names the failing, cancelled, passing and pending
-  counts, in that order. Skipped checks still count toward the total but are
-  never named, so a branch whose checks were all skipped renders the line
-  empty. The line is absent only when there are no checks at all.
+  a PR exists. The branch source is a single `gh api graphql` query for the
+  commit's `statusCheckRollup` (`GitInfoService.ciChecks(for:branch:)`), the same
+  source GitHub's own UI and the PR path use. The rollup keeps only the latest
+  run per check suite and context and already merges both check systems in one
+  list of contexts: `CheckRun` nodes (GitHub Actions and GitHub-App integrations)
+  and `StatusContext` nodes (the legacy commit status, status-based CI such as
+  CircleCI). Because it dedupes per suite, a branch head that has not moved is not
+  inflated by stale check suites (for example a fresh Dependabot suite pinned onto
+  the same commit on every scheduled run). The summary names the failing,
+  cancelled, passing and pending counts, in that order. Skipped checks still count
+  toward the total but are never named, so a branch whose checks were all skipped
+  renders the line empty. The line is absent only when there are no checks at all
+  (a null rollup), when the branch has no pushed commit (a null object), or when
+  the request fails.
 - `[phpunit] [feature-tests] ... [All]`: `TestProcessesLineView`, the test
   buttons flowing and wrapping on the left with an `All` button pinned to the
   top right. Rendered only when the workspace defines at least one test
@@ -69,7 +75,7 @@ Legend:
   Clicking a test button runs that test (`onTestRun`); `All` runs every test
   (`onTestRunAll`) and never shows a spinner itself; a button's context menu
   offers Run, Cancel (while running), Open log (`onOpenTestLog`, opens a
-  the pane with a `ProcessLogRef` carrying `isTest: true`), and Copy ID for agent.
+  the pane with a `ProcessLogRef` carrying `isTest: true`), Clear log, and Copy ID for agent.
   See `TestProcessesLineView.md`.
 - `●` / `○`: process status dot (`ProcessRowView`). Filled = running, open =
   not running; green = success/healthy, red = failed, gray = neutral.
@@ -156,7 +162,8 @@ supplies the actions, which is the half that needs a card.
 │ Enable config sync     ││ lint           > │┌──────────────┐
 │ Remove                 ││ deps           > ││ Run          │
 └────────────────────────┘└──────────────────┘│ Open log     │
-   (Checks: one entry per configured check)    └──────────────┘
+   (Checks: one entry per configured check)    │ Clear log    │
+                                               └──────────────┘
 ```
 
 - Everything above the separator adds something; everything below it acts on the
@@ -174,8 +181,9 @@ supplies the actions, which is the half that needs a card.
 - "Checks" is a submenu over the workspace's configured `checks` (from
   `wietty.json`), one entry per check, each itself a submenu offering "Run"
   (`onRunCheck`, runs that check now, on demand, independent of the scheduled
-  freshness tick that drives the `!` marker) and "Open log" (`onOpenCheckLog`, puts
-  that check's output in the pane, the same log view a test or process row uses). A
+  freshness tick that drives the `!` marker), "Open log" (`onOpenCheckLog`, puts
+  that check's output in the pane, the same log view a test or process row uses),
+  and "Clear log" (`check.clearLog()`, empties that check's output buffer). A
   check runs as a `short_running` `ManagedProcess` held by `CheckSupervisor`, the
   run-now twin of the `FreshnessService` path. With no checks configured the submenu
   holds one disabled line pointing at `wietty.json` (`WorkspaceMenu.noChecks`), for
