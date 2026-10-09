@@ -91,6 +91,31 @@ final class ProjectStore {
     /// `handle(.title)` ignores its reported title. Issue #60.
     private(set) var liveLabels: [UUID: String] = [:]
 
+    /// The program status records each row's terminal reported (`OSC 7501`), keyed
+    /// by terminal id. Display only and ephemeral, like `jobNames`: a record
+    /// describes a running program, and none survives a relaunch. An empty set is
+    /// stored as no entry, so a row with nothing to show costs nothing.
+    private(set) var programStatus: [UUID: ProgramStatusRecords] = [:]
+    /// The sessions that have sent at least one `OSC 7501` report. Under
+    /// `.programStatus` their `OSC 9` and `OSC 777` are dropped, because the same
+    /// agent sends both and would otherwise be announced twice. Keyed by session
+    /// rather than row, so a restart, which is a different program, starts over.
+    private var programStatusSessions: Set<String> = []
+    /// When each row last posted a program status banner, for the rate limit.
+    private var lastProgramStatusBanner: [UUID: ContinuousClock.Instant] = [:]
+    /// How soon one row may post another program status banner. A program can
+    /// change state as fast as it likes, and section 8 of the protocol asks for the
+    /// effects a person notices to be rate limited. The row itself is never held
+    /// back: only the banner.
+    static let programStatusBannerInterval: Duration = .seconds(2)
+    /// Called when a row's program status starts waiting on the user, finishes, or
+    /// fails, under `.programStatus` only, with the record the row now shows. The
+    /// row's attention flag is raised the same way a notification raises it, so
+    /// visiting the row withdraws the banner through the one path every flag uses.
+    var onProgramStatus: ((Project, TerminalRef, ProgramStatusRecord) -> Void)?
+    /// Read for the banner rate limit. Injected so a test can move time by hand.
+    private let now: @MainActor () -> ContinuousClock.Instant
+
     /// Subscribers to `workspaceChanges()`, keyed by subscription id.
     private var changeSubscribers: [UUID: AsyncStream<Void>.Continuation] = [:]
     /// Whether `armChangeTracking()` currently has an active `withObservationTracking`
@@ -230,6 +255,15 @@ final class ProjectStore {
     var bellSound: BellSound {
         didSet {
             guard bellSound != oldValue else { return }
+            persistSettings()
+        }
+    }
+
+    /// Which sequence a program's banners come from. Persisted, and applied to the
+    /// next event rather than needing a restart.
+    var notificationSource: NotificationSource {
+        didSet {
+            guard notificationSource != oldValue else { return }
             persistSettings()
         }
     }
@@ -502,12 +536,14 @@ final class ProjectStore {
         freshProvider: FreshnessChecking = FreshnessService(),
         processSupervisor: ProcessSupervisor = ProcessSupervisor(),
         testSupervisor: TestSupervisor = TestSupervisor(),
-        checkSupervisor: CheckSupervisor = CheckSupervisor()
+        checkSupervisor: CheckSupervisor = CheckSupervisor(),
+        now: @escaping @MainActor () -> ContinuousClock.Instant = { ContinuousClock.now }
     ) {
         self.defaults = defaults
         self.configFile = config ?? Self.defaultConfig(for: defaults)
         self.service = service
         self.jobEvents = jobEvents
+        self.now = now
         self.gitProvider = gitProvider
         self.freshProvider = freshProvider
         self.processes = processSupervisor
@@ -543,6 +579,7 @@ final class ProjectStore {
         if !migrating {
             self.showWorkspaceBadge = cfg[SettingsKeys.showWorkspaceBadge] == "true"
             self.bellSound = BellSound(stored: cfg[SettingsKeys.bellSound] ?? "")
+            self.notificationSource = NotificationSource(stored: cfg[SettingsKeys.notificationSource] ?? "")
             self.checkIntervals = Self.intervals(from: cfg)
             self.remoteEnabled = cfg[SettingsKeys.remoteEnabled] == "true"
             self.mcpPort = Self.port(cfg[SettingsKeys.mcpPort], default: MCPServerHost.defaultPort)
@@ -559,6 +596,8 @@ final class ProjectStore {
             // No stored value reads as "", which `BellSound` maps to the system
             // default: the sound this app played before there was a setting.
             self.bellSound = BellSound(stored: defaults.string(forKey: bellSoundKey) ?? "")
+            // New with the file: no build wrote it to `UserDefaults`.
+            self.notificationSource = .desktopNotifications
             if let arr = defaults.array(forKey: intervalsKey) as? [Int], arr.count == 3 {
                 self.checkIntervals = CheckIntervals(fast: arr[0], normal: arr[1], slow: arr[2]).clamped()
             } else {
@@ -773,6 +812,7 @@ final class ProjectStore {
         for id in terminalIds {
             attention.remove(id)
             jobNames[id] = nil
+            forgetProgramStatus(id)
         }
         stopWatching(project.id)
         stopGitWatching(project.id)
@@ -944,6 +984,7 @@ final class ProjectStore {
         guard let (p, t) = indexOfSession(sessionId) else { throw StoreError.unknownSession }
         let refId = projects[p].terminals[t].id
         attention.remove(refId)
+        acknowledgeProgramStatus(refId)
         do {
             return try await service.focus(sessionId: sessionId)
         } catch {
@@ -964,6 +1005,7 @@ final class ProjectStore {
         projects[np].terminals.removeAll { $0.id == refId }
         attention.remove(refId)
         jobNames[refId] = nil
+        forgetProgramStatus(refId)
         localOnlyTerminals.remove(refId)
         save()
         emitConfig(for: projects[np].id)
@@ -996,6 +1038,7 @@ final class ProjectStore {
         let existingWindowId = settleWorkspaceId(at: prePIndex)
         let badge = showWorkspaceBadge ? projects[prePIndex].name : nil
         attention.remove(ref.id)
+        acknowledgeProgramStatus(ref.id)
         do {
             // A row imported from config carries no session id until it is opened
             // once, and there is nothing to focus in that case. The check is here
@@ -1032,6 +1075,7 @@ final class ProjectStore {
                 // whatever the session is called now.
                 recordWorkspaceId(handle.windowId, at: pIndex, openedWith: existingWindowId)
                 projects[pIndex].terminals[tIndex].sessionId = handle.sessionId
+                forgetProgramStatus(ref.id)
                 save()
             }
         } catch {
@@ -1080,6 +1124,10 @@ final class ProjectStore {
             }
         case .notification(let sessionId, let title, let body):
             guard let (p, t) = indexOfSession(sessionId) else { return }
+            // Under `.programStatus` a terminal that reports its status has already
+            // said this through that, and its banner came from there. Dropped whole,
+            // flag included: the row is showing the status that raised one.
+            if notificationSource == .programStatus, programStatusSessions.contains(sessionId) { return }
             // The flag goes up the same way a bell raises it, so the 🔔 in the
             // sidebar means "this terminal wants you" whichever way it said so, and
             // visiting the row withdraws the banner through the same path. What is
@@ -1097,6 +1145,11 @@ final class ProjectStore {
             // handler already guards; this now matches it. Issue #60.
             let id = projects[p].terminals[t].id
             if jobNames[id] != jobName { jobNames[id] = jobName }
+            // The shell back in the foreground is the program having exited, which
+            // ends its live records (protocol section 5). The terminal's own process
+            // is the shell, which outlives the program, so this is the exit the
+            // terminal can see. `done` and `error` are what the user comes back for.
+            if isShell(jobName) { updateProgramStatus(id) { $0.remove([.working, .blocked, .idle]) } }
         case .terminated(let sessionId):
             guard let (p, t) = indexOfSession(sessionId) else { return }
             // The job is zeroed so the row reads as not running, but any live title is
@@ -1106,7 +1159,78 @@ final class ProjectStore {
             // title equal to the base name clears it. `forgetTerminal` drops it when the
             // row itself goes away. Issue #60.
             jobNames[projects[p].terminals[t].id] = ""
+            updateProgramStatus(projects[p].terminals[t].id) { $0.remove([.working, .blocked, .idle]) }
+            programStatusSessions.remove(sessionId)
+        case .programStatus(let sessionId, let event):
+            guard let (p, t) = indexOfSession(sessionId) else { return }
+            let id = projects[p].terminals[t].id
+            let before = programStatus[id]?.summary
+            switch event {
+            case .report(let report):
+                programStatusSessions.insert(sessionId)
+                updateProgramStatus(id) { $0.apply(report) }
+            case .promptStart:
+                updateProgramStatus(id) { $0.remove([.working, .blocked]) }
+            case .fullReset:
+                updateProgramStatus(id) { $0.removeAll() }
+            case .query:
+                // Answered on the pty where it was read; it never gets this far.
+                return
+            }
+            announceProgramStatus(from: before, project: p, terminal: t)
         }
+    }
+
+    /// The record a row's indicator shows, or nil for a row with no status.
+    func programStatusSummary(for ref: TerminalRef) -> ProgramStatusRecord? {
+        programStatus[ref.id]?.summary
+    }
+
+    /// Change guarded, because `@Observable` notifies on every assignment and the
+    /// sidebar reads this: a report that changes nothing (a program resending its
+    /// state) must not re-render it.
+    private func updateProgramStatus(_ id: UUID, _ change: (inout ProgramStatusRecords) -> Void) {
+        var records = programStatus[id] ?? ProgramStatusRecords()
+        change(&records)
+        let updated = records.isEmpty ? nil : records
+        if programStatus[id] != updated { programStatus[id] = updated }
+    }
+
+    /// Posts a banner when what the row shows has just become something to come
+    /// back for, under `.programStatus` only.
+    ///
+    /// The summary, not the record that changed, decides: a child finishing while
+    /// another child is blocked changes nothing on the row and is not news either.
+    /// Staying in a state is not a transition, so a program resending `blocked` with
+    /// a new message does not post again.
+    private func announceProgramStatus(from before: ProgramStatusRecord?, project p: Int, terminal t: Int) {
+        guard notificationSource == .programStatus else { return }
+        let ref = projects[p].terminals[t]
+        guard let after = programStatus[ref.id]?.summary, after.state != before?.state,
+              [.blocked, .done, .error].contains(after.state) else { return }
+        attention.insert(ref.id)
+        let now = now()
+        if let last = lastProgramStatusBanner[ref.id], now - last < Self.programStatusBannerInterval { return }
+        lastProgramStatusBanner[ref.id] = now
+        onProgramStatus?(projects[p], ref, after)
+    }
+
+    /// The user has looked at this row, so a finished or failed program's result
+    /// has been seen. The protocol leaves it to the terminal to decide when `done`
+    /// and `error` stop showing (section 5), and this is the same moment a 🔔 stops.
+    ///
+    /// Cheap when there is nothing to do, because typing calls it per keystroke.
+    private func acknowledgeProgramStatus(_ id: UUID) {
+        guard programStatus[id] != nil else { return }
+        updateProgramStatus(id) { $0.remove([.done, .error]) }
+    }
+
+    /// Drops what a row's previous process said about itself, for a row that is
+    /// gone or now runs something else. `programStatusSessions` is left alone: a
+    /// session id is never minted twice, so a dead one in it matches nothing.
+    private func forgetProgramStatus(_ id: UUID) {
+        programStatus[id] = nil
+        lastProgramStatusBanner[id] = nil
     }
 
     /// Claude counts as running when the foreground job is a non-empty,
@@ -1166,6 +1290,7 @@ final class ProjectStore {
 
     func clearAttention(_ ref: TerminalRef) {
         attention.remove(ref.id)
+        acknowledgeProgramStatus(ref.id)
     }
 
     /// Drops a session's attention flag because the user is typing into it.
@@ -1186,6 +1311,7 @@ final class ProjectStore {
     func clearAttention(sessionId: String) {
         guard let (p, t) = indexOfSession(sessionId) else { return }
         let id = projects[p].terminals[t].id
+        acknowledgeProgramStatus(id)
         guard attention.contains(id) else { return }
         attention.remove(id)
     }
@@ -1310,6 +1436,7 @@ final class ProjectStore {
         attention.remove(refId)
         jobNames[refId] = nil
         liveLabels[refId] = nil
+        forgetProgramStatus(refId)
         localOnlyTerminals.remove(refId)
     }
 
@@ -1506,6 +1633,7 @@ final class ProjectStore {
             projects[np].terminals[nt].sessionId = handle.sessionId
             attention.remove(oldId)
             jobNames[oldId] = nil
+            forgetProgramStatus(oldId)
             save()
             return projects[np].terminals[nt]
         } catch let error as StoreError {
@@ -2240,6 +2368,7 @@ final class ProjectStore {
         var pairs: [(key: String, value: String)] = [
             (SettingsKeys.showWorkspaceBadge, showWorkspaceBadge ? "true" : "false"),
             (SettingsKeys.bellSound, bellSound.stored),
+            (SettingsKeys.notificationSource, notificationSource.stored),
             (SettingsKeys.checkIntervalFast, String(checkIntervals.fast)),
             (SettingsKeys.checkIntervalNormal, String(checkIntervals.normal)),
             (SettingsKeys.checkIntervalSlow, String(checkIntervals.slow)),

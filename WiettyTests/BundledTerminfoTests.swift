@@ -4,10 +4,11 @@ import Foundation
 
 /// The terminfo the app ships and the environment it hands a child.
 ///
-/// The bundle lookup itself needs a built app bundle, so what is asserted here is
-/// the logic around it: which TERM each state names, how TERMINFO_DIRS is composed
-/// so the bundled entry adds to the child's databases rather than hiding them, and
-/// that the compiled entry is recognised under either layout tic may write.
+/// Mostly the logic around the bundle lookup: which TERM each state names, how
+/// TERMINFO_DIRS is composed so the bundled entry adds to the child's databases
+/// rather than hiding them, and that the compiled entry is recognised under either
+/// layout tic may write. One test reads the entry this build actually compiled,
+/// which the test host's bundle carries.
 struct BundledTerminfoTests {
     private let dir = URL(fileURLWithPath: "/Applications/Wietty.app/Contents/Resources/terminfo")
 
@@ -45,6 +46,25 @@ struct BundledTerminfoTests {
     @Test func entryIsFoundUnderTheLetterLayout() {
         // A tic that writes single letter directories is accepted too.
         #expect(BundledTerminfo.hasEntry(in: dir) { $0 == dir.appendingPathComponent("x/xterm-ghostty").path })
+    }
+
+    /// The entry advertises the Program Status Protocol the way its spec asks
+    /// (section 7.1): a `Pst` capability that turns a report body into the report.
+    /// Asked of the compiled entry in this build's own bundle, through `tput`, which
+    /// is how a program reading terminfo would see it.
+    @Test func theBundledEntryAdvertisesProgramStatus() throws {
+        let directory = try #require(BundledTerminfo.directory)
+        let tput = Process()
+        tput.executableURL = URL(fileURLWithPath: "/usr/bin/tput")
+        tput.arguments = ["-T", "xterm-ghostty", "Pst", "state=done"]
+        tput.environment = ["TERMINFO": directory.path]
+        let output = Pipe()
+        tput.standardOutput = output
+        tput.standardError = Pipe()
+        try tput.run()
+        let printed = output.fileHandleForReading.readDataToEndOfFile()
+        tput.waitUntilExit()
+        #expect(String(decoding: printed, as: UTF8.self) == "\u{1B}]7501;state=done\u{1B}\\")
     }
 
     @Test func missingEntryIsNotMistakenForABundledOne() {

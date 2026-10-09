@@ -11,6 +11,10 @@ struct WorkspaceCardView: View {
     /// it out.
     var isRunning: (TerminalRef) -> Bool = { _ in false }
     let needsAttention: (TerminalRef) -> Bool
+    /// What a row's terminal says its program is doing (`OSC 7501`), already turned
+    /// into what the row draws. Defaulted to nothing, because the LAN protocol does
+    /// not carry program status, so a remote card has none to show.
+    var programStatus: (TerminalRef) -> ProgramStatusIndicator? = { _ in nil }
     /// This workspace's last freshness-check results. The red `!` marker appears
     /// when any is asking for action. Defaulted to empty so a caller that never runs
     /// checks (a remote card) simply shows no marker.
@@ -342,6 +346,7 @@ struct WorkspaceCardView: View {
                     runState: runState,
                     isRunning: isRunning,
                     needsAttention: needsAttention,
+                    programStatus: programStatus,
                     isSelected: isSelected,
                     isLocalOnly: isLocalOnly,
                     canStop: canStopTerminal,
@@ -380,6 +385,7 @@ private struct TerminalRow<Menu: View>: View {
     let runState: (TerminalRef) -> ClaudeRunState
     let isRunning: (TerminalRef) -> Bool
     let needsAttention: (TerminalRef) -> Bool
+    let programStatus: (TerminalRef) -> ProgramStatusIndicator?
     let isSelected: (TerminalRef) -> Bool
     let isLocalOnly: (TerminalRef) -> Bool
     let canStop: Bool
@@ -396,6 +402,7 @@ private struct TerminalRow<Menu: View>: View {
             runState: runState,
             isRunning: isRunning,
             needsAttention: needsAttention,
+            programStatus: programStatus,
             isSelected: isSelected,
             isLocalOnly: isLocalOnly,
             canStop: canStop,
@@ -420,6 +427,7 @@ private struct TerminalRowContent: View {
     let runState: (TerminalRef) -> ClaudeRunState
     let isRunning: (TerminalRef) -> Bool
     let needsAttention: (TerminalRef) -> Bool
+    let programStatus: (TerminalRef) -> ProgramStatusIndicator?
     let isSelected: (TerminalRef) -> Bool
     let isLocalOnly: (TerminalRef) -> Bool
     let canStop: Bool
@@ -435,6 +443,7 @@ private struct TerminalRowContent: View {
             isExited: ref.kind == .claude && runState(ref) == .exited,
             isRunning: isRunning(ref),
             needsAttention: needsAttention(ref),
+            programStatus: programStatus(ref),
             isLocalOnly: isLocalOnly(ref),
             isSelected: isSelected(ref),
             onPlay: onActivate,

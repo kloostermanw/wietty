@@ -32,6 +32,19 @@ private final class SessionSink: @unchecked Sendable {
     }
 }
 
+/// The program status events the service reported, keyed by session.
+private final class StatusLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String: [ProgramStatusScanner.Event]] = [:]
+    func add(_ session: String, _ event: ProgramStatusScanner.Event) {
+        lock.lock(); storage[session, default: []].append(event); lock.unlock()
+    }
+    func events(for session: String) -> [ProgramStatusScanner.Event] {
+        lock.lock(); defer { lock.unlock() }
+        return storage[session] ?? []
+    }
+}
+
 /// Records what the service reported terminated. A class rather than a captured
 /// `var`, because the callback escapes.
 @MainActor private final class TerminationLog {
@@ -62,10 +75,46 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
 @Suite struct GhosttyServiceTests {
     private func service(_ host: FakeSurfaceHost,
                          onOutput: @escaping @Sendable (String, [UInt8]) -> Void = { _, _ in },
+                         onProgramStatus: @escaping @Sendable (String, ProgramStatusScanner.Event) -> Void = { _, _ in },
                          onTerminated: @escaping @MainActor (String) -> Void = { _ in })
         -> GhosttyService {
         GhosttyService(host: host, helperPath: "/usr/bin/true",
-                       onOutput: onOutput, onTerminated: onTerminated)
+                       onOutput: onOutput, onProgramStatus: onProgramStatus,
+                       onTerminated: onTerminated)
+    }
+
+    /// A program asking whether the terminal speaks `OSC 7501` gets the answer on
+    /// its own stdin, byte for byte. The child puts its tty in raw mode first so the
+    /// reply is neither echoed nor held for a newline, then prints what it read as
+    /// hex, which only a reply that really arrived can produce.
+    @Test func aProgramStatusQueryIsAnsweredOnThePty() async throws {
+        let host = FakeSurfaceHost()
+        let seen = SessionSink()
+        let service = service(host, onOutput: { session, bytes in
+            seen.append(bytes, for: session)
+        })
+        defer { service.closeAll() }
+        let command = #"stty raw -echo; printf '\033]7501;?\033\\'; "#
+            + #"r=$(dd bs=1 count=10 2>/dev/null | od -An -tx1 | tr -d ' \n'); stty sane; echo "got:$r""#
+        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                            existingWindowId: nil, command: command, badge: nil)
+        try await waitUntil { seen.text(for: handle.sessionId).contains("got:1b5d373530313b3f1b5c") }
+    }
+
+    @Test func aProgramStatusReportIsReportedAgainstItsSession() async throws {
+        let host = FakeSurfaceHost()
+        let reported = StatusLog()
+        let service = service(host, onProgramStatus: { session, event in
+            reported.add(session, event)
+        })
+        defer { service.closeAll() }
+        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                            existingWindowId: nil,
+                                            command: #"printf '\033]7501;state=done:msg=aGk=\033\\'"#,
+                                            badge: nil)
+        let done = ProgramStatusScanner.Event.report(
+            .set(id: nil, ProgramStatusRecord(state: .done, msg: "hi")))
+        try await waitUntil { reported.events(for: handle.sessionId) == [done] }
     }
 
     @Test func openingMintsASessionAndASurface() async throws {

@@ -189,10 +189,12 @@ Notifications tab does, and the caption says as much.
 
 ## Notifications
 
-Four sections (`NotificationSettings`, in `SettingsView.swift`): whether macOS lets
-this app post at all, whether libghostty lets a program ask for one, a way to prove
-the whole path works, and which sound it makes. See
-`../notifications.md` for what the app does with a bell and with an `OSC 9`.
+Five sections (`NotificationSettings`, in `SettingsView.swift`): whether macOS lets
+this app post at all, whether libghostty lets a program ask for one, which sequence a
+program's banners come from (`OSC 9` and `OSC 777`, or `OSC 7501` program status), a
+way to prove the whole path works, and which sound it makes. See
+`../notifications.md` for what the app does with a bell, with an `OSC 9`, and with
+program status.
 
 The order is the order the gates are passed. A notification a program asks for has
 to clear libghostty's `desktop-notifications` before anything in this app sees it,
@@ -244,6 +246,15 @@ so the section that controls it sits above the test button rather than below.
 │    either way. Until you touch it your Ghostty    │
 │    config decides, and deleting that file goes    │
 │    back to that.                                  │
+│                                                    │
+│  Program status (OSC 7501)                        │
+│    Program notifications come from                │
+│                        [OSC 9 and OSC 777     ▾]  │
+│    A program can also report what it is doing     │
+│    with OSC 7501: working, waiting on you,        │
+│    finished, or failed. …                         │
+│    Choose OSC 7501 to get a banner when a program │
+│    starts waiting on you, finishes, or fails. …   │
 │                                                    │
 │  Test notification                                │
 │    [ Send test notification ]                     │
@@ -471,6 +482,13 @@ Legend:
   once: comments are preserved like any other line the user might have added, so the
   header was preserved too and prepended again, and nine toggles left nine copies of
   it. A file from that build is repaired by the next write.
+- `Program notifications come from`: a `Picker` over `NotificationSource.allCases`
+  bound to `$store.notificationSource`, persisted under `notification-source` (see
+  settings-storage.md). "OSC 9 and OSC 777" is the default and what the app did
+  before the choice existed; "OSC 7501 (program status)" posts a banner when a
+  program starts waiting on you, finishes or fails, and drops the `OSC 9` and
+  `OSC 777` of a terminal that reports its status. The row shows program status
+  under either choice. See `../notifications.md`.
 - `[ Send test notification ]`: `BellNotifier.sendTest(sound:)`, which posts
   `BellNotification.test()` with the sound currently selected below. It reports
   what happened either way: `UNUserNotificationCenter` refuses to ask on behalf of a

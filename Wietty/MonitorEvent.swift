@@ -16,6 +16,11 @@ enum MonitorEvent: Equatable, Sendable {
     case notification(sessionId: String, title: String, body: String)
     case job(sessionId: String, jobName: String)
     case terminated(sessionId: String)
+    /// A program status report (`OSC 7501`), or one of the two sequences that end
+    /// records: a new shell prompt and a full reset. Read off the byte stream by
+    /// `ProgramStatusTap`, because libghostty does not report it. Never `.query`,
+    /// which is answered where it is read and goes no further.
+    case programStatus(sessionId: String, ProgramStatusScanner.Event)
 
     /// Parses one NDJSON line. Returns nil for malformed input or unknown event
     /// types. Nothing in the app produces these lines today: the events are built
