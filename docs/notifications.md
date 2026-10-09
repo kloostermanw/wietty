@@ -67,11 +67,13 @@ overwhelmingly common case of no config file at all notifies normally.
 `PaneStreamHub` also counts `0x07` in a session's byte stream, for the viewers it
 serves, and that is deliberately not the same code: telling a real bell from a
 `0x07` inside an OSC string needs the escape state only whoever parses the stream
-has. Nothing in the byte stream path parses `OSC 9`.
+has. Nothing in the byte stream path parses `OSC 9`. It does parse `OSC 7501`,
+because libghostty does not (see "Program status" below and `terminal.md`).
 
 Remote sessions have bells only. The LAN remote protocol carries `needs_attention`
 and no message that could hold a title, so a notification sent on a connected Mac
-reaches this one as a bell, and giving it words is a `wietty-shared` change.
+reaches this one as a bell, and giving it words is a `wietty-shared` change. Program
+status does not travel either, for the same reason.
 
 ## Both raise the flag; only one of them is rationed
 
@@ -98,6 +100,63 @@ banner, which is the right way round: it says more.
 
 The two rules meet in one place worth knowing. A bell that follows a notification is
 silent, because the flag is already up and the bell has nothing to add.
+
+## Program status (OSC 7501)
+
+A bell and a notification are events: once posted, nothing says whether the program
+is still waiting or has moved on. The
+[Program Status Protocol](https://gist.github.com/mitchellh/7acae3abd8355c1c00287d67e96c913a)
+is state instead. A program reports `idle`, `working`, `blocked` (waiting on you, with
+`kind` saying for what), `done` or `error`, with a message, as one or more records per
+terminal. Claude Code reports it from 2.1.295, but only to a terminal that answers its
+support query, which is why answering it is part of the byte path (`terminal.md`).
+
+**What the row shows.** `ProjectStore.programStatus` holds each row's records
+(`ProgramStatusRecords`) and the row draws the most urgent one: `blocked`, then
+`error`, then `working`, then `done`, with the root record winning a tie and then the
+most recently updated. `ProgramStatusIndicator` decides the marker, which takes the
+🔔's place while there is one: a spinner while working (or the percentage, when the
+program reports progress), "needs you" while blocked, ✓ when done and ✗ on an error.
+An `idle` program draws nothing. The program's message is the marker's tooltip.
+
+**How long a record lasts** follows the protocol's section 5, mapped onto what this
+app can see:
+
+- A new shell prompt (`OSC 133 ; A`) ends `working` and `blocked`.
+- The program exiting ends `working`, `blocked` and `idle`. The process the terminal is
+  attached to is the shell, which outlives the program, so the exit the app sees is the
+  job poll finding a shell in the foreground again. Claude Code clears its records on
+  a clean exit; this is what covers one that crashed.
+- The terminal itself exiting ends the same three.
+- `RIS` ends everything.
+- `done` and `error` survive all of those, because they are the result you come back
+  for. Visiting the row, typing into its terminal, or an MCP select acknowledges them,
+  the same moments a 🔔 is cleared.
+- A restart or reopen starts the row over, since it is a different process.
+
+**Banners.** Settings › Notifications › "Program notifications come from" picks the
+sequence banners come from (`NotificationSource`, persisted as `notification-source`):
+
+- `OSC 9 and OSC 777`, the default and the behaviour from before the setting existed.
+  Program status only drives the row's marker.
+- `OSC 7501`. A banner is posted when what the row shows becomes `blocked`, `done` or
+  `error`, and the row's 🔔 flag is raised with it, so visiting the row withdraws the
+  banner through the usual path and a remote viewer sees `needs_attention`. The summary
+  decides rather than the record that changed, so a child finishing while another is
+  blocked is not news, and staying in a state is not a transition. One row posts at
+  most one such banner every two seconds, because a program can change state as fast
+  as it likes; the row's marker is never held back.
+
+  Under this choice a terminal that has sent an `OSC 7501` report has its `OSC 9` and
+  `OSC 777` dropped whole, banner and 🔔 alike. Claude Code sends both, so keeping them
+  would announce every wait twice. A terminal that never reports a status keeps its
+  desktop notifications, so a script using `OSC 9` is not silenced by a choice made for
+  agents.
+
+The banner follows the layout of a sent message: the record's title (or else the
+program's name) on top, `workspace / terminal` underneath, and the program's message as
+the body, or the state in words when it sent none. The on screen rule below applies as
+it does to a bell.
 
 ## What the banner says
 
@@ -284,7 +343,16 @@ the suppression rule, the watcher's diff including reconnects, the store's two
 different posting rules, the sound preference's round trip and fallback, what the
 settings tab asks of the notifier (and that reading permission never prompts), and
 the delegate selectors existing (that last one guards the async delegate methods
-still being exposed to Objective C, which nothing else would catch).
+still being exposed to Objective C, which nothing else would catch). For program
+status: the report's validation and limits, the scanner (including every split of a
+stream across two writes), the record rules, the row's marker, the store's lifetime,
+acknowledgement, banner and suppression rules under both settings, the banner's text,
+the query being answered on a real pty, and the bundled `Pst` capability.
+
+Whether Claude Code actually decides the query was answered needs a real surface, since
+the race is against libghostty's own reply. Run `claude --debug` in a pane: its log
+should report the `OSC 7501` probe as answered, and the row should show the spinner
+while it works.
 
 Actually posting, granting permission, and what a tap does to the window need a
 running app and a person, and a remote bell needs a second Mac. Two things in

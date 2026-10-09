@@ -414,6 +414,7 @@ struct ContentView: View {
                     runState: { store.runState(for: $0) },
                     isRunning: { store.isSessionRunning($0) },
                     needsAttention: { store.attention.contains($0.id) },
+                    programStatus: { store.programStatusSummary(for: $0).flatMap(ProgramStatusIndicator.init) },
                     freshness: store.freshness[project.id] ?? [],
                     syncEnabled: store.isSyncEnabled(project),
                     configChanged: store.configChangedOnDisk.contains(project.id),
@@ -747,6 +748,19 @@ struct ContentView: View {
             let notification = BellNotification.sent(workspace: project.name, label: ref.displayName,
                                                      refId: ref.id, title: title, body: body,
                                                      sound: store.bellSound)
+            Task { await bells.post(notification) }
+        }
+        // A program's status becoming something to come back for (`OSC 7501`), under
+        // the setting that makes it the banner's source. The same on screen rule as
+        // a bell; which transitions count, and the rate limit, are the store's.
+        store.onProgramStatus = { project, ref, record in
+            guard BellAlert.shouldPost(
+                appIsFrontmost: NSApp.isActive,
+                terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
+            let notification = BellNotification.programStatus(workspace: project.name,
+                                                              label: ref.displayName,
+                                                              refId: ref.id, record: record,
+                                                              sound: store.bellSound)
             Task { await bells.post(notification) }
         }
         // Visiting a row takes its notification back, so Notification Center does not

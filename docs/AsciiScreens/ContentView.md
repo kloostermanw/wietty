@@ -342,7 +342,9 @@ none, so it shows the other one.
 Legend:
 
 - Bells: `task` wires `store.onBell`, `store.onNotification` (the messages a
-  program sends with `OSC 9` or `OSC 777`) and a `RemoteBellObserver` to
+  program sends with `OSC 9` or `OSC 777`), `store.onProgramStatus` (a program's
+  `OSC 7501` status becoming blocked, done or failed, posted only when Settings ›
+  Notifications picks that as the source) and a `RemoteBellObserver` to
   `BellNotifier`, and `bells.onTap` back to `showBell(_:)`, which brings this
   window forward and then takes the same path a row click does. The 🔔 on a row is
   unrelated plumbing (`store.attention`) and shows with or without notification

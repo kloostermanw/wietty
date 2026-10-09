@@ -9,6 +9,11 @@ struct TerminalRowView: View {
     /// exited, so it stays neutral rather than green.
     var isRunning: Bool = false
     var needsAttention: Bool = false
+    /// What the terminal's program says it is doing (`OSC 7501`), or nil when it
+    /// said nothing or is at rest. Shown in place of the 🔔: a program that reports
+    /// its status has said more than a bell can, and two markers would compete for
+    /// the same narrow edge.
+    var programStatus: ProgramStatusIndicator? = nil
     var isLocalOnly: Bool = false
     /// Whether this row's terminal is the one the pane is showing. Exactly one row
     /// in the window is ever marked, because the pane holds one terminal.
@@ -54,7 +59,9 @@ struct TerminalRowView: View {
                     .background(.secondary.opacity(0.15), in: Capsule())
             }
             Spacer(minLength: 8)
-            if needsAttention {
+            if let programStatus {
+                ProgramStatusBadge(indicator: programStatus)
+            } else if needsAttention {
                 Text("🔔")
             }
             if isHovered {
@@ -115,6 +122,45 @@ struct TerminalRowView: View {
             .fill(activeRowBackground: sidebarColors.activeTerminalRowBackground) {
             RoundedRectangle(cornerRadius: SidebarRowBackground.cornerRadius)
                 .fill(fill)
+        }
+    }
+}
+
+/// The trailing marker for a program's status. The tooltip carries the program's
+/// own message, which the row is too narrow to show.
+private struct ProgramStatusBadge: View {
+    let indicator: ProgramStatusIndicator
+
+    var body: some View {
+        HStack(spacing: 3) {
+            switch indicator.glyph {
+            case .spinner:
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.mini)
+            case .symbol(let name):
+                Image(systemName: name)
+            }
+            if let text = indicator.text {
+                Text(text)
+                    .font(.caption2)
+                    .lineLimit(1)
+            }
+        }
+        .foregroundStyle(color)
+        // A fixed height, so a spinner appearing does not make the row taller.
+        .frame(height: 14)
+        .help(indicator.tooltip)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(indicator.tooltip)
+    }
+
+    private var color: Color {
+        switch indicator.tint {
+        case .neutral: return .secondary
+        case .attention: return .orange
+        case .success: return .green
+        case .failure: return .red
         }
     }
 }

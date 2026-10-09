@@ -89,8 +89,10 @@ meaningful, since the surface displays them: 64 for usage, 69 for a socket nobod
 **Output**, in order, all of it on one serial read source per terminal:
 
 1. `RawPTY.startReading` reads the master.
-2. `TerminalRelay` hands the chunk to `onOutput` first and unconditionally, which is
-   `PaneStreamHub.write`, so a remote viewer's bytes never wait behind the local surface.
+2. `TerminalRelay` hands the chunk to `onOutput` first and unconditionally. There `GhosttyService`
+   feeds it to that terminal's `ProgramStatusTap`, which answers an `OSC 7501` support query on the
+   spot (see "Program status" below), and then to `PaneStreamHub.write`, so a remote viewer's bytes
+   never wait behind the local surface.
 3. The same chunk is written to the helper's socket, and the helper copies it to its stdout, which is
    the pty libghostty renders.
 
@@ -260,6 +262,11 @@ sources, which is not arbitrary:
 - **Terminations** come from `GhosttyService`, because a child exiting is what a termination means here
   and the service is what reaps it.
 - **Job names** are polled, as above.
+- **Program status** (`OSC 7501`, with the `OSC 133 ; A` prompts and `RIS` resets that end its
+  records) is read off the byte stream by `ProgramStatusTap`, because libghostty does not report it at
+  all. It reaches the monitor from the terminal's read queue through one main queue block per event,
+  which is FIFO, so a `done` cannot be overtaken by the `working` before it the way it could with a
+  `Task` per event.
 
 A title change and a close request can both arrive on libghostty's own thread, so both hop to the main
 queue carrying the session id rather than the view: after the hop the surface may already be gone, and a
@@ -271,6 +278,37 @@ One subtlety in that C API is easy to get wrong and silent when you do: **the us
 scoped runtime callback is the surface's own userdata, not the app's.** libghostty passes
 `surface.userdata` to `close_surface_cb`, `read_clipboard_cb` and `confirm_read_clipboard_cb`, and the
 app's userdata only to `wakeup_cb`.
+
+## Program status (OSC 7501)
+
+The [Program Status Protocol](https://gist.github.com/mitchellh/7acae3abd8355c1c00287d67e96c913a)
+lets a program say whether it is working, waiting on the user, finished, or failed, and why. Claude
+Code reports it from 2.1.295. What the app does with it (the row's indicator, banners, the setting)
+is in `notifications.md`; this is how it gets read.
+
+**libghostty does not help, and a newer one would not either.** The pinned build does not parse the
+sequence, and upstream Ghostty's app runtime ignores it (`stream_handler.zig`); only the standalone VT
+library exposes it, through a callback this embedding API does not have. So Wietty reads it from the
+byte stream it owns. `ProgramStatusScanner` finds the reports, the support query, `OSC 133 ; A` and
+`RIS` in raw output, keeping its state across chunks because a sequence can be split between two
+writes, and applies the protocol's limits and validation (`ProgramStatusReport`) before anything is
+stored. It is a per byte state machine that buffers only while inside an `OSC 7501` or `OSC 133`,
+because it sees every byte every terminal prints.
+
+**The support query has to be answered, and answered first.** A program that implements the protocol
+asks `OSC 7501 ; ?` before it reports anything, and Claude Code puts a device attributes request right
+behind the query so that every terminal answers something. Whichever reply comes back first decides:
+if libghostty's answer to the device attributes request arrives before ours, the program concludes the
+terminal has no support and stays silent for the rest of its run. libghostty answers as soon as it
+reads the chunk, so `ProgramStatusTap` writes the reply (`OSC 7501 ; ? ST`, the only bytes the protocol
+ever lets a terminal send back) while the relay still holds that chunk, before it is forwarded to the
+helper. The reply goes through `RawPTY.write`'s serial queue, which is also the queue libghostty's own
+replies reach the master through, so ours is queued ahead of anything libghostty can say about the same
+chunk. That ordering is by construction; no test can show the race itself, because it needs a real
+surface. `GhosttyServiceTests` does show that a child asking the question reads the exact reply.
+
+**`Pst` in the bundled terminfo** advertises support too, as the protocol suggests. It is a hint only:
+the query is authoritative, and over ssh or inside a multiplexer the entry may be missing.
 
 ## Serving a remote viewer
 

@@ -130,6 +130,17 @@ final class GhosttyStack {
             // while a viewer watches it produces no `%window-close` equivalent
             // either.
             onStreamEnded: { session in hub.endViewers(ofSession: session) },
+            // Program status read off the stream, to the monitor like a
+            // termination, so the app still has one listener. This runs on the
+            // terminal's read queue and the listener on the main actor. The hop is
+            // one main queue block per event because that queue is FIFO: a `Task`
+            // per event could run them out of order, and a `done` overtaken by the
+            // `working` before it would leave the row saying working.
+            onProgramStatus: { session, event in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { monitor.emit([.programStatus(sessionId: session, event)]) }
+                }
+            },
             // A child exiting is the only source of `.terminated` here, and the
             // monitor is the app's single listener, so the service reports through
             // it rather than to the store directly.

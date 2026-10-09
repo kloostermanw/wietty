@@ -600,6 +600,18 @@ struct NotificationSettings: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
 
+        Section("Program status (OSC 7501)") {
+            Picker("Program notifications come from", selection: $store.notificationSource) {
+                ForEach(NotificationSource.allCases) { source in
+                    Text(source.title).tag(source)
+                }
+            }
+            Text("A program can also report what it is doing with OSC 7501: working, waiting on you, finished, or failed. Claude Code does from version 2.1.295. The terminal's row shows it either way, with the program's message when you hover over it.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Choose OSC 7501 to get a banner when a program starts waiting on you, finishes, or fails. A terminal that reports its status then has its OSC 9 and OSC 777 notifications dropped, because the same agent usually sends both and you would be told twice. A terminal that never reports a status keeps its OSC 9 and OSC 777 banners.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+
         Section("Test notification") {
             HStack {
                 Button("Send test notification") {

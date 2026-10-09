@@ -23,6 +23,11 @@ A program can also ask for a notification by name, with the `OSC 9` or `OSC 777`
 and then the banner carries the words it sent instead of "rang the bell". That is how coding agents
 announce that they are waiting on your input.
 
+A program that reports its status with `OSC 7501` (the Program Status Protocol, which Claude Code
+speaks from 2.1.295) gets a marker on its row instead: a spinner while it works, "needs you" while it
+waits on you, and a check or a cross when it finishes or fails, with its own message on hover. Settings
+› Notifications can make those changes the source of banners instead of `OSC 9` and `OSC 777`.
+
 Permission is asked for the first time something rings rather than at launch, and macOS keeps its own
 per app switch under System Settings → Notifications. One notification is posted per row until the
 row is visited, so a shell beeping at an ambiguous tab completion cannot flood Notification Center,
