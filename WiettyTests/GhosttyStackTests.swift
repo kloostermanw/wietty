@@ -346,6 +346,24 @@ private final class Flag: @unchecked Sendable {
         #expect(typed == ["gt:sess-A"])
     }
 
+    /// A report a program prints reaches the monitor, which is the app's one
+    /// listener, against the session that printed it. It arrives on the main actor,
+    /// because that is where the listener runs.
+    @Test func aProgramStatusReportReachesTheMonitor() async throws {
+        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        defer { stack.ghosttyService?.closeAll() }
+        var events: [MonitorEvent] = []
+        stack.monitor.start { events.append($0) }
+        let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                                  existingWindowId: nil,
+                                                  command: #"printf '\033]7501;state=working\033\\'"#,
+                                                  badge: nil)
+        let working = MonitorEvent.programStatus(
+            sessionId: handle.sessionId,
+            .report(.set(id: nil, ProgramStatusRecord(state: .working))))
+        try await waitUntil { events.contains(working) }
+    }
+
     /// The job poll the store is handed has to be bound to this stack, or it
     /// answers nothing and every agent's status freezes.
     @Test func theJobPollIsBoundToThisStack() async throws {

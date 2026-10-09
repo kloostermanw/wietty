@@ -18,6 +18,7 @@ Scalars (one key each):
 |--------------------------|---------------------------------------------------|
 | `show-workspace-badge`   | `true`/`false`, the pane title badge toggle |
 | `bell-sound`             | the notification sound (`none`, `default`, or `named:<Sound>`) |
+| `notification-source`    | where program banners come from: `osc-9-777` (the default) or `osc-7501` |
 | `check-interval-fast`    | fast tier poll seconds |
 | `check-interval-normal`  | normal tier poll seconds |
 | `check-interval-slow`    | slow tier poll seconds |

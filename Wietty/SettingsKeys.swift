@@ -10,6 +10,7 @@ import Foundation
 enum SettingsKeys {
     static let showWorkspaceBadge = "show-workspace-badge"
     static let bellSound = "bell-sound"
+    static let notificationSource = "notification-source"
     static let checkIntervalFast = "check-interval-fast"
     static let checkIntervalNormal = "check-interval-normal"
     static let checkIntervalSlow = "check-interval-slow"
@@ -41,7 +42,7 @@ enum SettingsKeys {
     /// The single-key settings, for `WiettyConfigFile.write`: a scalar the store no
     /// longer carries (back at its default) is removed rather than left behind.
     static let scalars: Set<String> = [
-        showWorkspaceBadge, bellSound, checkIntervalFast, checkIntervalNormal,
+        showWorkspaceBadge, bellSound, notificationSource, checkIntervalFast, checkIntervalNormal,
         checkIntervalSlow, sidebarWidth, remoteEnabled, remotePort, mcpPort,
         selectedGroup,
         colorBackground, colorForeground,

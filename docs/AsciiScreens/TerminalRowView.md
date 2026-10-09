@@ -7,8 +7,9 @@ structure stays readable without running the app.
 ## Row
 
 A row is a leading glyph plus a label. The glyph is `terminal` (`>`) for a
-terminal session and `sparkle` (`✦`) for a Claude session. When the row needs
-attention a `🔔` is pushed to the trailing edge. A plain left click still
+terminal session and `sparkle` (`✦`) for a Claude session. When the terminal's
+program reports its status (`OSC 7501`, see `../notifications.md`) a status marker is
+pushed to the trailing edge; otherwise, when the row needs attention, a `🔔` is. A plain left click still
 activates the terminal (`onActivate`, applied by the parent `WorkspaceCardView`);
 hovering additionally lightens the row background and reveals action buttons on
 the trailing edge (after any `🔔`). The right-click context menu (also applied by
@@ -25,6 +26,11 @@ fields (see `docs/wietty-json.md`); this view just renders the finished string.
 ✦ Claude Code             (selected)       claude, the one in the pane
 ✦ Claude Code (Python")   🔔 [◼] [⟳] [🗑]  claude, needs attention (hovered)
 ✦ Claude Code                 [▶] [🗑]      claude, exited (dimmed, hovered)
+✦ Claude Code                     ◌        claude, program working
+✦ Claude Code                 ◌ 40%        claude, working with progress
+✦ Claude Code            ✋ needs you       claude, waiting for permission
+✦ Claude Code                     ✓        claude, finished, not yet seen
+> Terminal 1                      ✗        terminal, a program failed
 ```
 
 Legend:
@@ -32,6 +38,19 @@ Legend:
 - `>`: terminal glyph (`kind == .terminal`).
 - `✦`: Claude glyph (`kind == .claude`).
 - `🔔`: trailing attention indicator (`needsAttention`), separated by a spacer.
+  Not drawn while a status marker is: a program reporting its status has said more
+  than a bell can, and the two would compete for the same narrow edge.
+- Status marker (`programStatus`, a `ProgramStatusIndicator` built from
+  `ProjectStore.programStatusSummary(for:)`): a small spinner while the program is
+  working (`◌`, or the percentage beside it when it reports progress), a glyph and
+  "needs you" in orange while it is blocked on you (the glyph says for what: a hand
+  for permission, a speech bubble for a question, a key for a sign in, a pause sign
+  otherwise), a green `checkmark.circle.fill` once it is done and a red
+  `xmark.octagon.fill` on an error. Nothing for an idle program. Hovering shows the
+  program's own message. Done and error stay until the row is visited or typed
+  into. Fixed at 14 points high, so a spinner appearing does not make the row
+  taller. A remote row never has one: the LAN protocol does not carry program
+  status.
 - Glyph colour tracks the session (`isRunning`, from `ProjectStore.isSessionRunning`):
   green while the terminal or agent is actually running, dimmed (tertiary) once an
   agent has exited, and neutral (secondary) otherwise (unspawned, or before the first

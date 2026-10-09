@@ -120,6 +120,22 @@ struct BellNotification: Equatable {
                                 sound: sound)
     }
 
+    /// A program's status (`OSC 7501`) that has just become something to come back
+    /// for: waiting on the user, finished, or failed.
+    ///
+    /// Laid out as a sent message is, because it is one: the program's own label on
+    /// top (the record's title, else the program's name), the terminal underneath,
+    /// and the program's message as the body, or the state in words when it sent
+    /// none.
+    static func programStatus(workspace: String, label: String, refId: UUID,
+                              record: ProgramStatusRecord,
+                              sound: BellSound = .systemDefault) -> BellNotification {
+        sent(workspace: workspace, label: label, refId: refId,
+             title: record.title ?? record.app ?? "",
+             body: record.msg ?? record.stateDescription,
+             sound: sound)
+    }
+
     /// The connection's name goes in the subtitle, because a remote bell is
     /// otherwise indistinguishable from a local one and "which Mac" is the first
     /// thing you need to know.

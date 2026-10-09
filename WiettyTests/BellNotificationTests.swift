@@ -105,6 +105,53 @@ import WiettyShared
         #expect(notification.body == "Waiting for input")
     }
 
+    /// A program status banner (`OSC 7501`) leads with what the program called the
+    /// work, and says which terminal underneath, the same layout a sent message has.
+    @Test func aProgramStatusBannerLeadsWithTheProgramsOwnTitle() {
+        let refId = UUID()
+        let record = ProgramStatusRecord(state: .blocked, kind: .permission, app: "claude-code",
+                                         title: "Fix the parser", msg: "Allow Bash: make test?")
+        let notification = BellNotification.programStatus(workspace: "Wietty", label: "Claude 1",
+                                                          refId: refId, record: record,
+                                                          sound: .named("Ping"))
+        #expect(notification.title == "Fix the parser")
+        #expect(notification.subtitle == "Wietty / Claude 1")
+        #expect(notification.body == "Allow Bash: make test?")
+        #expect(notification.target == .local(refId: refId))
+        #expect(notification.sound == .named("Ping"))
+    }
+
+    @Test func aProgramStatusBannerWithoutATitleLeadsWithTheApp() {
+        let record = ProgramStatusRecord(state: .done, app: "brew", msg: "Upgraded 12 packages")
+        let notification = BellNotification.programStatus(workspace: "Wietty", label: "Terminal 1",
+                                                          refId: UUID(), record: record)
+        #expect(notification.title == "brew")
+        #expect(notification.subtitle == "Wietty / Terminal 1")
+    }
+
+    /// A program may send nothing but its state, and an empty banner says less than
+    /// none, so the state is put into words.
+    @Test func aProgramStatusBannerWithoutWordsSaysWhatTheStateMeans() {
+        func body(_ record: ProgramStatusRecord) -> String {
+            BellNotification.programStatus(workspace: "w", label: "l", refId: UUID(), record: record).body
+        }
+        #expect(body(ProgramStatusRecord(state: .blocked)) == "Waiting on you")
+        #expect(body(ProgramStatusRecord(state: .blocked, kind: .permission)) == "Waiting for your permission")
+        #expect(body(ProgramStatusRecord(state: .blocked, kind: .question)) == "Waiting for your answer")
+        #expect(body(ProgramStatusRecord(state: .blocked, kind: .auth)) == "Waiting for you to sign in")
+        #expect(body(ProgramStatusRecord(state: .done)) == "Finished")
+        #expect(body(ProgramStatusRecord(state: .error)) == "Failed")
+    }
+
+    @Test func aProgramStatusBannerWithNothingToLeadWithNamesTheTerminal() {
+        let notification = BellNotification.programStatus(workspace: "Wietty", label: "Terminal 1",
+                                                          refId: UUID(),
+                                                          record: ProgramStatusRecord(state: .error))
+        #expect(notification.title == "Wietty / Terminal 1")
+        #expect(notification.subtitle == "")
+        #expect(notification.body == "Failed")
+    }
+
     /// The chosen sound rides on the notification rather than being read inside the
     /// sink, so it is the one thing about the preference that reaches a test.
     @Test func theChosenSoundIsCarried() {

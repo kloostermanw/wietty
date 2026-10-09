@@ -131,6 +131,14 @@ final class GhosttyService: TerminalService {
     /// Defaulted to nothing, for the same reason `onResized` is: a service built
     /// with no remote path has nobody to tell.
     private let onStreamEnded: @Sendable (String) -> Void
+    /// A program status report (`OSC 7501`), a new shell prompt or a full reset,
+    /// read off a terminal's output. Called on that terminal's read queue, in stream
+    /// order, so whoever forwards it has to keep that order. The support query is
+    /// answered on the pty here and never reaches this.
+    ///
+    /// Defaulted to nothing, like `onResized`: answering the query is part of
+    /// running a terminal, hearing the reports is not.
+    private let onProgramStatus: @Sendable (String, ProgramStatusScanner.Event) -> Void
     private let onTerminated: @MainActor (String) -> Void
     private var terminals: [String: Terminal] = [:]
 
@@ -194,6 +202,7 @@ final class GhosttyService: TerminalService {
          onOutput: @escaping @Sendable (String, [UInt8]) -> Void,
          onResized: @escaping @Sendable (String, TerminalSize) -> Void = { _, _ in },
          onStreamEnded: @escaping @Sendable (String) -> Void = { _ in },
+         onProgramStatus: @escaping @Sendable (String, ProgramStatusScanner.Event) -> Void = { _, _ in },
          onTerminated: @escaping @MainActor (String) -> Void) {
         self.host = host
         self.helperPath = helperPath
@@ -201,6 +210,7 @@ final class GhosttyService: TerminalService {
         self.onOutput = onOutput
         self.onResized = onResized
         self.onStreamEnded = onStreamEnded
+        self.onProgramStatus = onProgramStatus
         self.onTerminated = onTerminated
         host.onResized = { [weak self] session, size in
             guard let self else { return }
@@ -326,10 +336,20 @@ final class GhosttyService: TerminalService {
         let pty = try RawPTY.spawn(command: command, directory: folder, environment: [:],
                                    size: Self.initialSize, shell: shell)
         let onOutput = self.onOutput
+        let onProgramStatus = self.onProgramStatus
+        // Weakly, like every other write a terminal outlives: a pty that has been
+        // released has nobody left to answer.
+        let status = ProgramStatusTap(reply: { [weak pty] answer in pty?.write(answer) },
+                                      report: { event in onProgramStatus(session, event) })
         let relay: TerminalRelay
         do {
             relay = try TerminalRelay(pty: pty, socketPath: socketPath) { [weak self] bytes in
-                // The hub first and unconditionally: a live viewer's bytes must not
+                // Ahead of everything, because this is what answers `OSC 7501 ; ?`,
+                // and that answer has to be queued before the relay forwards this
+                // chunk to the helper and libghostty answers what follows the query.
+                // `ProgramStatusTap` says why.
+                status.ingest(bytes)
+                // The hub next and unconditionally: a live viewer's bytes must not
                 // wait behind anything, and this runs on the relay's queue precisely
                 // so they do not.
                 onOutput(session, bytes)

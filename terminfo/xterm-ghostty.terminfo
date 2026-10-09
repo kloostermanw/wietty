@@ -9,8 +9,13 @@
 # The primary name must equal TERM for tcell based apps (lazygit, aerc), so keep
 # xterm-ghostty first. Compiled into the app bundle with `tic -x` at build time
 # (see project.yml) and pointed at with TERMINFO_DIRS (see BundledTerminfo).
+#
+# Pst advertises the Program Status Protocol (OSC 7501), which Wietty reads itself
+# because libghostty does not (see docs/terminal.md). It is the report sequence
+# with the body as its one parameter, as the protocol's section 7.1 specifies.
 xterm-ghostty|ghostty|Ghostty,
 	Tc,
 	Ms=\E]52;%p1%s;%p2%s\007,
+	Pst=\E]7501;%p1%s\E\\,
 	Smulx=\E[4:%p1%dm,
 	use=xterm-256color,
