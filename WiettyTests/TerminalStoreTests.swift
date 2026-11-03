@@ -960,4 +960,60 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(store.runState(for: ref) == .exited)
         #expect(store.projects[0].terminals.count == 1)
     }
+
+    /// The pane's stopped screen (issue #70) asks this. Only the terminal ending
+    /// counts: the session's own child is gone and there is nothing left to type into.
+    @Test func aTerminatedSessionIsExited() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+
+        store.handle(.terminated(sessionId: "sess-A"))
+        #expect(store.isSessionExited(sessionId: "sess-A"))
+    }
+
+    /// An agent that quit back to its shell has not stopped the terminal. The shell is
+    /// still live and typing into it works, so covering it with a stopped screen
+    /// would hide a working terminal. This is why `isSessionRunning` cannot be used.
+    @Test func anAgentBackAtItsShellIsNotExited() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+
+        store.handle(.job(sessionId: "sess-A", jobName: "zsh"))
+        #expect(!store.isSessionRunning(store.projects[0].terminals[0]))
+        #expect(!store.isSessionExited(sessionId: "sess-A"))
+    }
+
+    /// No job reported yet is unknown, not exited, so a freshly opened terminal is
+    /// never drawn as stopped before its first poll.
+    @Test func aSessionWithNoJobYetIsNotExited() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+
+        #expect(!store.isSessionExited(sessionId: "sess-A"))
+        #expect(!store.isSessionExited(sessionId: "not-a-session"))
+    }
+
+    /// Restarting from the stopped screen has to take the screen away again.
+    @Test func aRestartedSessionIsNoLongerExited() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1"),
+                        TerminalHandle(sessionId: "sess-B", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+        store.handle(.terminated(sessionId: "sess-A"))
+
+        await store.restartTerminal(sessionId: "sess-A")
+        #expect(store.projects[0].terminals[0].sessionId == "sess-B")
+        #expect(!store.isSessionExited(sessionId: "sess-B"))
+    }
 }
