@@ -32,7 +32,8 @@ import WiettyShared
             desktopNotifications: setting(),
             ghosttyColors: colors(),
             promptTemplates: PromptTemplateStore(file: .temporary()),
-            selection: selection)
+            selection: selection,
+            onRestartTerminal: { _ in })
     }
 
     /// A notifier over a fake centre. The real one needs an authorized bundle and

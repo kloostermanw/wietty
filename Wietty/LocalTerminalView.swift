@@ -53,8 +53,10 @@ enum GhosttyPaneState: Equatable {
 /// it until the row is closed, but this does not show it. libghostty appends
 /// "Process exited. Press any key to close the terminal." to that last screen, and
 /// the key it asks for closes nothing useful here, so the pane shows a stopped
-/// screen with Restart instead (issue #70). The surface stays alive behind it, so
-/// `readOutput` and the MCP server can still read what the command printed.
+/// screen with Restart instead (issue #70). The surface stays alive behind it, off
+/// screen, and the last screen it showed was recorded at the reap, so `readOutput`
+/// and the MCP server still get that screen (though not its scrollback, which
+/// only an on-screen surface can reach).
 struct LocalTerminalView: View {
     let stack: GhosttyStack
     /// The selected session, mirrored into SwiftUI state by `ContentView` so a
@@ -65,8 +67,10 @@ struct LocalTerminalView: View {
     /// Whether the selected row is an agent, which only changes the wording of the
     /// stopped screen.
     var isAgent: Bool = false
-    /// The stopped screen's Restart button. `ProjectStore.restartTerminal`, which
-    /// reopens the row with its own command and selects the new session.
+    /// The stopped screen's Restart button. Wired by `ContentView` to
+    /// `ProjectStore.restartTerminal`, which reopens the row with its own command;
+    /// `GhosttyService.open` selects the replacement, so the pane leaves this
+    /// screen on its own.
     var onRestart: () -> Void = {}
 
     var body: some View {

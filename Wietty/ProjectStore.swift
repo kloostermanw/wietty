@@ -1076,6 +1076,12 @@ final class ProjectStore {
                 recordWorkspaceId(handle.windowId, at: pIndex, openedWith: existingWindowId)
                 projects[pIndex].terminals[tIndex].sessionId = handle.sessionId
                 forgetProgramStatus(ref.id)
+                // The exited mark is keyed by the row, which survives the reopen.
+                // Left in place, only a job report for the new shell would clear
+                // it, which a failed query never sends, so the stopped screen could
+                // sit over the live shell indefinitely, and Restart on that screen
+                // would kill it. `restart` clears it the same way.
+                jobNames[ref.id] = nil
                 save()
             }
         } catch {
@@ -1269,7 +1275,9 @@ final class ProjectStore {
     /// pane's stopped screen up (issue #70). Not the negation of `isSessionRunning`:
     /// an agent that quit back to its shell is not running but its terminal is live,
     /// and a row with no job reported yet is unknown. Only `.terminated` writes the
-    /// empty job this reads, and a restart forgets it along with the old session.
+    /// empty job this reads (`GhosttyService.jobEvents` never reports an empty name),
+    /// and both revivals, `restart` and the reopen in `activate`, forget it along
+    /// with the old session.
     func isSessionExited(sessionId: String) -> Bool {
         guard let (p, t) = indexOfSession(sessionId) else { return false }
         return jobNames[projects[p].terminals[t].id] == ""

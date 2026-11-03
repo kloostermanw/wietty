@@ -1011,8 +1011,29 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         store.addProject(url: makeTempFolder(named: "proj"))
         await store.openTerminal(for: store.projects[0])
         store.handle(.terminated(sessionId: "sess-A"))
+        #expect(store.isSessionExited(sessionId: "sess-A"))
 
         await store.restartTerminal(sessionId: "sess-A")
+        #expect(store.projects[0].terminals[0].sessionId == "sess-B")
+        #expect(!store.isSessionExited(sessionId: "sess-B"))
+    }
+
+    /// Clicking a stopped row reopens it through `activate`, the other revival path.
+    /// The exited mark is keyed by the row, which keeps its id across a reopen, so a
+    /// reopen that does not clear it leaves the stopped screen over the live shell
+    /// it just opened until the next job poll, and Restart on that screen kills it.
+    @Test func aReopenedSessionIsNoLongerExited() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1"),
+                        TerminalHandle(sessionId: "sess-B", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+        store.handle(.terminated(sessionId: "sess-A"))
+        #expect(store.isSessionExited(sessionId: "sess-A"))
+
+        fake.focusResult = FocusResult(found: false, jobName: nil)
+        await store.activate(store.projects[0].terminals[0], in: store.projects[0])
         #expect(store.projects[0].terminals[0].sessionId == "sess-B")
         #expect(!store.isSessionExited(sessionId: "sess-B"))
     }
