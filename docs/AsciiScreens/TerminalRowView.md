@@ -53,8 +53,9 @@ Legend:
   status.
 - Glyph colour tracks the session (`isRunning`, from `ProjectStore.isSessionRunning`):
   green while the terminal or agent is actually running, dimmed (tertiary) once an
-  agent has exited, and neutral (secondary) otherwise (unspawned, or before the first
-  job poll). A row is green regardless of whether it is the one selected in the pane,
+  agent has exited, and neutral (secondary) otherwise (unspawned, or not started in
+  this run of the app and not yet answered by the job poll). A row is green as soon
+  as the app starts it, without waiting for the poll. A row is green regardless of whether it is the one selected in the pane,
   so a live session stays identifiable at a glance.
 - Exited Claude rows (`isExited`) also render with secondary label text; there is no
   separate marker glyph, only the reduced emphasis.

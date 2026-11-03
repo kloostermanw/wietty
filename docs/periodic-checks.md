@@ -32,6 +32,8 @@ It costs no fork: one `tcgetpgrp` on each terminal's pty master plus one `proc_n
 
 Its tier ignores the CI-pending and needs-attention overlays, because a single workspace's state must not speed up or slow down a poll that serves all of them. It runs Fast while any workspace is expanded (an agent's status is on screen) and Slow when every workspace is collapsed. Both Instant triggers reset it, so expanding a card or pressing refresh updates agent status straight away.
 
+A row the app starts does not wait for this poll. Opening a terminal or agent row (including through the MCP `spawn_agent` tool), reopening a dead one, typing an agent back into its live shell, and Restart all record an assumed job for the row the moment they start it (`ProjectStore.markLaunched`), so its glyph turns green and its Stop button appears at once. An agent row's assumed job is its executable's name (`claude`, `codex`), and a plain terminal's is its shell. The value is never empty, which would read as the terminal having ended, and never a shell name for an agent row, which would read as the agent having exited. The next tick replaces it with the real foreground job. The price is that an agent that fails to start (not on the PATH, or exiting at once) shows as running until that tick, up to 15 seconds, or 300 seconds with every workspace collapsed.
+
 ## Tiers and Intervals
 
 The scheduler uses four run modes:
