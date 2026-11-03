@@ -89,7 +89,8 @@ struct ContentView: View {
                                       desktopNotifications: terminals.desktopNotifications,
                                       ghosttyColors: terminals.ghosttyColors,
                                       promptTemplates: promptTemplates,
-                                      selection: paneSelection)
+                                      selection: paneSelection,
+                                      onRestartTerminal: { restartTerminal(sessionId: $0) })
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -618,9 +619,18 @@ struct ContentView: View {
     }
 
     private func restartTerminal(_ ref: TerminalRef, in project: Project) {
+        restartTerminal(sessionId: ref.sessionId)
+    }
+
+    /// The row's restart button and the pane's stopped screen both land here, so
+    /// both are covered by `isBusy`. The pane's button is the window's default, and
+    /// a second Return while the first restart is still reopening would resolve the
+    /// same old session twice and leave an extra shell behind.
+    private func restartTerminal(sessionId: String) {
+        guard !isBusy else { return }
         Task {
             isBusy = true
-            await store.restartTerminal(sessionId: ref.sessionId)
+            await store.restartTerminal(sessionId: sessionId)
             isBusy = false
         }
     }
