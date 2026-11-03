@@ -88,8 +88,9 @@ Legend:
   (`ProjectStore.isSessionRunning`: a plain terminal while its shell is live, an
   agent while its foreground job is the agent rather than the shell), so a live
   session stays identifiable even when another row is the one selected in the pane.
-  An exited row dims, and a row that is neither yet (unspawned, or before the first
-  job poll) stays neutral rather than claiming to run. This is a positive signal,
+  An exited row dims, and a row that is neither yet (unspawned, or not started in
+  this run of the app and not yet answered by the job poll) stays neutral rather than
+  claiming to run. A row the app has just started is green at once, before any poll. This is a positive signal,
   unlike `runState`, which stays optimistically "running" when it has no job info.
 - Hovering a row reveals trailing action buttons. A running terminal or Claude row
   shows stop (■) and restart (↻); one that is not running shows play (▶) in their
