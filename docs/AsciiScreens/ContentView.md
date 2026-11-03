@@ -142,11 +142,33 @@ running while another is on screen. Selecting a row moves that one view rather
 than building a new one, and a surface is never rebuilt: rebuilding is what would
 lose the scrollback. `ContentView` mirrors `GhosttyService.selected` into
 `selectedTerminal` through `onSelectionChanged`, so a selection made by a click, by
-the MCP server, or by a remote client redraws the pane the same way. A terminal
-whose command has exited keeps its surface until the row is closed, so the pane
-keeps showing the last screen that command printed. The pane's three states are
-`GhosttyPaneState`: the terminal's setup error, the selected terminal, or a
-placeholder when nothing is selected. See `LocalTerminalView`.
+the MCP server, or by a remote client redraws the pane the same way. The pane's
+four states are `GhosttyPaneState`: the terminal's setup error, the selected
+terminal, a stopped screen when the selected terminal has ended, or a placeholder
+when nothing is selected. See `LocalTerminalView`.
+
+A terminal that has ended (stopped from its row, or its shell exited) keeps its
+surface until the row is closed, but the pane no longer shows it: all it adds is
+libghostty's "Process exited. Press any key to close the terminal." line, and that
+key does nothing useful here. The stopped screen replaces it (issue #70). It shows
+while `ProjectStore.isSessionExited` is true, which only the `.terminated` event
+sets, so an agent that quit back to its live shell keeps its terminal on screen.
+
+```
+┌────────────────────────────────────────┐
+│                                        │
+│                  [>_]                  │
+│            Terminal stopped            │  "Agent stopped" for an agent row
+│        The process has exited.         │  "The agent has exited."
+│               [Restart]                │  default button (return)
+│                                        │
+└────────────────────────────────────────┘
+```
+
+Restart calls `ProjectStore.restartTerminal`, the same path as the row's restart
+button: the row reopens with its own command, the new session is selected, and the
+pane shows its terminal again. Clicking the stopped row in the sidebar reopens it
+too, as it always did.
 
 Dropping files from Finder onto the pane inserts their paths at the cursor, shell
 quoted and space separated, the standard macOS terminal gesture for handing a file

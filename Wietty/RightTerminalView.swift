@@ -78,8 +78,19 @@ struct RightTerminalView: View {
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)
         case .local, .none:
-            LocalTerminalView(stack: stack, session: selection.localSession)
+            let session = selection.localSession
+            LocalTerminalView(stack: stack, session: session,
+                              exited: session.map { store.isSessionExited(sessionId: $0) } ?? false,
+                              isAgent: session.flatMap(localRef)?.kind == .claude,
+                              onRestart: {
+                                  guard let session else { return }
+                                  Task { await store.restartTerminal(sessionId: session) }
+                              })
         }
+    }
+
+    private func localRef(_ sessionId: String) -> TerminalRef? {
+        store.projects.lazy.flatMap(\.terminals).first { $0.sessionId == sessionId }
     }
 
     @ViewBuilder private func remote(_ session: RemoteSessionRef) -> some View {

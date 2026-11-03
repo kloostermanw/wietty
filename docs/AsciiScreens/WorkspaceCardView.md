@@ -103,7 +103,9 @@ Legend:
 
   A click on a row whose terminal has stopped reopens it. The service answers that
   itself, because its record of a dead terminal survives so the last screen stays
-  readable; see `docs/terminal.md`.
+  readable; see `docs/terminal.md`. A terminal that stops while it is on screen
+  leaves the pane on a stopped screen with its own Restart button; see
+  `ContentView.md`.
   Terminal buttons are wired here to `onActivate` (play), `onStopTerminal` (stop),
   `onRestartTerminal` (restart), and `onCloseTerminal` (trash). Stop and close are
   deliberately distinct: stop terminates the session but leaves the row so it can be

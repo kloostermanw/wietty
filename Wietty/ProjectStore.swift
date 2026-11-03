@@ -1265,6 +1265,16 @@ final class ProjectStore {
         return ref.kind == .claude ? claudeIsRunning(jobName: job) : true
     }
 
+    /// Whether this session's terminal itself has ended, which is what puts the
+    /// pane's stopped screen up (issue #70). Not the negation of `isSessionRunning`:
+    /// an agent that quit back to its shell is not running but its terminal is live,
+    /// and a row with no job reported yet is unknown. Only `.terminated` writes the
+    /// empty job this reads, and a restart forgets it along with the old session.
+    func isSessionExited(sessionId: String) -> Bool {
+        guard let (p, t) = indexOfSession(sessionId) else { return false }
+        return jobNames[projects[p].terminals[t].id] == ""
+    }
+
     /// The name a sidebar row shows: its stored `displayName`, overridden by any live
     /// agent-reported title in `liveLabels`. Resolved here rather than on `TerminalRef`
     /// because the override lives on the store, so a caller with a `ref` asks this.
