@@ -43,13 +43,17 @@ shows, so a second window would be the only part of the app that opened one.
 
 `ContentView` is the root of the main window, and it has one shape: the sidebar
 is the left column of a row of three, and the right column fills the rest with
-`NavBarView` above `RightTerminalView`. Everything is inside Wietty (see
+`NavBarView` above `RightTerminalView`. The window has no title bar: its content
+runs up under where one would be, so the traffic lights share the top row with the
+sidebar's buttons (`SidebarTopBar`) and `NavBarView`. Everything is inside Wietty (see
 `../terminal.md`).
 
 ```
-┌─ Wietty─── ───────────────────────────────────────────────┐
-│ ▾ Local        (⟳) (+)  │ genotool                      ⚙ │  NavBarView
-│ ▾ genotool              │─────────────────────────────────│
+┌───────────────────────────────────────────────────────────┐
+│ ● ● ●          ⟳  +     │ genotool                      ⚙ │  SidebarTopBar, NavBarView
+│                         │─────────────────────────────────│
+│ ▾ Local                 │                                 │
+│ ▾ genotool              │                                 │
 │   │  > Terminal 1       │ > implement the parser          │
 │   │  ✦ Claude Code ◀ sel│ ⏺ Reading files…                │  RightTerminalView
 │ ▸ genotool-admin        │ █                               │

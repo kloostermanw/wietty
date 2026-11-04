@@ -45,23 +45,18 @@ import SwiftUI
                                            storedCollapsed: false).collapsed == false)
     }
 
-    /// A titleless header still occupies its row. The buttons are what the row is
-    /// really for, and a header that shrank to nothing when the title went would move
-    /// the whole workspace list up under the window's top edge.
+    /// The sidebar's buttons share the window's top row with `NavBarView`, so the
+    /// two halves of that row have to be one height or the strip under the traffic
+    /// lights steps at the divider.
     ///
     /// Measured rather than eyeballed, because the answer is SwiftUI's: the same
     /// hosting measurement `LocalTerminalViewTests` uses for the pane's height.
     @MainActor
-    @Test func aTitlelessHeaderKeepsTheRowItsButtonsNeed() {
+    @Test func theSidebarTopBarIsAsTallAsTheNavBar() {
         let buttons = ContentView.localSectionButtons(refresh: {}, add: {})
-        let titled = SidebarSectionHeaderView(title: "Local", collapsed: false,
-                                              onToggle: {}, buttons: buttons)
-        let untitled = SidebarSectionHeaderView(title: nil, collapsed: false,
-                                                onToggle: {}, buttons: buttons)
-        let offered = NSSize(width: 320, height: 760)
-        let titledHeight = NSHostingController(rootView: titled).sizeThatFits(in: offered).height
-        let untitledHeight = NSHostingController(rootView: untitled).sizeThatFits(in: offered).height
-        #expect(untitledHeight == titledHeight)
-        #expect(untitledHeight > 0)
+        let bar = SidebarTopBar(buttons: buttons)
+        let height = NSHostingController(rootView: bar)
+            .sizeThatFits(in: NSSize(width: 320, height: 760)).height
+        #expect(height == NavBarView.height)
     }
 }

@@ -3,8 +3,9 @@
 ///
 /// The title exists to tell the local Mac's workspaces apart from one section per
 /// remote connection. With no connection configured there is no second section, so
-/// the word and its chevron say nothing and are dropped; the header's buttons stay,
-/// since refreshing git status and adding a folder are reachable nowhere else.
+/// the word and its chevron say nothing and the header is not drawn at all. Its
+/// buttons are not lost with it: refreshing git status and adding a folder live in
+/// the window's top row (`SidebarTopBar`), not in this header.
 ///
 /// Dropping the chevron takes the only way to expand the section with it, so a
 /// stored collapse is ignored rather than obeyed while the title is hidden. Ignored,
@@ -14,7 +15,7 @@
 /// A rule with its own type rather than two expressions inside `ContentView.body`,
 /// so both parts are asserted in CI. See `LocalSectionHeaderTests`.
 struct LocalSectionHeader: Equatable {
-    /// Nil when the header shows its buttons alone, with no chevron and no title.
+    /// Nil when there is no header to draw, so no chevron either.
     let title: String?
     let collapsed: Bool
 

@@ -5,8 +5,11 @@ import WiettyShared
 ///
 /// It says where what is in the pane comes from, and carries the buttons that act on
 /// the pane rather than on a row: the gear, which is the only way into settings that
-/// is inside the window. The app menu's item and ⌘, are the other two, and the window
-/// has no title bar to hold anything of its own.
+/// is inside the window. The app menu's item and ⌘, are the other two.
+///
+/// It sits in the window's top row, beside the traffic lights: the window has no
+/// title bar of its own and its content runs up under where one would be, so this
+/// bar and `SidebarTopBar` are that row. See `TitleBarRow.swift`.
 ///
 /// Always present, including when nothing is selected. A bar that appeared and
 /// disappeared would move the whole pane height with it, which is a jump for the
@@ -44,33 +47,24 @@ struct NavBarView: View {
                     .font(.callout)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    // Not a target, so a drag that starts on the title moves the
+                    // window like one on the empty bar beside it.
+                    .allowsHitTesting(false)
             }
             Spacer(minLength: 0)
             ForEach(Self.trailingButtons(openSettings: onOpenSettings)) { button in
-                Button(action: button.action) {
-                    Image(systemName: button.system)
-                        // Tinted while its panel is the thing in the pane. The sidebar
-                        // marks the row whose terminal is on screen with a background
-                        // fill instead (`SidebarRowBackground`); what is marked is the
-                        // same idea, how it is drawn is not, because a 28 point bar has
-                        // no room for a fill that would not read as a second selection.
-                        .foregroundStyle(selection.showsSettings ? Color.accentColor
-                                                                 : Color.secondary)
-                        // The glyph alone is a roughly 13 point target in a 28 point
-                        // bar, and this is the only way into settings that is on
-                        // screen. The frame and the shape give it the bar's height to
-                        // be clicked in rather than the icon's outline.
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(button.help)
-                .accessibilityLabel(button.help)
+                // Tinted while its panel is the thing in the pane. The sidebar marks
+                // the row whose terminal is on screen with a background fill instead
+                // (`SidebarRowBackground`); what is marked is the same idea, how it is
+                // drawn is not, because a 28 point bar has no room for a fill that
+                // would not read as a second selection.
+                TitleBarButton(spec: button, highlighted: selection.showsSettings)
             }
         }
         .padding(.horizontal, 10)
         .frame(height: Self.height)
         .frame(maxWidth: .infinity)
+        .background(WindowDragArea())
     }
 
     /// The connection's name and the workspace holding that session, from the live
