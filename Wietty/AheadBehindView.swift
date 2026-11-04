@@ -21,6 +21,9 @@ struct AheadBehindView: View {
                 }
                 .foregroundStyle(behindColor)
             }
+            // The counts never wrap: when the row is short of room the label
+            // truncates instead, since `↓3` over `9` misreads as two numbers.
+            .fixedSize()
         }
         .font(.caption.monospacedDigit())
         .foregroundStyle(.secondary)

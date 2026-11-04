@@ -10,15 +10,19 @@ chevron, the project name, the config-changed (`⟳`) and freshness (`!`) marker
 and the git ahead/behind indicators. Below the header sit the Issue/PR pills, the
 CI checks line, the test buttons line, the Processes group, and the terminal tree.
 
-The ahead/behind indicators are two stacked, right aligned rows. Each row is
-labeled with the remote ref it compares against: the base row against the remote
-default branch (`origin/develop`), the upstream row against the branch upstream
+The ahead/behind indicators are two stacked, right aligned rows on their own line
+directly under the header, not beside the name, so a narrow sidebar truncates
+neither the name nor the refs. They sit 2pt below the header (the other lines are
+6pt apart) so they read as part of it. Each row is labeled with the remote ref it
+compares against: the base row against the remote default branch
+(`origin/develop`), the upstream row against the branch upstream
 (`origin/feature/issue-15`).
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ ▾ laravel-test               ⟳ !   origin/develop            ↑1 ↓0 │
-│                                      origin/feature/issue-15   ↑1 ↓0 │
+│ ▾ laravel-test ⟳ !                                                  │
+│                                           origin/develop     ↑1 ↓0 │
+│                                  origin/feature/issue-15     ↑1 ↓0 │
 │   (Issue #15)  (PR #16)                                             │
 │   1 failing, 1 successfull checks                                   │
 │   [phpunit] [feature-tests]                    [All]  (border=pass) │
@@ -36,12 +40,14 @@ Legend:
 - `▾` / `▸`: expanded / collapsed chevron (`WorkspaceCardView.header`). The
   chevron sits in a fixed width slot and the header aligns on the first text
   baseline, so the project name keeps the same position whether the card is
-  collapsed or expanded and whether the ahead/behind block has one row or two.
+  collapsed or expanded. The ahead/behind block is below the header, so whether
+  it has one row or two never moves the name.
 - `origin/... ↑a ↓b`: `AheadBehindView`, one row per comparison, label plus the
   up (ahead) and down (behind) counts. When the row is behind (`↓b` with `b > 0`)
   the down arrow and its count turn red (`AheadBehindView.behindColor`), since a
   behind count is the one number on the card that asks the user to pull; the label
-  and the ahead group stay secondary.
+  and the ahead group stay secondary. The counts never wrap; when a row is short
+  of room its label truncates in the middle instead.
 - `(Issue #N)` / `(PR #N)`: filled pills from `IssuePRLineView`. When no issue is
   linked to the branch, the issue pill is replaced by the branch name rendered as
   plain, secondary text (no pill), so the line always shows some branch context. The
