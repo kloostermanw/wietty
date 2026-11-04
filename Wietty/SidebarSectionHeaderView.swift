@@ -2,8 +2,9 @@ import SwiftUI
 
 struct SidebarSectionHeaderView: View {
     /// Nil leaves the buttons alone in the row, with no chevron and nothing to click
-    /// to collapse the section. That is the Local section when it is the only
-    /// section; `LocalSectionHeader` is the rule and says why.
+    /// to collapse the section. The Local section never asks for that: its buttons
+    /// are in `SidebarTopBar`, so untitled it draws no header at all
+    /// (`LocalSectionHeader`).
     let title: String?
     let collapsed: Bool
     let onToggle: () -> Void

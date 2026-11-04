@@ -10,34 +10,47 @@ The window is a row of three: the sidebar at an explicit width, a
 `SidebarDivider`, and the right column taking everything left over, because
 everything the user looks at lives inside this window. That third part is itself
 two rows, `NavBarView` above a `Divider` above `RightTerminalView`, so only the
-divider is to the bar's left and the sidebar keeps the full height.
+divider is to the bar's left. The sidebar has a top bar as well: `SidebarTopBar`
+with the refresh and add buttons, over the scrolling workspace list. It is the
+list's top safe area inset (`sidebarTopBar(buttons:)`) rather than a row stacked
+above it, because the scroll view reaches up into the title bar strip whatever is
+stacked above it, and a stacked bar's buttons took no clicks.
+
+The window has no title bar (`.hiddenTitleBar`), and the content runs up under
+where one would be (`ignoresSafeArea(.container, edges: .top)`). So `SidebarTopBar`
+and `NavBarView` together are the window's top row, the traffic lights sit at its
+leading edge, and dragging an empty part of it moves the window. See `NavBarView.md`.
 
 ```
-┌─ Wietty ────────────────────────────────────────────────────────────────────┐
-│                    ( ⟳ )  ( + )  │ Wietty                                 ⚙ │
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ ● ● ●                   ⟳  +     │ Wietty                                 ⚙ │
 │                                  ├──────────────────────────────────────────┤
-│ ▾ Wietty  origin/develop ↑1 ↓0   │ > implement the parser                   │
-│   │  > Terminal 1                │ ⏺ Reading files…                         │
+│ ▾ Wietty                         │ > implement the parser                   │
+│             origin/develop ↑1 ↓0 │ ⏺ Reading files…                         │
+│   │  > Terminal 1                │                                          │
 │   │  ✦ Claude Code   ◀ selected  │ █                                        │
 │ ························· Divider│                                          │
 │ ▸ api-service                    │                                          │
 └──────────────────────────────────┴──────────────────────────────────────────┘
-  sidebar, 320 points by default     NavBarView, 28 points, then
+  SidebarTopBar, 28 points, then     NavBarView, 28 points, then
+  the sidebar, 320 points wide by    RightTerminalView with the rest
+  default, the list scrolling under
+  the top bar
   SidebarDivider sits between them,  RightTerminalView with the rest
   six points wide and draggable
 ```
 
 The bar says which workspace the pane's content belongs to, or `Settings` for the
 panel, and is empty when nothing is selected. Its trailing gear toggles that panel and
-is the only way into it that is inside the window, which has no title bar to hold
-anything of its own. See `NavBarView.md`, which also covers why its height is part of
-the window's minimum.
+is the only way into it that is inside the window. See `NavBarView.md`, which also
+covers why its height is part of the window's minimum.
 
-The Local header offers refreshing git status and adding a folder, and nothing
-else. See `ContentView.localSectionButtons(refresh:add:)`. It carries no title
-above, because this window has no remote connection: the word Local and its
-chevron only appear once there is a remote section to tell it apart from. See
-"The sidebar" below.
+The sidebar's top bar offers refreshing git status and adding a folder, and
+nothing else. See `ContentView.localSectionButtons(refresh:add:)`. They used to
+sit in the Local header, and moved up so they stay put while the list scrolls.
+There is no Local header above, because this window has no remote connection: the
+word Local and its chevron only appear once there is a remote section to tell it
+apart from. See "The sidebar" below.
 
 ## What the pane shows
 
@@ -326,8 +339,9 @@ connection and are left alone.
 
 The Local header's title is the one thing that comes and goes. It exists to tell
 this Mac's workspaces apart from a connection's, so with no connection configured
-there is no second section, the word and its chevron say nothing, and the row
-keeps only its buttons (which are reachable nowhere else). Losing the chevron
+there is no second section, the word and its chevron say nothing, and the header
+is not drawn at all. Its buttons are not lost with it, since they live in
+`SidebarTopBar`. Losing the chevron
 loses the only way to expand the section, so a collapse stored under `"local"` is
 ignored while the title is hidden rather than obeyed, and honoured again as soon
 as a connection puts the chevron back. `LocalSectionHeader.resolve` decides both
@@ -338,10 +352,11 @@ none, so it shows the other one.
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ ▾ Local                                              ( ⟳ )  ( + )  │  SidebarSectionHeaderView
+│ ▾ Local                                                             │  SidebarSectionHeaderView
 ├───────────────────────────────────────────────────────────────────┤
-│ ▾ laravel-test                       origin/develop           ↑1 ↓0 │  WorkspaceCardView
-│                                      origin/feature/issue-15   ↑1 ↓0 │
+│ ▾ laravel-test                                                      │  WorkspaceCardView
+│                                           origin/develop     ↑1 ↓0 │
+│                                  origin/feature/issue-15     ↑1 ↓0 │
 │   (Issue #15)  (PR #16)                                             │
 │   1 failing, 1 successfull checks                                   │
 │   │  > Terminal 1                                                   │
@@ -353,7 +368,8 @@ none, so it shows the other one.
 ├───────────────────────────────────────────────────────────────────┤
 │ ▾ Office Mac                                         ( ⟳ )  ( - )  │  SidebarSectionHeaderView (remote)
 ├───────────────────────────────────────────────────────────────────┤
-│ ▾ web-app                             origin/main             ↑0 ↓2 │  WorkspaceCardView (remote)
+│ ▾ web-app                                                           │  WorkspaceCardView (remote)
+│                                              origin/main     ↑0 ↓2 │
 │   │  > Terminal 1                                                   │
 ├───────────────────────────────────────────────────────────────────┤
 │ ▾ Home Mac                                                          │
@@ -372,8 +388,9 @@ Legend:
   unrelated plumbing (`store.attention`) and shows with or without notification
   permission. See `../notifications.md`.
 - `SidebarSectionHeaderView`: one per section, title, chevron, and trailing
-  icon buttons. A nil title draws the buttons alone, which is the Local header
-  with no connection configured. Local: refresh git status, add a project folder.
+  icon buttons. The Local header has none: refresh git status and add a project
+  folder are in `SidebarTopBar`, and with no connection configured the Local
+  header is not drawn.
   Remote: reconnect (`store.stop(); store.start()`), remove connection
   (`remoteConnections.remove(id:)` then `remoteWorkspaces.sync()`).
   See `SidebarSectionHeaderView`.
