@@ -150,7 +150,7 @@ struct ContentView: View {
             startBellNotifications()
             terminals.monitor.start { event in store.handle(event) }
             if mcpHost == nil {
-                let host = MCPServerHost(router: MCPToolRouter(store: store), port: store.mcpPort,
+                let host = MCPServerHost(router: MCPToolRouter(store: store, port: store.mcpPort), port: store.mcpPort,
                                          onStartupError: { message in store.mcpStartupError = message })
                 mcpHost = host
                 await host.start()
@@ -545,7 +545,7 @@ struct ContentView: View {
     private func restartMCPHost() async {
         mcpHost?.stop()
         store.mcpStartupError = nil
-        let host = MCPServerHost(router: MCPToolRouter(store: store), port: store.mcpPort,
+        let host = MCPServerHost(router: MCPToolRouter(store: store, port: store.mcpPort), port: store.mcpPort,
                                  onStartupError: { message in store.mcpStartupError = message })
         mcpHost = host
         await host.start()

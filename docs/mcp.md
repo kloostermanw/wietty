@@ -14,6 +14,9 @@ because it sends no server-initiated messages). It binds to loopback only:
 http://127.0.0.1:7433/mcp
 ```
 
+The same server also answers `GET /tests/wait`, a plain HTTP long poll described
+under "Waiting for tests".
+
 Wietty replaces the SDK's default validation pipeline with one that only
 checks `Content-Type` (the default also validates `Origin`, `Accept`, and the
 protocol version). Origin validation is intentionally relaxed, because many MCP
@@ -80,7 +83,8 @@ in a workspace (the selected one if `project_id` is omitted). Both return the
 status each test was left in. A test runs to completion, so read its result
 afterwards with `get_managed_process_status` or `get_managed_process_output`,
 the same read tools a managed process uses. It is done when the status reaches
-`finished` or `failed`. Passing a process id to `run_test` is an error: only
+`finished` or `failed`. Rather than poll, an agent can wait for that in a
+background shell (see "Waiting for tests" below). Passing a process id to `run_test` is an error: only
 tests are runnable this way.
 
 A test that is already running is left alone rather than restarted, because a
@@ -89,6 +93,57 @@ second run would otherwise report the in-flight run's result as its own.
 does not (meeting one test already in flight is normal when it fans out), so
 every row it returns carries `started`, saying whether this call is what launched
 that test.
+
+### Waiting for tests
+
+Polling `get_managed_process_status` costs a turn per check, and an agent that
+stops polling never learns the result. The server sends no server initiated
+messages, so instead it answers a plain HTTP long poll beside `/mcp`, on the same
+loopback only port:
+
+```
+GET http://127.0.0.1:7433/tests/wait?id=<test-id>[&id=<test-id>...]&timeout=<seconds>
+```
+
+It is not an MCP tool. An agent starts its tests with `run_test` or
+`run_all_tests`, then runs the wait as a background shell command (in Claude Code,
+a Bash call with `run_in_background`), keeps working, and is notified when the
+command exits:
+
+```sh
+curl -sS --fail-with-body "http://127.0.0.1:7433/tests/wait?id=<test-id>&timeout=1800"
+```
+
+The request returns as soon as no listed test is in flight (starting, running, or
+stopping), or when the timeout expires. `timeout` is in whole seconds, defaults to
+600, and is capped at 3600; 0 reports the current statuses without waiting. A
+repeated id is waited on once.
+
+The body is JSON: `tests`, one row per id in the shape `list_tests` returns (`id`,
+`name`, `type`, `status`, `running`, `exit_code` when failed, `project_id`,
+`project_name`), and `done`, true when every test reached `finished` or `failed`.
+The HTTP status carries the outcome, so `curl --fail-with-body` exits non zero for
+everything but a pass:
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Every test finished. |
+| 422 | Every test ended and at least one failed. |
+| 409 | Nothing is in flight, but at least one test is idle: it was never started, or it was stopped or staled before the wait. |
+| 504 | The timeout expired while a test was still running. The rows carry the current statuses. |
+| 404 | An id names no test (unknown workspace or test name). The body lists them in `unknown_ids`. Nothing is waited on. |
+| 400 | No id, a malformed id, a process id rather than a test id, or a timeout that is not a whole number of seconds. |
+
+When several apply, 504 wins over 409, and 409 over 422. An idle test never blocks
+the wait, so a wait cannot hang on a test nobody started. A test that already
+finished or failed in an earlier run returns at once with that result, which only
+matters when the wait is called without starting the test first. A test whose
+definition is dropped from `wietty.json` while it runs is killed, and the wait
+reports it as idle (409).
+
+The wait is event driven: `TestSupervisor.waitUntilSettled` suspends on each
+test's state changes rather than polling. If the client disconnects, the request
+may still be held until its timeout, which the cap bounds.
 
 Tools that act on one workspace fall back to the workspace set with
 `select_project` when `project_id` is omitted. The `list_*` tools do not:

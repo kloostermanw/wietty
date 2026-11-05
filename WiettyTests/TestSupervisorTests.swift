@@ -230,4 +230,126 @@ import Foundation
         sup.applyWorkingTreeFingerprint("fp2", projectId: pid) // now a real change
         #expect(sup.test(projectId: pid, name: "phpstan")?.state == .idle)
     }
+
+    // MARK: - Waiting for tests to settle
+
+    /// Lets the waiting task run up to its suspension point, so the test exercises the
+    /// resume path rather than a wait that starts after the state already changed.
+    private func settle() async {
+        for _ in 0..<20 { await Task.yield() }
+    }
+
+    @Test func waitResumesWhenARunningTestFinishes() async {
+        let launcher = FakeProcessLauncher()
+        let sup = TestSupervisor(launcher: launcher)
+        sup.apply(config(["unit": TestConfig(command: "unit")]), projectId: pid, directory: dir)
+        sup.run(projectId: pid, name: "unit")
+        let test = sup.test(projectId: pid, name: "unit")!
+        let returned = Flag()
+        let waiting = Task { @MainActor in
+            let settled = await sup.waitUntilSettled([test], timeout: .seconds(30))
+            returned.value = true
+            return settled
+        }
+        await settle()
+        #expect(returned.value == false) // still in flight, so the wait holds
+        launcher.last.onExit(0)
+        #expect(await waiting.value == true)
+        #expect(test.state == .finished)
+    }
+
+    @Test func waitResumesWhenARunningTestFails() async {
+        let launcher = FakeProcessLauncher()
+        let sup = TestSupervisor(launcher: launcher)
+        sup.apply(config(["unit": TestConfig(command: "unit")]), projectId: pid, directory: dir)
+        sup.run(projectId: pid, name: "unit")
+        let test = sup.test(projectId: pid, name: "unit")!
+        let waiting = Task { @MainActor in await sup.waitUntilSettled([test], timeout: .seconds(30)) }
+        await settle()
+        launcher.last.onExit(2)
+        #expect(await waiting.value == true)
+        #expect(test.state == .failed(2))
+    }
+
+    @Test func waitHoldsUntilEveryTestHasSettled() async {
+        let launcher = FakeProcessLauncher()
+        let sup = TestSupervisor(launcher: launcher)
+        sup.apply(config(["a": TestConfig(command: "cmd-a"), "b": TestConfig(command: "cmd-b")]),
+                  projectId: pid, directory: dir)
+        sup.run(projectId: pid, name: "a")
+        sup.run(projectId: pid, name: "b")
+        let tests = sup.tests(for: pid)
+        let returned = Flag()
+        let waiting = Task { @MainActor in
+            let settled = await sup.waitUntilSettled(tests, timeout: .seconds(30))
+            returned.value = true
+            return settled
+        }
+        await settle()
+        launcher.launches[0].onExit(0)
+        await settle()
+        #expect(returned.value == false) // one of the two is still running
+        launcher.launches[1].onExit(1)
+        #expect(await waiting.value == true)
+    }
+
+    /// An idle test never started, so waiting on it would hang until the timeout.
+    @Test func waitReturnsAtOnceForAnIdleTest() async {
+        let sup = TestSupervisor(launcher: FakeProcessLauncher())
+        sup.apply(config(["unit": TestConfig(command: "unit")]), projectId: pid, directory: dir)
+        let test = sup.test(projectId: pid, name: "unit")!
+        #expect(await sup.waitUntilSettled([test], timeout: .seconds(30)) == true)
+        #expect(test.state == .idle)
+    }
+
+    @Test func waitReturnsAtOnceForATestThatAlreadyFinished() async {
+        let launcher = FakeProcessLauncher()
+        let sup = TestSupervisor(launcher: launcher)
+        sup.apply(config(["unit": TestConfig(command: "unit")]), projectId: pid, directory: dir)
+        sup.run(projectId: pid, name: "unit")
+        launcher.last.onExit(0)
+        let test = sup.test(projectId: pid, name: "unit")!
+        #expect(await sup.waitUntilSettled([test], timeout: .seconds(30)) == true)
+    }
+
+    @Test func waitTimesOutWhileATestIsStillRunning() async {
+        let sup = TestSupervisor(launcher: FakeProcessLauncher())
+        sup.apply(config(["unit": TestConfig(command: "unit")]), projectId: pid, directory: dir)
+        sup.run(projectId: pid, name: "unit")
+        let test = sup.test(projectId: pid, name: "unit")!
+        #expect(await sup.waitUntilSettled([test], timeout: .milliseconds(50)) == false)
+        #expect(test.state == .running)
+    }
+
+    /// Dropping a running test's definition kills it; the wait must observe that end
+    /// rather than hang on a process the supervisor no longer lists.
+    @Test func waitResolvesWhenARunningTestsDefinitionIsDropped() async {
+        let launcher = FakeProcessLauncher()
+        let sup = TestSupervisor(launcher: launcher)
+        sup.apply(config(["unit": TestConfig(command: "unit")]), projectId: pid, directory: dir)
+        sup.run(projectId: pid, name: "unit")
+        let test = sup.test(projectId: pid, name: "unit")!
+        let waiting = Task { @MainActor in await sup.waitUntilSettled([test], timeout: .seconds(30)) }
+        await settle()
+        sup.apply(config([:]), projectId: pid, directory: dir)
+        launcher.last.onExit(137) // the SIGKILL lands
+        #expect(await waiting.value == true)
+        #expect(test.state == .idle)
+    }
+
+    @Test func cancellingTheWaitReturnsWithoutSettling() async {
+        let sup = TestSupervisor(launcher: FakeProcessLauncher())
+        sup.apply(config(["unit": TestConfig(command: "unit")]), projectId: pid, directory: dir)
+        sup.run(projectId: pid, name: "unit")
+        let test = sup.test(projectId: pid, name: "unit")!
+        let waiting = Task { @MainActor in await sup.waitUntilSettled([test], timeout: .seconds(30)) }
+        await settle()
+        waiting.cancel()
+        #expect(await waiting.value == false)
+    }
+}
+
+@MainActor
+private final class Flag {
+    var value = false
 }
