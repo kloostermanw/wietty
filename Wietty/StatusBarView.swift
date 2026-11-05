@@ -5,14 +5,20 @@ import AppKit
 ///
 /// It reports on the app itself rather than on anything in the pane, which is why it
 /// spans the whole window instead of sitting in the right column the way `NavBarView`
-/// does. Today it holds one item, the MCP server: whether it is listening, on which
-/// port, and a Restart. A failure keeps its reason in the tooltip, and the same text
-/// is on the MCP tab of Settings.
+/// does. On the left, the MCP server: whether it is listening, on which port, and a
+/// Restart. A failure keeps its reason in the tooltip, and the same text is on the
+/// MCP tab of Settings. On the right, how many terminals, agents, managed processes
+/// and tests are running (`RunningProcessCounts`) and the app's own memory
+/// (`AppMemory`).
 ///
 /// Always present, for the reason `NavBarView` is: a bar that came and went would
 /// move the terminal above it.
 struct StatusBarView: View {
     let mcpStatus: MCPServerStatus
+    let runningProcesses: RunningProcessCounts
+    /// Nil until the first sample, or if the kernel would not report it; the item is
+    /// left out rather than showing a made up number.
+    let memoryBytes: UInt64?
     let onRestartMCPServer: () -> Void
 
     /// The bar's own height, which `SidebarWidth.windowMinimumHeight` adds in.
@@ -24,6 +30,10 @@ struct StatusBarView: View {
             HStack(spacing: 6) {
                 mcpItem
                 Spacer(minLength: 0)
+                processesItem
+                if let memoryBytes {
+                    memoryItem(memoryBytes)
+                }
             }
             .padding(.horizontal, 10)
             .frame(height: Self.height)
@@ -57,6 +67,21 @@ struct StatusBarView: View {
                 }
             }
         }
+    }
+
+    private var processesItem: some View {
+        Label(runningProcesses.summary, systemImage: "gearshape.2")
+            .foregroundStyle(.secondary)
+            .font(.caption)
+            .help(runningProcesses.detail)
+    }
+
+    private func memoryItem(_ bytes: UInt64) -> some View {
+        Label(AppMemory.format(bytes: bytes), systemImage: "memorychip")
+            .foregroundStyle(.secondary)
+            .font(.caption.monospacedDigit())
+            .help("Memory used by Wietty itself, as Activity Monitor reports it. "
+                  + "The shells and agents in its terminals are not included.")
     }
 
     /// The symbol for a health, shared with the MCP tab of Settings so both say it

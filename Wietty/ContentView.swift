@@ -19,6 +19,8 @@ struct ContentView: View {
     let promptTemplatePresentation: PromptTemplatePresentation
     @Environment(\.openWindow) private var openWindow
     @State private var mcpHost: MCPServerHost?
+    /// The app's own memory for the status bar, sampled for the window's life.
+    @State private var memory = AppMemoryMonitor()
     @State private var remoteServer: RemoteServer?
     @State private var isBusy = false
     @State private var renameTarget: (project: Project, ref: TerminalRef)?
@@ -99,7 +101,10 @@ struct ContentView: View {
         // Under both halves rather than the right column, because what it reports
         // belongs to the app, not to whatever the pane shows.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            StatusBarView(mcpStatus: store.mcpStatus, onRestartMCPServer: { restartMCPServer() })
+            StatusBarView(mcpStatus: store.mcpStatus,
+                          runningProcesses: store.runningProcessCounts,
+                          memoryBytes: memory.footprintBytes,
+                          onRestartMCPServer: { restartMCPServer() })
         }
         // Up under the hidden title bar, so the sidebar's buttons and the pane's bar
         // are the row the traffic lights sit in rather than a second row below an
@@ -116,6 +121,7 @@ struct ContentView: View {
         .navigationTitle("")
         .task {
             store.startPeriodicRefresh()
+            memory.start()
             // libghostty or the bundled helper failing to start is reported the same
             // way a failed terminal action is, so the message is visible on launch
             // rather than only after the first click that fails. There is nothing to

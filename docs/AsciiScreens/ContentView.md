@@ -22,8 +22,10 @@ and `NavBarView` together are the window's top row, the traffic lights sit at it
 leading edge, and dragging an empty part of it moves the window. See `NavBarView.md`.
 
 Under the whole row runs `StatusBarView`, across both halves, attached as the row's
-bottom safe area inset. It reports on the app itself (today, whether the MCP server
-is running) rather than on the pane. See `StatusBarView.md`.
+bottom safe area inset. It reports on the app itself (whether the MCP server is
+running, how many terminals, agents, managed processes and tests are running, and
+the app's memory)
+rather than on the pane. See `StatusBarView.md`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -36,7 +38,7 @@ is running) rather than on the pane. See `StatusBarView.md`.
 │ ························· Divider│                                          │
 │ ▸ api-service                    │                                          │
 ├──────────────────────────────────┴──────────────────────────────────────────┤
-│ ● MCP 127.0.0.1:7433 ⟳                                                       │
+│ ● MCP 127.0.0.1:7433 ⟳                                ⚙ 6 running   ▤ 412 MB │
 └─────────────────────────────────────────────────────────────────────────────┘
   StatusBarView, 22 points, full width, under both halves
 
