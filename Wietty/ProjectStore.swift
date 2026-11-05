@@ -461,9 +461,10 @@ final class ProjectStore {
     /// nil when it started cleanly. Shown in Settings; not persisted.
     var remoteStartupError: String?
 
-    /// Last error from starting the MCP server (e.g. the port is in use), or nil
-    /// when it started cleanly. Shown in Settings; not persisted.
-    var mcpStartupError: String?
+    /// Where the MCP server is, mirrored from `MCPServerHost` so the status bar and
+    /// Settings can show it (a failure carries its reason, e.g. the port is in
+    /// use). Not persisted.
+    var mcpStatus: MCPServerStatus = .stopped
 
     private static func clampPort(_ port: Int) -> Int {
         min(max(port, portRange.lowerBound), portRange.upperBound)

@@ -21,6 +21,10 @@ where one would be (`ignoresSafeArea(.container, edges: .top)`). So `SidebarTopB
 and `NavBarView` together are the window's top row, the traffic lights sit at its
 leading edge, and dragging an empty part of it moves the window. See `NavBarView.md`.
 
+Under the whole row runs `StatusBarView`, across both halves, attached as the row's
+bottom safe area inset. It reports on the app itself (today, whether the MCP server
+is running) rather than on the pane. See `StatusBarView.md`.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ ● ● ●                   ⟳  +     │ Wietty                                 ⚙ │
@@ -31,7 +35,11 @@ leading edge, and dragging an empty part of it moves the window. See `NavBarView
 │   │  ✦ Claude Code   ◀ selected  │ █                                        │
 │ ························· Divider│                                          │
 │ ▸ api-service                    │                                          │
-└──────────────────────────────────┴──────────────────────────────────────────┘
+├──────────────────────────────────┴──────────────────────────────────────────┤
+│ ● MCP 127.0.0.1:7433 ⟳                                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+  StatusBarView, 22 points, full width, under both halves
+
   SidebarTopBar, 28 points, then     NavBarView, 28 points, then
   the sidebar, 320 points wide by    RightTerminalView with the rest
   default, the list scrolling under

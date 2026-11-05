@@ -90,10 +90,16 @@ struct ContentView: View {
                                       ghosttyColors: terminals.ghosttyColors,
                                       promptTemplates: promptTemplates,
                                       selection: paneSelection,
-                                      onRestartTerminal: { restartTerminal(sessionId: $0) })
+                                      onRestartTerminal: { restartTerminal(sessionId: $0) },
+                                      onRestartMCPServer: { restartMCPServer() })
                 }
                 .frame(maxWidth: .infinity)
             }
+        }
+        // Under both halves rather than the right column, because what it reports
+        // belongs to the app, not to whatever the pane shows.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            StatusBarView(mcpStatus: store.mcpStatus, onRestartMCPServer: { restartMCPServer() })
         }
         // Up under the hidden title bar, so the sidebar's buttons and the pane's bar
         // are the row the traffic lights sit in rather than a second row below an
@@ -150,8 +156,11 @@ struct ContentView: View {
             startBellNotifications()
             terminals.monitor.start { event in store.handle(event) }
             if mcpHost == nil {
+                // One host for the window's life. A port change or a Restart restarts
+                // this one rather than building another, so only one server ever
+                // reports into `store.mcpStatus`.
                 let host = MCPServerHost(router: MCPToolRouter(store: store, port: store.mcpPort), port: store.mcpPort,
-                                         onStartupError: { message in store.mcpStartupError = message })
+                                         onStatusChange: { status in store.mcpStatus = status })
                 mcpHost = host
                 await host.start()
             }
@@ -176,7 +185,7 @@ struct ContentView: View {
         }
         .onChange(of: store.remoteEnabled) { Task { await syncRemoteServer() } }
         .onChange(of: store.remotePort) { Task { await syncRemoteServer(forceRestart: true) } }
-        .onChange(of: store.mcpPort) { Task { await restartMCPHost() } }
+        .onChange(of: store.mcpPort) { Task { await mcpHost?.restart(port: store.mcpPort) } }
         .alert("Rename terminal", isPresented: renameIsPresented) {
             TextField("Name", text: $renameText)
             Button("Cancel", role: .cancel) { renameTarget = nil }
@@ -541,14 +550,10 @@ struct ContentView: View {
         }
     }
 
-    /// Recreates the MCP host on the currently configured port.
-    private func restartMCPHost() async {
-        mcpHost?.stop()
-        store.mcpStartupError = nil
-        let host = MCPServerHost(router: MCPToolRouter(store: store, port: store.mcpPort), port: store.mcpPort,
-                                 onStartupError: { message in store.mcpStartupError = message })
-        mcpHost = host
-        await host.start()
+    /// Restarts the MCP server on the port it already has. The status bar's and the
+    /// Settings tab's Restart.
+    private func restartMCPServer() {
+        Task { await mcpHost?.restart() }
     }
 
     private func addProject() {

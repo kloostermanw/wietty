@@ -41,6 +41,8 @@ struct RightTerminalView: View {
     /// `ContentView` rather than calling the store here, so it shares the sidebar's
     /// busy flag with the row's own restart button and cannot run twice at once.
     let onRestartTerminal: (String) -> Void
+    /// Settings' MCP Restart, handed up to `ContentView`, which owns the server.
+    var onRestartMCPServer: () -> Void = {}
 
     var body: some View {
         // One branch for local and nothing selected, deliberately. They are the same
@@ -61,7 +63,8 @@ struct RightTerminalView: View {
                          remoteWorkspaces: remoteWorkspaces, bells: bells,
                          desktopNotifications: desktopNotifications,
                          ghosttyColors: ghosttyColors,
-                         promptTemplates: promptTemplates)
+                         promptTemplates: promptTemplates,
+                         onRestartMCPServer: onRestartMCPServer)
                 .frame(minWidth: SidebarWidth.paneMinimum,
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)
