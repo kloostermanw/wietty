@@ -105,6 +105,36 @@ final class TestSupervisor {
         return started
     }
 
+    /// Suspends until none of `tests` is in flight (starting, running, or stopping),
+    /// or until `timeout` elapses, and reports whether they all settled. A test that
+    /// is idle, finished, or failed already counts as settled, so a wait on a test
+    /// nobody started returns at once instead of hanging until the deadline; telling
+    /// "passed" from "never ran" is left to the caller, which reads the states.
+    ///
+    /// Takes the processes rather than names so a test whose definition is dropped
+    /// mid-wait is still observed: `apply` kills it and its exit settles the wait,
+    /// even though the supervisor no longer lists it. Event driven, not polled: each
+    /// round suspends on the next state change of any unsettled test, raced against
+    /// the deadline. Returns false (not settled) if the calling task is cancelled,
+    /// which is how a dropped HTTP request ends its wait.
+    func waitUntilSettled(_ tests: [ManagedProcess], timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while true {
+            let pending = tests.filter { processIsRunning(for: $0.state) }
+            if pending.isEmpty { return true }
+            if Task.isCancelled || ContinuousClock.now >= deadline { return false }
+            await withTaskGroup(of: Void.self) { group in
+                for test in pending {
+                    let seen = test.state
+                    group.addTask { await test.waitForStateChange(from: seen) }
+                }
+                group.addTask { try? await Task.sleep(until: deadline, clock: .continuous) }
+                await group.next()
+                group.cancelAll()
+            }
+        }
+    }
+
     /// Records the workspace's latest working-tree fingerprint and stales any
     /// passing test whose baseline differs. A `.finished` test with no baseline
     /// yet adopts this fingerprint (stays fresh) rather than being reset, so a

@@ -13,6 +13,9 @@ import NIOCore
 /// bound to `127.0.0.1`. All tool logic lives in `MCPToolRouter`; this type is
 /// only the transport/protocol adapter.
 ///
+/// The same server also answers `GET /tests/wait`, a plain HTTP long poll that
+/// returns when the given tests end (see `MCPToolRouter.waitForTests`).
+///
 /// Connect a client with:
 /// `claude mcp add --transport http wietty http://127.0.0.1:<port>/mcp`
 @MainActor
@@ -21,6 +24,10 @@ final class MCPServerHost {
     static let serverName = "wietty"
     static let serverVersion = "1.0"
     private static let endpointPath = "mcp"
+    /// Long-poll endpoint an agent runs in a background shell to learn when tests
+    /// end. Lives beside `/mcp` on the same loopback-only server. See
+    /// `MCPToolRouter.waitForTests`.
+    private static let testWaitPath = "tests/wait"
     private static let maxRequestBytes = 4 * 1024 * 1024
 
     private let router: MCPToolRouter
@@ -204,6 +211,19 @@ final class MCPServerHost {
                 )
             }
             return Response(status: status, headers: responseHeaders)
+        }
+
+        let toolRouter = router
+        httpRouter.on(RouterPath(Self.testWaitPath), method: .get) { request, _ -> Response in
+            let query = request.uri.queryParameters.map { (name: String($0.key), value: String($0.value)) }
+            let reply = await toolRouter.waitForTests(query: query)
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            return Response(
+                status: HTTPResponse.Status(code: reply.status),
+                headers: headers,
+                body: ResponseBody(byteBuffer: ByteBuffer(string: reply.body.encodedString() + "\n"))
+            )
         }
 
         return Application(

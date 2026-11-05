@@ -10,7 +10,9 @@ final class ManagedProcess: Identifiable {
     let id = UUID()
     let name: String
     private(set) var config: ProcessConfig
-    private(set) var state: ProcessState = .idle
+    private(set) var state: ProcessState = .idle {
+        didSet { if state != oldValue { resumeStateWaiters() } }
+    }
     private(set) var log = ProcessLogBuffer()
 
     /// The workspace-wide `shell_init` lines, which run ahead of this
@@ -290,6 +292,35 @@ final class ManagedProcess: Identifiable {
     /// while a failing test stays red until it next passes.
     func resetToIdleIfFinished() {
         if state == .finished { state = .idle }
+    }
+
+    // MARK: Awaiting state
+
+    /// Callers suspended in `waitForStateChange(from:)`, keyed by a per-call token so
+    /// a cancelled wait can withdraw its own continuation.
+    @ObservationIgnored private var stateWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+    /// Suspends until `state` differs from `expected`, returning at once if it
+    /// already does. Passing the state the caller last saw, rather than waiting for
+    /// "the next change", closes the gap between a caller's check and its
+    /// suspension: a transition landing in between still releases the wait. Also
+    /// returns when the calling task is cancelled.
+    func waitForStateChange(from expected: ProcessState) async {
+        guard state == expected, !Task.isCancelled else { return }
+        let token = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled { continuation.resume() } else { stateWaiters[token] = continuation }
+            }
+        } onCancel: {
+            Task { @MainActor in self.stateWaiters.removeValue(forKey: token)?.resume() }
+        }
+    }
+
+    private func resumeStateWaiters() {
+        let waiters = stateWaiters
+        stateWaiters.removeAll()
+        waiters.values.forEach { $0.resume() }
     }
 
     // MARK: Internals
