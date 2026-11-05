@@ -156,7 +156,7 @@ Every view type, and where its layout is documented.
 | `RightTerminalView` | `RightTerminalView.swift` | `ContentView.md`, under "What the pane shows". Its selection rule is `PaneSelection.swift`, which is not a view |
 | `ProcessLogView` | `ProcessLogView.swift` | `ContentView.md`, under "What the pane shows" |
 | `NavBarView` | `NavBarView.swift` | `NavBarView.md`. What it says is `NavBarTitle.swift`, which is not a view |
-| `StatusBarView` | `StatusBarView.swift` | `StatusBarView.md`. What it says about the MCP server is `MCPServerStatus.swift`, which is not a view |
+| `StatusBarView` | `StatusBarView.swift` | `StatusBarView.md`. What it says comes from `MCPServerStatus.swift`, `RunningProcessCounts.swift` and `AppMemory.swift`, none of which is a view |
 | `SidebarDivider` | `SidebarDivider.swift` | `ContentView.md`, under "Who gets the surplus, and where the divider is". Its arithmetic is `SidebarWidth.swift`, which is not a view |
 | `RemoteTerminalView` | `RemoteTerminalView.swift` | `ContentView.md`, under "What the pane shows" |
 | `SettingsView`, `AgentRow`, `GroupRow`, `PromptTemplateRow`, `RemoteConnectionRow` | `SettingsView.swift` | `SettingsView.md`. Drawn in the pane, and reached through `PaneRouter.swift` and `SettingsCommand` (in `WiettyApp.swift`), neither of which is a view |
