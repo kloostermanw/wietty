@@ -63,10 +63,11 @@ import Foundation
     /// The pane no longer owns its column alone: `NavBarView` sits above it with a
     /// divider between. A window minimum still equal to the pane's own floor would
     /// squeeze the pane below it by exactly the bar, which is the same arithmetic
-    /// mistake `dividerWidth` exists to prevent horizontally.
-    @Test func theWindowMinimumHeightLeavesRoomForTheBar() {
+    /// mistake `dividerWidth` exists to prevent horizontally. `StatusBarView` runs
+    /// under both halves with its own divider, so it counts the same way.
+    @Test func theWindowMinimumHeightLeavesRoomForBothBars() {
         #expect(SidebarWidth.windowMinimumHeight
-                == SidebarWidth.paneMinimumHeight + NavBarView.height + 1)
+                == SidebarWidth.paneMinimumHeight + NavBarView.height + 1 + StatusBarView.height + 1)
     }
 
     /// The case that makes this a clamp rather than a range check: a width stored

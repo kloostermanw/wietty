@@ -418,8 +418,8 @@ URL); deleting removes it. See settings-storage.md and prompt-templates.md.
 │ └───────┴───────┴───────┴───────┴───────┴─────┘   │
 │ ────────────────────────────────────────────────  │
 │    MCP server                        [  7433 ]    │
-│    (if the MCP server failed to start:)           │
-│    ⚠ MCP server did not start: <reason>           │
+│    ● MCP server listening on              Restart │
+│      http://127.0.0.1:7433/mcp                    │
 │    The loopback TCP port the MCP server listens    │
 │    on. It restarts on the new port as soon as      │
 │    you change it. See docs/mcp.md.                 │
@@ -530,10 +530,13 @@ scheduler's next tick, no restart needed.
   of sharing one. Each value is clamped to `ProjectStore.portRange` (1024 to
   65535) and persisted on set. `ContentView` restarts the affected server when a
   port changes.
-- `⚠ MCP server did not start`: shown only when `store.mcpStartupError` is set
-  (for example the port is already in use). `MCPServerHost` reports it through
-  its `onStartupError` callback, and `ContentView.restartMCPHost` clears it
-  before each restart attempt.
+- `● MCP server listening on …` / `Restart`: always shown. The line is
+  `store.mcpStatus.detail` with the same symbol and colour as the status bar (see
+  `StatusBarView.md`), so a failure reads `⚠ MCP server did not start on port
+  7433: <reason>` in red. `MCPServerHost` reports every status through its
+  `onStatusChange` callback. `Restart` calls `onRestartMCPServer`, handed down from
+  `ContentView` through `RightTerminalView`, which restarts the server on the port
+  it already has.
 - `☐ Enable LAN remote terminal`: `Toggle(isOn: $store.remoteEnabled)`. Off by
   default. `ContentView` starts or stops `RemoteServer` in response.
 - `⚠ Server did not start`: shown only when `store.remoteStartupError` is set

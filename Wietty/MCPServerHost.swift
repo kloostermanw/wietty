@@ -31,53 +31,89 @@ final class MCPServerHost {
     private static let maxRequestBytes = 4 * 1024 * 1024
 
     private let router: MCPToolRouter
-    private let port: Int
-    private let onStartupError: (@MainActor @Sendable (String) -> Void)?
+    private var port: Int
+    private let onStatusChange: (@MainActor (MCPServerStatus) -> Void)?
     private var runTask: Task<Void, Never>?
+    /// Bumped by every `start` and `stop`. A server's callbacks carry the value from
+    /// the start that launched them and are dropped once it has moved on, so a server
+    /// that is shutting down cannot report over the one that replaced it.
+    private var generation = 0
 
-    /// Populated if the server fails to bind or start.
-    private(set) var startupError: String?
+    /// Where the server is. `running` is entered only once the port is bound.
+    private(set) var status: MCPServerStatus = .stopped
 
     init(router: MCPToolRouter, port: Int = MCPServerHost.defaultPort,
-         onStartupError: (@MainActor @Sendable (String) -> Void)? = nil) {
+         onStatusChange: (@MainActor (MCPServerStatus) -> Void)? = nil) {
         self.router = router
         self.port = port
-        self.onStartupError = onStartupError
+        self.onStatusChange = onStatusChange
     }
 
     /// Builds the MCP server + transport, wires them to a Hummingbird HTTP
     /// server, and starts serving in a detached task. Returns once the server
-    /// task has been launched; it does not block on the run loop.
+    /// task has been launched; it does not block on the run loop, so `status` is
+    /// still `starting` when this returns and turns `running` once the port is bound.
     func start() async {
         guard runTask == nil else { return }
+        generation += 1
+        let current = generation
+        let port = self.port
+        report(.starting(port: port), from: current)
         do {
             let transport = Self.makeTransport()
             _ = try await Self.makeStartedServer(router: router, transport: transport)
+            // A `stop` or a second `restart` (two quick clicks) can run while this
+            // was suspended. Launching anyway would leave a server nobody stops.
+            guard current == generation else { return }
 
-            let application = makeApplication(transport: transport)
-            runTask = Task {
+            let application = makeApplication(transport: transport) { [weak self] channel in
+                // Port 0 asks the kernel to pick, so report what it picked.
+                let bound = channel.localAddress?.port ?? port
+                await self?.report(.running(port: bound), from: current)
+            }
+            runTask = Task { [weak self] in
                 do {
                     try await application.runService()
+                    // Returning without an error and without `stop` asking means the
+                    // server went away on its own.
+                    self?.report(.failed(port: port, message: "the server stopped"), from: current)
                 } catch is CancellationError {
-                    // Normal shutdown via `stop()`; not worth surfacing.
+                    // Normal shutdown via `stop()`; `stop` reports it.
                 } catch {
-                    let message = "MCP server stopped: \(error.localizedDescription)"
-                    await MainActor.run {
-                        self.startupError = message
-                        self.onStartupError?(message)
-                    }
+                    self?.report(.failed(port: port, message: error.localizedDescription), from: current)
                 }
             }
         } catch {
-            let message = "MCP server failed to start: \(error.localizedDescription)"
-            startupError = message
-            onStartupError?(message)
+            report(.failed(port: port, message: error.localizedDescription), from: current)
         }
     }
 
-    func stop() {
-        runTask?.cancel()
+    /// Stops the server and waits for it to let go of its port, so a `start` right
+    /// after this can bind the same one again.
+    func stop() async {
+        generation += 1
+        let task = runTask
         runTask = nil
+        task?.cancel()
+        await task?.value
+        report(.stopped, from: generation)
+    }
+
+    /// Stops the server and starts it again, on `port` when one is given. What the
+    /// status bar's Restart and a port change in Settings both call.
+    func restart(port: Int? = nil) async {
+        await stop()
+        if let port {
+            self.port = port
+            router.port = port
+        }
+        await start()
+    }
+
+    private func report(_ newStatus: MCPServerStatus, from startGeneration: Int) {
+        guard startGeneration == generation, newStatus != status else { return }
+        status = newStatus
+        onStatusChange?(newStatus)
     }
 
     // MARK: - MCP server
@@ -176,7 +212,10 @@ final class MCPServerHost {
 
     // MARK: - HTTP server
 
-    private func makeApplication(transport: StatelessHTTPServerTransport) -> some ApplicationProtocol {
+    private func makeApplication(
+        transport: StatelessHTTPServerTransport,
+        onServerRunning: @escaping @Sendable (any Channel) async -> Void
+    ) -> some ApplicationProtocol {
         let httpRouter = Router()
         let path = Self.endpointPath
         let maxBytes = Self.maxRequestBytes
@@ -232,6 +271,7 @@ final class MCPServerHost {
                 address: .hostname("127.0.0.1", port: port),
                 serverName: "wietty"
             ),
+            onServerRunning: onServerRunning,
             logger: Logger(label: "wietty.mcp", factory: { _ in SwiftLogNoOpLogHandler() })
         )
     }

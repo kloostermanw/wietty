@@ -18,6 +18,8 @@ struct SettingsView: View {
     /// The prompt templates, the app's own store for the same reason the others are:
     /// the popup lists what this page edits, so both must read the one store.
     let promptTemplates: PromptTemplateStore
+    /// The MCP tab's Restart. `ContentView` owns the server, so it is handed down.
+    let onRestartMCPServer: () -> Void
 
     /// View state, not a preference. The panel is destroyed when the pane shows
     /// anything else, so this resets on the way back in, which is what a user who
@@ -55,6 +57,7 @@ struct SettingsView: View {
          desktopNotifications: DesktopNotificationSetting,
          ghosttyColors: GhosttyColorSettings,
          promptTemplates: PromptTemplateStore,
+         onRestartMCPServer: @escaping () -> Void = {},
          tab: SettingsTab = .default) {
         _store = Bindable(wrappedValue: store)
         _remoteConnections = ObservedObject(wrappedValue: remoteConnections)
@@ -63,6 +66,7 @@ struct SettingsView: View {
         self.desktopNotifications = desktopNotifications
         self.ghosttyColors = ghosttyColors
         self.promptTemplates = promptTemplates
+        self.onRestartMCPServer = onRestartMCPServer
         _tab = State(initialValue: tab)
     }
 
@@ -232,9 +236,12 @@ struct SettingsView: View {
     @ViewBuilder private var mcpSection: some View {
         Section {
             portField("MCP server", value: $store.mcpPort)
-            if let error = store.mcpStartupError {
-                Label("MCP server did not start: \(error)", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.red)
+            HStack {
+                Label(store.mcpStatus.detail, systemImage: StatusBarView.symbol(for: store.mcpStatus.health))
+                    .font(.caption)
+                    .foregroundStyle(StatusBarView.color(for: store.mcpStatus.health))
+                Spacer()
+                Button("Restart", action: onRestartMCPServer)
             }
             Text("The loopback TCP port the MCP server listens on. It restarts on the new port as soon as you change it. See docs/mcp.md.")
                 .font(.caption).foregroundStyle(.secondary)

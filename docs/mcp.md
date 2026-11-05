@@ -23,8 +23,22 @@ protocol version). Origin validation is intentionally relaxed, because many MCP
 HTTP clients omit the `Origin` header; the loopback-only bind is the mitigation.
 
 The port defaults to 7433 and can be changed on the MCP tab of Settings. The
-server restarts on the new port as soon as you change it, and that tab shows an
-error there if it fails to bind.
+server restarts on the new port as soon as you change it.
+
+### Is it running
+
+The status bar along the bottom of the window shows the server's state
+(`MCPServerStatus`): a green `MCP 127.0.0.1:<port>` once the port is bound, `MCP
+starting` before that, and a red `MCP not running` when it failed, with the reason
+in the tooltip. The MCP tab of Settings shows the same line in full. Running means
+bound: `MCPServerHost` only reports it from Hummingbird's `onServerRunning`, so a
+port somebody else holds never shows green.
+
+Both places carry a Restart, which stops the server, waits for it to let go of its
+port, and starts it again on the same one. A port change in Settings goes through
+the same `MCPServerHost.restart(port:)`. One host lives as long as the window, and
+each start bumps a generation that the server's callbacks are checked against, so a
+server that is shutting down cannot report over the one that replaced it.
 
 ### Handshake
 
