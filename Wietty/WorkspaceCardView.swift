@@ -102,7 +102,15 @@ struct WorkspaceCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            header
+            // The ahead/behind rows sit on their own line under the header rather
+            // than beside the name, so a narrow sidebar truncates neither, and hug
+            // it (2pt, not the 6pt between the other lines) to read as part of it.
+            VStack(alignment: .leading, spacing: 2) {
+                header
+                if !collapsed {
+                    aheadBehind
+                }
+            }
             if !collapsed {
                 if let gitInfo {
                     IssuePRLineView(
@@ -164,6 +172,30 @@ struct WorkspaceCardView: View {
         return AnyShapeStyle(.primary)
     }
 
+    /// The git ahead/behind rows, right aligned under the header: one against the
+    /// base branch, one against the upstream. Draws nothing when neither exists.
+    @ViewBuilder private var aheadBehind: some View {
+        if let gitInfo, gitInfo.hasBase || gitInfo.hasUpstream {
+            VStack(alignment: .trailing, spacing: 2) {
+                if gitInfo.hasBase {
+                    AheadBehindView(
+                        label: gitInfo.baseRef ?? "base",
+                        behind: gitInfo.baseBehind,
+                        ahead: gitInfo.baseAhead
+                    )
+                }
+                if gitInfo.hasUpstream {
+                    AheadBehindView(
+                        label: gitInfo.upstreamRef ?? "origin/\(gitInfo.branch)",
+                        behind: gitInfo.behind,
+                        ahead: gitInfo.ahead
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: collapsed ? "chevron.right" : "chevron.down")
@@ -194,24 +226,6 @@ struct WorkspaceCardView: View {
                 }
             }
             Spacer(minLength: 8)
-            if !collapsed {
-                VStack(alignment: .trailing, spacing: 2) {
-                    if let gitInfo, gitInfo.hasBase {
-                        AheadBehindView(
-                            label: gitInfo.baseRef ?? "base",
-                            behind: gitInfo.baseBehind,
-                            ahead: gitInfo.baseAhead
-                        )
-                    }
-                    if let gitInfo, gitInfo.hasUpstream {
-                        AheadBehindView(
-                            label: gitInfo.upstreamRef ?? "origin/\(gitInfo.branch)",
-                            behind: gitInfo.behind,
-                            ahead: gitInfo.ahead
-                        )
-                    }
-                }
-            }
         }
         .contentShape(Rectangle())
         .onTapGesture { onToggleCollapsed() }

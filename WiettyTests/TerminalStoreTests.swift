@@ -660,6 +660,24 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(store.runState(for: ref) == .exited)
     }
 
+    @Test func plainTerminalRunStateIsExitedOnlyOnceItsTerminalEnds() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+        let ref = store.projects[0].terminals[0]
+
+        // An idle shell is a plain terminal doing its job, not one that exited, which
+        // is what `isSessionRunning` already says for the sidebar glyph.
+        store.handle(.job(sessionId: "sess-A", jobName: "zsh"))
+        #expect(store.runState(for: ref) == .running)
+        store.handle(.job(sessionId: "sess-A", jobName: "vim"))
+        #expect(store.runState(for: ref) == .running)
+        store.handle(.terminated(sessionId: "sess-A"))
+        #expect(store.runState(for: ref) == .exited)
+    }
+
     @Test func isSessionRunningNeedsConfirmedJobForClaudeRow() async {
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
@@ -668,10 +686,9 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         await store.openClaude(for: store.projects[0])
         let ref = store.projects[0].terminals[0]
 
-        // No job info: unlike runState, which stays optimistically running, this is
-        // false so a freshly launched app does not paint every row as active.
+        // Opening the row marks it running before any poll has answered (issue #74).
         #expect(store.runState(for: ref) == .running)
-        #expect(store.isSessionRunning(ref) == false)
+        #expect(store.isSessionRunning(ref) == true)
         store.handle(.job(sessionId: "sess-A", jobName: "2.1.203")) // agent foreground job
         #expect(store.isSessionRunning(ref) == true)
         store.handle(.job(sessionId: "sess-A", jobName: "zsh")) // back to the shell
@@ -688,12 +705,114 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         await store.openTerminal(for: store.projects[0])
         let ref = store.projects[0].terminals[0]
 
-        #expect(store.isSessionRunning(ref) == false) // no job info yet
+        #expect(store.isSessionRunning(ref) == true) // marked running at launch (issue #74)
         // The asymmetry that matters: a live shell means running for a plain terminal
         // but not for a Claude row, where the shell is the agent having exited.
         store.handle(.job(sessionId: "sess-A", jobName: "zsh"))
         #expect(store.isSessionRunning(ref) == true)
         store.handle(.job(sessionId: "sess-A", jobName: "")) // terminated
+        #expect(store.isSessionRunning(ref) == false)
+    }
+
+    @Test func openingAnAgentRowRecordsTheAgentAsItsJob() async throws {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        let ref = try await store.openSessionThrowing(for: store.projects[0], kind: .claude,
+                                                      agent: (name: "Codex", line: "/opt/bin/codex --foo"))
+
+        // The executable's name, not its path or its arguments, so the row reads as
+        // running before the job poll's first answer.
+        #expect(store.jobNames[ref.id] == "codex")
+        #expect(store.isSessionRunning(ref) == true)
+        #expect(store.isSessionExited(sessionId: "sess-A") == false)
+    }
+
+    @Test func openingAnAgentWhoseLineStartsWithAShellStillReadsAsRunning() async throws {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        let ref = try await store.openSessionThrowing(for: store.projects[0], kind: .claude,
+                                                      agent: (name: "Wrapped", line: "bash -c run-agent"))
+
+        // A shell name would read as the agent having exited, so it is not written.
+        #expect(store.isSessionRunning(ref) == true)
+    }
+
+    @Test func openingAPlainTerminalRecordsANonEmptyJob() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+        let ref = store.projects[0].terminals[0]
+
+        #expect(store.jobNames[ref.id]?.isEmpty == false)
+        #expect(store.isSessionRunning(ref) == true)
+        #expect(store.isSessionExited(sessionId: "sess-A") == false)
+    }
+
+    @Test func reopeningADeadAgentRowReadsAsRunningAtOnce() async {
+        let fake = FakeTerminalService()
+        fake.handles = [
+            TerminalHandle(sessionId: "sess-A", windowId: "win-1"),
+            TerminalHandle(sessionId: "sess-B", windowId: "win-1"),
+        ]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+        store.handle(.terminated(sessionId: "sess-A"))
+        #expect(store.isSessionRunning(store.projects[0].terminals[0]) == false)
+
+        fake.focusResult = FocusResult(found: false, jobName: nil)
+        await store.activate(store.projects[0].terminals[0], in: store.projects[0])
+        #expect(store.isSessionRunning(store.projects[0].terminals[0]) == true)
+        #expect(store.isSessionExited(sessionId: "sess-B") == false)
+    }
+
+    @Test func retypingAnAgentIntoItsLiveShellReadsAsRunningAtOnce() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+        store.handle(.job(sessionId: "sess-A", jobName: "zsh")) // the agent quit to its shell
+        #expect(store.isSessionRunning(store.projects[0].terminals[0]) == false)
+
+        fake.focusResult = FocusResult(found: true, jobName: "zsh")
+        await store.activate(store.projects[0].terminals[0], in: store.projects[0])
+        #expect(store.isSessionRunning(store.projects[0].terminals[0]) == true)
+    }
+
+    @Test func restartingAStoppedRowReadsAsRunningAtOnce() async throws {
+        let fake = FakeTerminalService()
+        fake.handles = [
+            TerminalHandle(sessionId: "sess-A", windowId: "win-1"),
+            TerminalHandle(sessionId: "sess-B", windowId: "win-1"),
+        ]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+        store.handle(.terminated(sessionId: "sess-A"))
+
+        let ref = try await store.restart(sessionId: "sess-A")
+        #expect(store.isSessionRunning(ref) == true)
+        #expect(store.isSessionExited(sessionId: "sess-B") == false)
+    }
+
+    @Test func theJobPollStillCorrectsTheOptimisticJob() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+        let ref = store.projects[0].terminals[0]
+        #expect(store.isSessionRunning(ref) == true)
+
+        // The agent never started: the first poll finds the shell in the foreground.
+        store.handle(.job(sessionId: "sess-A", jobName: "zsh"))
         #expect(store.isSessionRunning(ref) == false)
     }
 
@@ -959,5 +1078,82 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         store.handle(.terminated(sessionId: "sess-A"))
         #expect(store.runState(for: ref) == .exited)
         #expect(store.projects[0].terminals.count == 1)
+    }
+
+    /// The pane's stopped screen (issue #70) asks this. Only the terminal ending
+    /// counts: the session's own child is gone and there is nothing left to type into.
+    @Test func aTerminatedSessionIsExited() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+
+        store.handle(.terminated(sessionId: "sess-A"))
+        #expect(store.isSessionExited(sessionId: "sess-A"))
+    }
+
+    /// An agent that quit back to its shell has not stopped the terminal. The shell is
+    /// still live and typing into it works, so covering it with a stopped screen
+    /// would hide a working terminal. This is why `isSessionRunning` cannot be used.
+    @Test func anAgentBackAtItsShellIsNotExited() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+
+        store.handle(.job(sessionId: "sess-A", jobName: "zsh"))
+        #expect(!store.isSessionRunning(store.projects[0].terminals[0]))
+        #expect(!store.isSessionExited(sessionId: "sess-A"))
+    }
+
+    /// No job reported yet is unknown, not exited, so a freshly opened terminal is
+    /// never drawn as stopped before its first poll.
+    @Test func aSessionWithNoJobYetIsNotExited() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+
+        #expect(!store.isSessionExited(sessionId: "sess-A"))
+        #expect(!store.isSessionExited(sessionId: "not-a-session"))
+    }
+
+    /// Restarting from the stopped screen has to take the screen away again.
+    @Test func aRestartedSessionIsNoLongerExited() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1"),
+                        TerminalHandle(sessionId: "sess-B", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+        store.handle(.terminated(sessionId: "sess-A"))
+        #expect(store.isSessionExited(sessionId: "sess-A"))
+
+        await store.restartTerminal(sessionId: "sess-A")
+        #expect(store.projects[0].terminals[0].sessionId == "sess-B")
+        #expect(!store.isSessionExited(sessionId: "sess-B"))
+    }
+
+    /// Clicking a stopped row reopens it through `activate`, the other revival path.
+    /// The exited mark is keyed by the row, which keeps its id across a reopen, so a
+    /// reopen that does not clear it leaves the stopped screen over the live shell
+    /// it just opened until the next job poll, and Restart on that screen kills it.
+    @Test func aReopenedSessionIsNoLongerExited() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1"),
+                        TerminalHandle(sessionId: "sess-B", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openTerminal(for: store.projects[0])
+        store.handle(.terminated(sessionId: "sess-A"))
+        #expect(store.isSessionExited(sessionId: "sess-A"))
+
+        fake.focusResult = FocusResult(found: false, jobName: nil)
+        await store.activate(store.projects[0].terminals[0], in: store.projects[0])
+        #expect(store.projects[0].terminals[0].sessionId == "sess-B")
+        #expect(!store.isSessionExited(sessionId: "sess-B"))
     }
 }

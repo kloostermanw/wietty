@@ -41,8 +41,14 @@ final class MCPToolRouter {
 
     private static let maxOutputLines = 200
 
-    init(store: ProjectStore) {
+    /// The loopback port the MCP server, and with it `GET /tests/wait`, listens on.
+    /// Only quoted in the run tools' descriptions, so an agent can copy a working
+    /// `curl` command without guessing the port.
+    private let port: Int
+
+    init(store: ProjectStore, port: Int = MCPServerHost.defaultPort) {
         self.store = store
+        self.port = port
     }
 
     // MARK: - Dispatch
@@ -291,6 +297,60 @@ final class MCPToolRouter {
         return .object(["tests": .array(items)])
     }
 
+    // MARK: - Waiting for tests (GET /tests/wait)
+
+    /// An HTTP status and JSON body for `MCPServerHost` to send back verbatim.
+    struct HTTPReply {
+        let status: Int
+        let body: JSONValue
+    }
+
+    /// Serves `GET /tests/wait`: holds the request until every listed test has left
+    /// the in-flight states or the timeout passes, then answers with one row per test
+    /// in the `list_tests` shape plus `done`. The status code carries the outcome
+    /// (see `TestWaitOutcome`) so `curl --fail-with-body` exits meaningfully. Not an
+    /// MCP tool: the MCP transport here is request/response, and an agent waiting in
+    /// a background shell gets woken on exit for free.
+    ///
+    /// Every id is resolved before waiting, so a typo answers 404 at once instead of
+    /// after the other tests finish. Rows are serialized from the processes resolved
+    /// up front, so a test dropped from `wietty.json` mid-wait is still reported.
+    func waitForTests(query: [(name: String, value: String)]) async -> HTTPReply {
+        let request: TestWaitRequest
+        do {
+            request = try TestWaitRequest.parse(query)
+        } catch {
+            return HTTPReply(status: error.httpStatus,
+                             body: .object(["error": .string(error.errorDescription ?? "Bad request.")]))
+        }
+
+        var resolved: [(process: ManagedProcess, project: Project)] = []
+        var unknown: [String] = []
+        for id in request.ids {
+            if let found = try? resolveManagedProcess(["id": .string(id)]) {
+                resolved.append((found.process, found.project))
+            } else {
+                unknown.append(id)
+            }
+        }
+        guard unknown.isEmpty else {
+            return HTTPReply(status: 404, body: .object([
+                "error": .string("No test with id \(unknown.joined(separator: ", "))."),
+                "unknown_ids": .array(unknown.map(JSONValue.string)),
+            ]))
+        }
+
+        let settled = await store.testSupervisor.waitUntilSettled(
+            resolved.map(\.process), timeout: .seconds(request.timeoutSeconds)
+        )
+        let outcome = TestWaitOutcome(states: resolved.map(\.process.state), settled: settled)
+        let rows = resolved.map { managedProcessJSON($0.process, isTest: true, in: $0.project) }
+        return HTTPReply(status: outcome.httpStatus, body: .object([
+            "tests": .array(rows),
+            "done": .bool(outcome.done),
+        ]))
+    }
+
     // MARK: - Resolution helpers
 
     private func requireString(_ args: [String: JSONValue], _ key: String) throws -> String {
@@ -424,6 +484,14 @@ final class MCPToolRouter {
 
     // MARK: - Tool catalog
 
+    /// Appended to the run tools' descriptions so agents discover the wait endpoint
+    /// instead of polling.
+    private var waitHint: String {
+        "Instead of polling, run this in the background and get notified when it exits: "
+            + "curl -sS --fail-with-body \"http://127.0.0.1:\(port)/tests/wait?id=<test-id>&id=<test-id>&timeout=1800\" "
+            + "(HTTP 200 all finished, 422 one failed, 409 one never started, 504 timed out; body lists each test's status)."
+    }
+
     func toolDescriptors() -> [MCPToolDescriptor] {
         [
             .init(name: "list_projects",
@@ -501,10 +569,10 @@ final class MCPToolRouter {
                   description: "List a workspace's tests (defined in wietty.json), in the same row shape list_managed_processes returns. Narrower than that tool, which also includes processes. Each id feeds run_test. Omit project_id to list every workspace's tests; this does not fall back to the selected workspace.",
                   inputSchema: Self.schema(properties: ["project_id": Self.stringProp("Optional workspace id to scope to; omitted lists every workspace")], required: [])),
             .init(name: "run_test",
-                  description: "Run one test by its id (from list_tests or list_managed_processes) and return the status the run left it in: running, or failed with exit_code -1 when the launch was blocked or refused. Errors if the test is already running, since that call would start nothing. Read the result afterwards with get_managed_process_status / get_managed_process_output; it is done when the status reaches finished or failed.",
+                  description: "Run one test by its id (from list_tests or list_managed_processes) and return the status the run left it in: running, or failed with exit_code -1 when the launch was blocked or refused. Errors if the test is already running, since that call would start nothing. Read the result afterwards with get_managed_process_status / get_managed_process_output; it is done when the status reaches finished or failed. \(waitHint)",
                   inputSchema: Self.schema(properties: ["id": Self.stringProp("test id")], required: ["id"])),
             .init(name: "run_all_tests",
-                  description: "Run every test in a workspace and return the status each was left in. A test already running is left alone rather than restarted, so each row carries started: true/false saying whether this call launched it. Uses the selected workspace if project_id is omitted.",
+                  description: "Run every test in a workspace and return the status each was left in. A test already running is left alone rather than restarted, so each row carries started: true/false saying whether this call launched it. Uses the selected workspace if project_id is omitted. \(waitHint)",
                   inputSchema: Self.schema(properties: ["project_id": Self.stringProp("Workspace id (defaults to selected)")], required: [])),
         ]
     }

@@ -582,6 +582,80 @@ import Foundation
         }
     }
 
+    // MARK: - Waiting for tests (GET /tests/wait)
+
+    @Test func waitForTestsReturnsTheRowOnceTheTestFinishes() async throws {
+        let (router, _, project, _, testLauncher) = makeManagedRouter(tests: ["phpunit": TestConfig(command: "phpunit")])
+        let id = ManagedProcessID.string(projectId: project.id, name: "phpunit", isTest: true)
+        _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        let waiting = Task { @MainActor in await router.waitForTests(query: [("id", id)]) }
+        for _ in 0..<20 { await Task.yield() }
+        testLauncher.last.onExit(0)
+        let response = await waiting.value
+        #expect(response.status == 200)
+        #expect(response.body["done"]?.boolValue == true)
+        let row = response.body["tests"]?.arrayValue?.first
+        #expect(row?["id"]?.stringValue == id)
+        #expect(row?["name"]?.stringValue == "phpunit")
+        #expect(row?["type"]?.stringValue == "test")
+        #expect(row?["status"]?.stringValue == "finished")
+        #expect(row?["started"] == nil) // the list_tests shape, not the run tools'
+    }
+
+    @Test func waitForTestsReportsAFailureWithItsExitCode() async throws {
+        let (router, _, project, _, testLauncher) = makeManagedRouter(tests: ["phpunit": TestConfig(command: "phpunit")])
+        let id = ManagedProcessID.string(projectId: project.id, name: "phpunit", isTest: true)
+        _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        testLauncher.last.onExit(3)
+        let response = await router.waitForTests(query: [("id", id)])
+        #expect(response.status == 422)
+        #expect(response.body["tests"]?.arrayValue?.first?["exit_code"]?.intValue == 3)
+    }
+
+    @Test func waitForTestsTimesOutWithTheCurrentStatuses() async throws {
+        let (router, _, project, _, _) = makeManagedRouter(tests: ["phpunit": TestConfig(command: "phpunit")])
+        let id = ManagedProcessID.string(projectId: project.id, name: "phpunit", isTest: true)
+        _ = try await router.call("run_test", arguments: ["id": .string(id)])
+        let response = await router.waitForTests(query: [("id", id), ("timeout", "0")])
+        #expect(response.status == 504)
+        #expect(response.body["done"]?.boolValue == false)
+        #expect(response.body["tests"]?.arrayValue?.first?["status"]?.stringValue == "running")
+    }
+
+    @Test func waitForTestsReturnsAnIdleTestAtOnceAsNotDone() async throws {
+        let (router, _, project, _, _) = makeManagedRouter(tests: ["phpunit": TestConfig(command: "phpunit")])
+        let id = ManagedProcessID.string(projectId: project.id, name: "phpunit", isTest: true)
+        let response = await router.waitForTests(query: [("id", id)])
+        #expect(response.status == 409)
+        #expect(response.body["done"]?.boolValue == false)
+        #expect(response.body["tests"]?.arrayValue?.first?["status"]?.stringValue == "idle")
+    }
+
+    @Test func waitForTestsRejectsAnUnknownIdWith404() async throws {
+        let (router, _, project, _, _) = makeManagedRouter(tests: ["phpunit": TestConfig(command: "phpunit")])
+        let known = ManagedProcessID.string(projectId: project.id, name: "phpunit", isTest: true)
+        let ghost = ManagedProcessID.string(projectId: project.id, name: "ghost", isTest: true)
+        let response = await router.waitForTests(query: [("id", known), ("id", ghost)])
+        #expect(response.status == 404)
+        #expect(response.body["unknown_ids"] == .array([.string(ghost)]))
+        #expect(response.body["error"]?.stringValue?.isEmpty == false)
+    }
+
+    @Test func waitForTestsRejectsAProcessIdWith400() async throws {
+        let (router, _, project, _, _) = makeManagedRouter(processes: ["queue": ProcessConfig(command: "run-queue")])
+        let id = ManagedProcessID.string(projectId: project.id, name: "queue", isTest: false)
+        let response = await router.waitForTests(query: [("id", id)])
+        #expect(response.status == 400)
+        #expect(response.body["error"]?.stringValue?.contains("not a test") == true)
+    }
+
+    @Test func runToolDescriptionsPointAtTheWaitEndpoint() {
+        let (router, _, _, _, _) = makeManagedRouter()
+        let descriptions = Dictionary(uniqueKeysWithValues: router.toolDescriptors().map { ($0.name, $0.description) })
+        #expect(descriptions["run_test"]?.contains("/tests/wait") == true)
+        #expect(descriptions["run_all_tests"]?.contains("/tests/wait") == true)
+    }
+
     @Test func runAllTestsRunsEveryTestInTheWorkspace() async throws {
         let (router, _, project, _, testLauncher) = makeManagedRouter(
             tests: ["phpunit": TestConfig(command: "phpunit"), "phpstan": TestConfig(command: "phpstan")]

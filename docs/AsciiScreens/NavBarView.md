@@ -8,13 +8,26 @@ readable without running the app.
 
 In the right column only. The window is a row of three (sidebar, `SidebarDivider`,
 right column), and the bar is the first row of that third part, with a `Divider`
-between it and the pane. Nothing of it is above the sidebar, which keeps the full
-height of the window.
+between it and the pane. Nothing of it is above the sidebar.
+
+It is also the window's title bar, or the right half of it. The window is
+`.hiddenTitleBar` and `ContentView` lets its content run up under that strip
+(`ignoresSafeArea(.container, edges: .top)`), so the traffic lights sit in the same
+28 point row as this bar and `SidebarTopBar`, the sidebar's half, which holds the
+refresh and add buttons. `TitleBarRow.swift` holds both halves' shared parts: the
+button (`TitleBarButton`) and `WindowDragArea`, the background of both bars. With the
+content covering the title bar nothing of AppKit's is under the pointer there, so
+the drag area is what moves the window, and a double click on it does what System
+Settings › Desktop & Dock says a title bar double click does. The title text is not
+a hit target, so a drag that starts on it moves the window too.
+`LocalSectionHeaderTests` asserts the two halves are one height.
 
 ```
-┌─ Wietty─── ───────────────────────────────────────────────┐
-│ ▾ Local        (⟳) (+)  │ Office Mac / web-app          ⚙ │  NavBarView, 28 points
-│ ▾ genotool              │─────────────────────────────────│  Divider
+┌───────────────────────────────────────────────────────────┐
+│ ● ● ●          ⟳  +     │ Office Mac / web-app          ⚙ │  SidebarTopBar, NavBarView, 28 points
+│                         │─────────────────────────────────│  Divider
+│ ▾ Local                 │                                 │
+│ ▾ genotool              │                                 │
 │   │  > Terminal 1       │ > implement the parser          │
 │   │  ✦ Claude Code      │ ⏺ Reading files…                │  RightTerminalView
 │ ▸ genotool-admin        │ █                               │
@@ -59,12 +72,13 @@ selected row; how it is drawn is not, since the sidebar uses a background fill a
 28 point bar has no room for one that would not read as a second selection.
 
 It is the only way in that is inside the window: the app menu's "Settings…" item and
-⌘, are the other two, and the window has no title bar to hold anything of its own.
+⌘, are the other two.
 Toggling rather than showing is load bearing, not a nicety. See `SettingsView.md` for
 the two ways out and why the gear has to be one of them.
 
-The glyph is given a 22 point frame and an explicit `contentShape`, so the target is
-the bar's height rather than the icon's outline. Without it the only way into settings
+The glyph is given a 22 point frame and an explicit `contentShape` (`TitleBarButton`,
+which the sidebar's buttons in the same row use too), so the target is the bar's
+height rather than the icon's outline. Without it the only way into settings
 inside the window was a roughly 13 point hit area.
 
 A static function taking its action, rather than buttons written inline, for the

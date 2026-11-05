@@ -89,11 +89,16 @@ struct ContentView: View {
                                       desktopNotifications: terminals.desktopNotifications,
                                       ghosttyColors: terminals.ghosttyColors,
                                       promptTemplates: promptTemplates,
-                                      selection: paneSelection)
+                                      selection: paneSelection,
+                                      onRestartTerminal: { restartTerminal(sessionId: $0) })
                 }
                 .frame(maxWidth: .infinity)
             }
         }
+        // Up under the hidden title bar, so the sidebar's buttons and the pane's bar
+        // are the row the traffic lights sit in rather than a second row below an
+        // empty one. See `SidebarTopBar`.
+        .ignoresSafeArea(.container, edges: .top)
         // `GeometryReader` answers with whatever size it is offered and never
         // reports what its content needs, so the two halves' minimums would not
         // reach the window on their own: measured `contentMin=0.0x32.0`, and at 500
@@ -145,7 +150,7 @@ struct ContentView: View {
             startBellNotifications()
             terminals.monitor.start { event in store.handle(event) }
             if mcpHost == nil {
-                let host = MCPServerHost(router: MCPToolRouter(store: store), port: store.mcpPort,
+                let host = MCPServerHost(router: MCPToolRouter(store: store, port: store.mcpPort), port: store.mcpPort,
                                          onStartupError: { message in store.mcpStartupError = message })
                 mcpHost = host
                 await host.start()
@@ -345,6 +350,7 @@ struct ContentView: View {
                 }
             }
         }
+        .sidebarTopBar(buttons: localSectionButtons)
         .frame(minWidth: 240)
         // The user's own sidebar colours, set once here and read by every card and
         // row under it (`EnvironmentValues.sidebarColors`). The background fills the
@@ -367,10 +373,11 @@ struct ContentView: View {
             add: addProject)
     }
 
-    /// The Local header's trailing buttons.
+    /// The sidebar's buttons, in the window's top row (`SidebarTopBar`). They act on
+    /// the local workspaces, and used to sit in the Local header.
     ///
     /// A static function taking its actions rather than a computed property, so
-    /// which buttons the header shows is asserted in CI rather than only checkable
+    /// which buttons the row shows is asserted in CI rather than only checkable
     /// by looking at the window.
     static func localSectionButtons(refresh: @escaping () -> Void,
                                     add: @escaping () -> Void)
@@ -399,12 +406,16 @@ struct ContentView: View {
     private var localSection: some View {
         let header = localHeader
         let visible = visibleProjects
-        SidebarSectionHeaderView(
-            title: header.title,
-            collapsed: header.collapsed,
-            onToggle: { sections.setCollapsed("local", !sections.isCollapsed("local")) },
-            buttons: localSectionButtons
-        )
+        // Drawn only when titled: its buttons live in `SidebarTopBar`, so an untitled
+        // header would be an empty row.
+        if let title = header.title {
+            SidebarSectionHeaderView(
+                title: title,
+                collapsed: header.collapsed,
+                onToggle: { sections.setCollapsed("local", !sections.isCollapsed("local")) },
+                buttons: []
+            )
+        }
         if !header.collapsed {
             ForEach(visible) { project in
                 WorkspaceCardView(
@@ -534,7 +545,7 @@ struct ContentView: View {
     private func restartMCPHost() async {
         mcpHost?.stop()
         store.mcpStartupError = nil
-        let host = MCPServerHost(router: MCPToolRouter(store: store), port: store.mcpPort,
+        let host = MCPServerHost(router: MCPToolRouter(store: store, port: store.mcpPort), port: store.mcpPort,
                                  onStartupError: { message in store.mcpStartupError = message })
         mcpHost = host
         await host.start()
@@ -618,9 +629,18 @@ struct ContentView: View {
     }
 
     private func restartTerminal(_ ref: TerminalRef, in project: Project) {
+        restartTerminal(sessionId: ref.sessionId)
+    }
+
+    /// The row's restart button and the pane's stopped screen both land here, so
+    /// both are covered by `isBusy`. The pane's button is the window's default, and
+    /// a second Return while the first restart is still reopening would resolve the
+    /// same old session twice and leave an extra shell behind.
+    private func restartTerminal(sessionId: String) {
+        guard !isBusy else { return }
         Task {
             isBusy = true
-            await store.restartTerminal(sessionId: ref.sessionId)
+            await store.restartTerminal(sessionId: sessionId)
             isBusy = false
         }
     }

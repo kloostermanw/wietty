@@ -240,6 +240,13 @@ like the closed row it is:
   `send_input` and a remote keystroke both looked delivered.
 - **`readOutput` keeps working**, which is the point of keeping the surface at all.
 
+The pane is the one place that does not show the kept surface. A selected session that has ended gets
+the stopped screen with a Restart button instead (`GhosttyPaneState.stopped`, issue #70); see
+`docs/AsciiScreens/ContentView.md`. Taking the surface off screen is why `reap` records its screen
+first: libghostty reads an off-screen surface as empty, and the refresh that output normally drives
+skips exited terminals, so without that recording `readOutput` would answer "" for the terminal the
+user was just looking at.
+
 The reopen is what frees the surface, through `TerminalService.discard`. It is a protocol method with a
 default that does nothing, and `ProjectStore.activate` calls it on the old id before opening the
 replacement.
@@ -595,16 +602,20 @@ a socket that then stays silent forever.
 - **libghostty can never render a remote session.** There is no way to feed bytes into a surface, which
   is the same fact that forces the helper. `RemoteTerminalView` therefore stays on SwiftTerm, and the
   local pane and the remote terminal window do not look alike.
-- **An exited shell leaves a notice in the pane.** libghostty draws "Process exited. Press any key to
-  close the terminal." and its close request only arrives with that next key. Wietty does not set
+- **An exited shell leaves a notice on its surface.** libghostty draws "Process exited. Press any key to
+  close the terminal." and its close request only arrives with that next key. The pane never shows it:
+  once the session has ended, `LocalTerminalView` draws a stopped screen with Restart instead of the
+  surface (`GhosttyPaneState.stopped`, issue #70). Wietty does not set
   `ghostty_surface_config_s.wait_after_command`, so this is `ghostty_surface_config_new`'s default
   rather than a choice made here. It costs nothing: the row's own state comes from the relay reaching
   EOF, through `GhosttyService.reap`, which is the one path that knows whether the shell exited.
   `GHOSTTY_ACTION_SHOW_CHILD_EXITED` is deliberately left unhandled for the same reason, and answered
   false so libghostty knows nothing was shown. On this substrate the surface's command is the helper,
-  which ends because the terminal ended rather than the other way round, and a second notice drawn over
-  the last screen would cover the thing worth reading.
-- **The surface is kept after the child exits**, on purpose, so that last screen stays readable.
+  which ends because the terminal ended rather than the other way round, and the action also fires
+  when the app tears a terminal down itself, so it says nothing about whether the shell exited.
+- **The surface is kept after the child exits**, on purpose, so that last screen stays readable through
+  `readOutput` and the MCP server, even though the pane shows the stopped screen over it. What they get
+  is the screen `reap` recorded, the viewport at the moment the terminal ended, not the scrollback.
   `close`, `discard` and `closeAll` are the only things that destroy a surface, which is to say: closing
   the row, reopening it, or quitting. See "What happens to a terminal that stopped".
 - **Dropping files onto the pane inserts their paths.** `GhosttySurfaceView` registers for `.fileURL`

@@ -37,6 +37,10 @@ struct RightTerminalView: View {
     /// the same reason the others are: the popup lists what that tab edits.
     let promptTemplates: PromptTemplateStore
     let selection: PaneSelection
+    /// The stopped screen's Restart (`LocalTerminalView.onRestart`), handed up to
+    /// `ContentView` rather than calling the store here, so it shares the sidebar's
+    /// busy flag with the row's own restart button and cannot run twice at once.
+    let onRestartTerminal: (String) -> Void
 
     var body: some View {
         // One branch for local and nothing selected, deliberately. They are the same
@@ -78,7 +82,11 @@ struct RightTerminalView: View {
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)
         case .local, .none:
-            LocalTerminalView(stack: stack, session: selection.localSession)
+            let session = selection.localSession
+            LocalTerminalView(stack: stack, session: session,
+                              exited: session.map { store.isSessionExited(sessionId: $0) } ?? false,
+                              isAgent: session.flatMap { store.terminal(paneId: $0) }?.ref.kind == .claude,
+                              onRestart: { if let session { onRestartTerminal(session) } })
         }
     }
 

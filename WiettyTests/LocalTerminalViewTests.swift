@@ -18,6 +18,27 @@ import SwiftUI
             == .terminal)
     }
 
+    /// Issue #70. A stopped terminal still has its surface, and showing it left the
+    /// user looking at libghostty's "Process exited" line with no way to restart.
+    @Test func anExitedTerminalIsStopped() {
+        #expect(GhosttyPaneState.resolve(setupError: nil, session: "gt:1", hasSurface: true,
+                                         exited: true)
+            == .stopped)
+    }
+
+    /// Exited with no surface is a terminal being closed, not one to restart.
+    @Test func anExitedSelectionWithNoSurfaceIsEmpty() {
+        #expect(GhosttyPaneState.resolve(setupError: nil, session: "gt:1", hasSurface: false,
+                                         exited: true)
+            == .empty)
+    }
+
+    @Test func aSetupErrorWinsOverAStoppedTerminal() {
+        #expect(GhosttyPaneState.resolve(setupError: "no libghostty", session: "gt:1",
+                                         hasSurface: true, exited: true)
+            == .unavailable("no libghostty"))
+    }
+
     @Test func nothingSelectedIsEmpty() {
         #expect(GhosttyPaneState.resolve(setupError: nil, session: nil, hasSurface: false) == .empty)
     }

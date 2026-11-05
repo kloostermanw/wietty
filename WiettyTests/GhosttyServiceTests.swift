@@ -203,8 +203,9 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         try await waitUntil { seen.text(for: handle.sessionId).contains("tagged-13") }
     }
 
-    /// `.terminated` has only one source on this substrate: the child exiting.
-    /// Without it a finished row stays marked running for the life of the app.
+    /// `.terminated` has two sources on this substrate, the child exiting and the
+    /// row's stop button, and both go through `reap`. Without it a finished row
+    /// stays marked running for the life of the app.
     ///
     /// The handler is told last, after the terminal has left the census. A handler
     /// that asks what is running (which is exactly what a row updating itself
@@ -219,6 +220,27 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
                                             existingWindowId: nil, command: "exit 0", badge: nil)
         try await waitUntil { ended.names.contains(handle.sessionId) }
         #expect(ended.liveAtExit?.contains(handle.sessionId) == false)
+    }
+
+    /// The pane's stopped screen (issue #70) claims to appear for a terminal
+    /// "stopped from its row", which is only true if `stop` reports `.terminated`
+    /// the way an exit does. The store never marks a stopped row itself; this
+    /// event is its only source.
+    @Test func aStoppedTerminalIsReportedTerminated() async throws {
+        let host = FakeSurfaceHost()
+        let ended = ExitLog()
+        let service = service(host, onTerminated: { ended.add($0) })
+        ended.service = service
+        defer { service.closeAll() }
+        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                            existingWindowId: nil, command: "sleep 60", badge: nil)
+        try await waitUntil { service.liveSessions.contains(handle.sessionId) }
+
+        await service.stop(sessionId: handle.sessionId)
+        try await waitUntil { ended.names.contains(handle.sessionId) }
+        #expect(ended.liveAtExit?.contains(handle.sessionId) == false)
+        #expect(service.jobEvents().isEmpty)
+        #expect(host.destroyed.isEmpty)
     }
 
     /// An exited child is reaped by the service itself: it leaves the census, it
@@ -261,6 +283,28 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         #expect(text == "died here")
         try await service.close(sessionId: handle.sessionId)
         #expect(host.destroyed == [handle.sessionId])
+    }
+
+    /// The pane swaps an ended terminal for its stopped screen (issue #70), which
+    /// takes the surface off screen, and libghostty reads an off-screen surface as
+    /// empty. Output arriving after the exit records nothing, because the refresh
+    /// skips exited terminals, so the one chance to keep the last screen is the
+    /// reap itself, while the surface is still in the window. Without that an MCP
+    /// read of the terminal the user was just looking at comes back as "".
+    @Test func reapingRecordsTheLastScreenForAnOffScreenRead() async throws {
+        let host = FakeSurfaceHost()
+        let service = service(host)
+        defer { service.closeAll() }
+        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                            existingWindowId: nil, command: "exit 0", badge: nil)
+        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
+        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["last words"], cols: 80)
+        try await waitUntil { service.liveSessions.isEmpty }
+
+        // Off screen now: the stopped screen has replaced the surface.
+        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: [], cols: 80)
+        let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 10)
+        #expect(text == "last words")
     }
 
     /// Output is what brings the paint up to date, within `snapshotDebounce`.

@@ -416,12 +416,21 @@ final class GhosttyService: TerminalService {
     /// is being told about.
     ///
     /// The surface is deliberately NOT destroyed. The last screen the command left
-    /// behind is what a user wants to read when something died, and `readOutput`
+    /// behind is what an MCP read wants when something died, and `readOutput`
     /// keeps working on it; `close`, `discard` and `closeAll` are what tear it
     /// down. Guarded by `exited`, because the child can be reaped once and closed
     /// later and neither may free anything twice.
+    ///
+    /// That screen is recorded here, first, because this is the last moment it can
+    /// be. The pane swaps an ended terminal for its stopped screen as soon as
+    /// `onTerminated` lands (issue #70), libghostty reads an off-screen surface as
+    /// empty, and `refreshSnapshots` skips exited terminals, so output that arrives
+    /// after this would record nothing. A terminal that was not on screen records
+    /// an empty read, which `recordSnapshot` discards in favour of what it already
+    /// holds.
     private func reap(_ session: String) {
         guard let terminal = terminals[session], !terminal.exited else { return }
+        recordSnapshot(session)
         terminals[session]?.exited = true
         terminal.relay.stop()
         terminal.pty.terminate()

@@ -4,15 +4,21 @@ import AppKit
 /// What the terminal half of the main window has to draw.
 ///
 /// Separated from the view so the decision can be asserted without AppKit, a
-/// window, or a Metal device. There are only three answers and each has a
+/// window, or a Metal device. There are only four answers and each has a
 /// different cause: a substrate that could not be built at all, a selected
-/// terminal that has a surface, and nothing selected yet.
+/// terminal that has a surface, one whose terminal has ended, and nothing
+/// selected yet.
 enum GhosttyPaneState: Equatable {
     /// libghostty or the bundled helper is missing, and no terminal on this
     /// substrate can ever work this launch.
     case unavailable(String)
     /// A selected session whose surface exists. The pane shows its view.
     case terminal
+    /// A selected session whose terminal has ended, whether stopped from its row or
+    /// because its shell exited. The surface still exists, but all it can show is
+    /// libghostty's "Process exited" line, so the pane offers a restart instead
+    /// (issue #70).
+    case stopped
     /// Nothing to show. Either nothing is selected, or the selected session has
     /// no surface, which is the same thing as far as this view is concerned:
     /// there is no view to put in the window.
@@ -21,14 +27,18 @@ enum GhosttyPaneState: Equatable {
     /// - Parameter setupError: `GhosttyStack.setupError`.
     /// - Parameter session: the selected session, mirrored from `GhosttyService`.
     /// - Parameter hasSurface: whether that session has a surface view.
-    static func resolve(setupError: String?, session: String?, hasSurface: Bool) -> GhosttyPaneState {
+    /// - Parameter exited: `ProjectStore.isSessionExited` for that session.
+    static func resolve(setupError: String?, session: String?, hasSurface: Bool,
+                        exited: Bool = false) -> GhosttyPaneState {
         // The setup error wins over everything: a stack that could not be built
         // has no surfaces, so a selection would only ever reach `.empty` and the
         // user would be told "no terminal selected" for a substrate that is
         // broken. The reason has to be the thing on screen.
         if let setupError { return .unavailable(setupError) }
+        // No surface wins over exited: that is a row being closed, which has
+        // nothing left to restart.
         guard session != nil, hasSurface else { return .empty }
-        return .terminal
+        return exited ? .stopped : .terminal
     }
 }
 
@@ -39,21 +49,36 @@ enum GhosttyPaneState: Equatable {
 /// decides which one is in the window's view hierarchy. That is how Ghostty's own
 /// tabs behave, and it is why a terminal keeps running while another is on screen.
 ///
-/// A terminal whose command has exited still has a surface, because
-/// `GhosttyService` keeps it until the row is closed, so this keeps showing the
-/// last screen that command left behind. That is deliberate: what a died command
-/// printed is the thing a user wants to read.
+/// A terminal that has ended still has a surface, because `GhosttyService` keeps
+/// it until the row is closed, but this does not show it. libghostty appends
+/// "Process exited. Press any key to close the terminal." to that last screen, and
+/// the key it asks for closes nothing useful here, so the pane shows a stopped
+/// screen with Restart instead (issue #70). The surface stays alive behind it, off
+/// screen, and the last screen it showed was recorded at the reap, so `readOutput`
+/// and the MCP server still get that screen (though not its scrollback, which
+/// only an on-screen surface can reach).
 struct LocalTerminalView: View {
     let stack: GhosttyStack
     /// The selected session, mirrored into SwiftUI state by `ContentView` so a
     /// selection made in `GhosttyService` redraws this view.
     let session: String?
+    /// `ProjectStore.isSessionExited` for `session`.
+    var exited: Bool = false
+    /// Whether the selected row is an agent, which only changes the wording of the
+    /// stopped screen.
+    var isAgent: Bool = false
+    /// The stopped screen's Restart button. Wired by `ContentView` to
+    /// `ProjectStore.restartTerminal`, which reopens the row with its own command;
+    /// `GhosttyService.open` selects the replacement, so the pane leaves this
+    /// screen on its own.
+    var onRestart: () -> Void = {}
 
     var body: some View {
         Group {
             switch GhosttyPaneState.resolve(setupError: stack.setupError,
                                             session: session,
-                                            hasSurface: surface != nil) {
+                                            hasSurface: surface != nil,
+                                            exited: exited) {
             case .unavailable(let error):
                 ContentUnavailableView {
                     Label("The internal terminal is unavailable", systemImage: "bolt.slash")
@@ -66,6 +91,15 @@ struct LocalTerminalView: View {
                 // placeholder, because a placeholder here would be unreachable
                 // code claiming to be a state.
                 if let surface { SurfaceContainer(surface: surface) } else { EmptyView() }
+            case .stopped:
+                ContentUnavailableView {
+                    Label(isAgent ? "Agent stopped" : "Terminal stopped", systemImage: "terminal")
+                } description: {
+                    Text(isAgent ? "The agent has exited." : "The process has exited.")
+                } actions: {
+                    Button("Restart", action: onRestart)
+                        .keyboardShortcut(.defaultAction)
+                }
             case .empty:
                 ContentUnavailableView {
                     Label("No terminal selected", systemImage: "terminal")

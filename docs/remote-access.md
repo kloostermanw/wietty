@@ -238,9 +238,11 @@ controlling instance raises its own alert for it, because a click that quietly
 does nothing is the failure this whole route exists to remove.
 
 Note that a row's `run_state` cannot be used to decide any of this. It reports
-the row's foreground job, not whether a session exists, and it answers "running"
-whenever no job has been heard of, which is the case for a row that was never
-opened and for every row of an instance that has been relaunched.
+the row's foreground job, not whether a session exists (for a plain terminal,
+where the shell is the terminal, it answers "exited" only once the terminal
+itself has ended), and it answers "running" whenever no job has been heard of,
+which is the case for a row that was never opened and for every row of an
+instance that has been relaunched.
 
 ### Live state: the control channel
 

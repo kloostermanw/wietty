@@ -972,6 +972,7 @@ final class ProjectStore {
         let ref = TerminalRef(label: label, sessionId: handle.sessionId, kind: kind,
                               command: agent?.line)
         projects[index].terminals.append(ref)
+        markLaunched(ref.id, kind: kind, command: ref.command)
         save()
         emitConfig(for: projects[index].id)
         return ref
@@ -1056,6 +1057,7 @@ final class ProjectStore {
                 if kind == .claude, let command, result.jobKnown,
                    !claudeIsRunning(jobName: result.jobName) {
                     try await service.send(sessionId: sessionId, text: command + "\n")
+                    markLaunched(ref.id, kind: kind, command: command)
                 }
             } else {
                 // Whatever the service still holds under the old id goes first.
@@ -1076,6 +1078,12 @@ final class ProjectStore {
                 recordWorkspaceId(handle.windowId, at: pIndex, openedWith: existingWindowId)
                 projects[pIndex].terminals[tIndex].sessionId = handle.sessionId
                 forgetProgramStatus(ref.id)
+                // The exited mark is keyed by the row, which survives the reopen.
+                // Left in place, only a job report for the new shell would clear
+                // it, which a failed query never sends, so the stopped screen could
+                // sit over the live shell indefinitely, and Restart on that screen
+                // would kill it. `restart` replaces it the same way.
+                markLaunched(ref.id, kind: kind, command: command)
                 save()
             }
         } catch {
@@ -1233,6 +1241,41 @@ final class ProjectStore {
         lastProgramStatusBanner[id] = nil
     }
 
+    /// Records the row as running the moment one of the launch paths starts it
+    /// (`openSessionThrowing`, both branches of `activateThrowing` that start
+    /// something, and `restart`), so its glyph turns green and its Stop button shows
+    /// without waiting for the job poll, which runs only every 15s (300s with every
+    /// workspace collapsed). The poll replaces the value with the real foreground job
+    /// on its next tick, so an agent that failed to start reads as running until then.
+    /// Issue #74.
+    ///
+    /// Written straight into `jobNames` rather than through `handle(.job)`, whose
+    /// shell side effect would clear the program status of an agent just started.
+    /// Never empty, which `isSessionExited` reads as the terminal having ended.
+    ///
+    /// - Parameter command: the line the row types, as `command(for:)` resolves it;
+    ///   nil for a plain terminal.
+    private func markLaunched(_ id: UUID, kind: TerminalKind, command: String?) {
+        jobNames[id] = Self.launchedJobName(kind: kind, command: command)
+    }
+
+    /// The job a row is assumed to run at launch. An agent row's is its executable's
+    /// name (`/opt/bin/codex --foo` is `codex`), with a non-shell stand-in when its
+    /// line starts with a shell, which `claudeIsRunning` would read as the agent
+    /// having exited. A plain terminal's is the shell `GhosttyService` spawns.
+    static func launchedJobName(kind: TerminalKind, command: String?) -> String {
+        switch kind {
+        case .claude:
+            let line = command ?? Self.command(for: kind) ?? ""
+            let name = (String(line.split(separator: " ").first ?? "") as NSString).lastPathComponent
+            return name.isEmpty || shellJobNames.contains(name) ? "agent" : name
+        case .terminal:
+            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+            let name = (shell as NSString).lastPathComponent
+            return name.isEmpty ? "zsh" : name
+        }
+    }
+
     /// Claude counts as running when the foreground job is a non-empty,
     /// non-shell name.
     ///
@@ -1251,18 +1294,36 @@ final class ProjectStore {
         // No job info yet (monitor inactive or event not arrived): stay
         // optimistic so rows don't all read "exited" when monitoring is off.
         guard let job = jobNames[ref.id] else { return .running }
+        // A plain terminal's shell is the terminal, so only its end is an exit; the
+        // same split `isSessionRunning` makes. Without it a terminal started with its
+        // shell recorded as the job (`markLaunched`) read as exited from the start.
+        if ref.kind == .terminal { return job.isEmpty ? .exited : .running }
         return claudeIsRunning(jobName: job) ? .running : .exited
     }
 
     /// Whether this row's terminal is running right now, used to tint its sidebar
     /// glyph green. Unlike `runState`, a row with no job info yet counts as not
     /// running rather than optimistically running, so a freshly launched app does
-    /// not paint every row as active. A plain terminal is running whenever its
-    /// shell is live (any non-empty job); an agent only while its foreground job is
-    /// the agent rather than that shell. A terminated row reports an empty job.
+    /// not paint every row as active. A row the app has just started is not in that
+    /// state: `markLaunched` records a job for it straight away. A plain terminal is
+    /// running whenever its shell is live (any non-empty job); an agent only while its
+    /// foreground job is the agent rather than that shell. A terminated row reports an
+    /// empty job.
     func isSessionRunning(_ ref: TerminalRef) -> Bool {
         guard let job = jobNames[ref.id], !job.isEmpty else { return false }
         return ref.kind == .claude ? claudeIsRunning(jobName: job) : true
+    }
+
+    /// Whether this session's terminal itself has ended, which is what puts the
+    /// pane's stopped screen up (issue #70). Not the negation of `isSessionRunning`:
+    /// an agent that quit back to its shell is not running but its terminal is live,
+    /// and a row with no job reported yet is unknown. Only `.terminated` writes the
+    /// empty job this reads (`GhosttyService.jobEvents` never reports an empty name),
+    /// and both revivals, `restart` and the reopen in `activate`, replace it with the
+    /// launched job (`markLaunched`) along with the old session.
+    func isSessionExited(sessionId: String) -> Bool {
+        guard let (p, t) = indexOfSession(sessionId) else { return false }
+        return jobNames[projects[p].terminals[t].id] == ""
     }
 
     /// The name a sidebar row shows: its stored `displayName`, overridden by any live
@@ -1632,7 +1693,7 @@ final class ProjectStore {
             recordWorkspaceId(handle.windowId, at: np, openedWith: existingWindowId)
             projects[np].terminals[nt].sessionId = handle.sessionId
             attention.remove(oldId)
-            jobNames[oldId] = nil
+            markLaunched(oldId, kind: kind, command: command)
             forgetProgramStatus(oldId)
             save()
             return projects[np].terminals[nt]
