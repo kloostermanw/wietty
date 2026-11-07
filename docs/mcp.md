@@ -29,8 +29,10 @@ server restarts on the new port as soon as you change it.
 
 The status bar along the bottom of the window shows the server's state
 (`MCPServerStatus`): a green `MCP 127.0.0.1:<port>` once the port is bound, `MCP
-starting` before that, and a red `MCP not running` when it failed, with the reason
-in the tooltip. The MCP tab of Settings shows the same line in full. Running means
+starting` before that, a red `MCP not running` when it failed, with the reason
+in the tooltip, and a red `MCP stopped` while a restart has stopped it and not yet
+started it again. Restarts run one at a time, so two quick clicks do not race for
+the port. The MCP tab of Settings shows the same line in full. Running means
 bound: `MCPServerHost` only reports it from Hummingbird's `onServerRunning`, so a
 port somebody else holds never shows green.
 

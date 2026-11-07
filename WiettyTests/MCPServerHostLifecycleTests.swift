@@ -64,8 +64,10 @@ import Foundation
             return
         }
         #expect(failedPort == port)
-        #expect(!message.isEmpty)
+        // The OS's own reason, not Foundation's "The operation couldn't be completed".
+        #expect(message.localizedCaseInsensitiveContains("in use"), "got \(message)")
         await first.stop()
+        await second.stop()
     }
 
     @Test func stopReportsStopped() async {
@@ -109,10 +111,12 @@ import Foundation
         #expect(reported == [.starting(port: 0), .running(port: port), .stopped])
     }
 
-    /// Two Restart clicks in a row start two overlapping restarts. Afterwards the
-    /// host is running and a `stop` frees the port, so no second server was left
-    /// holding it. This pins the outcome; it did not reproduce the interleaving the
-    /// generation check after `makeStartedServer` guards against.
+    /// Two Restart clicks in a row start two overlapping restarts. The second waits
+    /// for the first, so it neither binds while the old server still holds the port
+    /// nor finds the first one's task and gives up. Afterwards the host is running
+    /// and a `stop` frees the port, so no second server was left holding it. The old
+    /// socket closes quickly on this machine, so this pins the outcome rather than
+    /// reliably reproducing the interleaving.
     @Test func overlappingRestartsLeaveOneServer() async throws {
         let host = makeHost()
         await host.start()
@@ -131,6 +135,30 @@ import Foundation
         let status = await waitFor(probe) { runningPort($0) != nil }
         #expect(runningPort(status) == port)
         await probe.stop()
+    }
+
+    /// A port change in Settings restarts on the new port, and the router moves with
+    /// it, so the `curl` command in the tool descriptions names the port in use.
+    @Test func restartOnANewPortMovesTheRouterToo() async throws {
+        let store = ProjectStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
+                                 service: FakeTerminalService())
+        let router = MCPToolRouter(store: store)
+        let host = MCPServerHost(router: router, port: 0)
+        await host.start()
+        _ = await waitFor(host) { runningPort($0) != nil }
+
+        // Find a free port by letting the kernel pick one, then let it go.
+        let probe = makeHost()
+        await probe.start()
+        let newPort = try #require(runningPort(await waitFor(probe) { runningPort($0) != nil }))
+        await probe.stop()
+
+        await host.restart(port: newPort)
+        let status = await waitFor(host) { runningPort($0) == newPort }
+
+        #expect(runningPort(status) == newPort)
+        #expect(router.port == newPort)
+        await host.stop()
     }
 
     /// The server the restart replaced must not report into the new one. The

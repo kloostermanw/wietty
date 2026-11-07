@@ -299,7 +299,8 @@ content, which is what keeps the workspace list from stretching.
 
 The window's own minimum has to be restated on the split
 (`.frame(minWidth: SidebarWidth.windowMinimumWidth, minHeight: SidebarWidth.windowMinimumHeight)`,
-so 726 by 240 of content, which macOS reports as a 726 by 272 window). A
+so 726 by 292 of content: the pane's 240, `NavBarView` and its divider, and
+`StatusBarView` and its divider). A
 `GeometryReader` answers with whatever size it is offered and never reports what
 its content needs, so unlike `HSplitView`'s arranged subviews it does not carry the
 two halves' minimums up to the window. Without that line the window had no minimum

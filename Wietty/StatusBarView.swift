@@ -1,6 +1,23 @@
 import SwiftUI
 import AppKit
 
+/// Reads the store and the memory monitor itself and hands `StatusBarView` plain
+/// values. Observation tracks what a body reads, so reading them here rather than in
+/// `ContentView.body` means a memory sample or a process starting redraws this bar,
+/// not the whole window.
+struct StatusBarContainer: View {
+    let store: ProjectStore
+    let memory: AppMemoryMonitor
+    let onRestartMCPServer: () -> Void
+
+    var body: some View {
+        StatusBarView(mcpStatus: store.mcpStatus,
+                      runningProcesses: store.runningProcessCounts,
+                      memoryBytes: memory.footprintBytes,
+                      onRestartMCPServer: onRestartMCPServer)
+    }
+}
+
 /// The bar along the bottom of the window, under both the sidebar and the pane.
 ///
 /// It reports on the app itself rather than on anything in the pane, which is why it

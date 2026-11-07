@@ -43,7 +43,7 @@ shows, so a second window would be the only part of the app that opened one.
 
 `ContentView` is the root of the main window, and it has one shape: the sidebar
 is the left column of a row of three, and the right column fills the rest with
-`NavBarView` above `RightTerminalView`. The window has no title bar: its content
+`NavBarView` above `RightTerminalView`. `StatusBarView` runs under both halves. The window has no title bar: its content
 runs up under where one would be, so the traffic lights share the top row with the
 sidebar's buttons (`SidebarTopBar`) and `NavBarView`. Everything is inside Wietty (see
 `../terminal.md`).
@@ -57,7 +57,9 @@ sidebar's buttons (`SidebarTopBar`) and `NavBarView`. Everything is inside Wiett
 │   │  > Terminal 1       │ > implement the parser          │
 │   │  ✦ Claude Code ◀ sel│ ⏺ Reading files…                │  RightTerminalView
 │ ▸ genotool-admin        │ █                               │
-└─────────────────────────┴─────────────────────────────────┘
+├─────────────────────────┴─────────────────────────────────┤
+│ ● MCP 127.0.0.1:7433 ⟳               ⚙ 3 running   412 MB │  StatusBarView
+└───────────────────────────────────────────────────────────┘
   ContentView.sidebar       everything left over
   320 points by default,
   SidebarDivider between them
@@ -89,6 +91,7 @@ ContentView.sidebar
 │   ├── SidebarSectionHeaderView            title, chevron, trailing buttons
 │   └── WorkspaceCardView  (one per local workspace)   → WorkspaceCardView.md
 │       ├── AheadBehindView                 ↑1 ↓0 per tracked branch
+│       ├── UncommittedCountView            red count of uncommitted paths
 │       ├── IssuePRLineView                 (Issue #15) (PR #16)
 │       ├── ChecksLineView                  "1 failing, 1 successful checks"
 │       ├── TestProcessesLineView           → TestProcessesLineView.md
@@ -146,6 +149,7 @@ Every view type, and where its layout is documented.
 | `RemoteSectionView` | `RemoteSectionView.swift` | `ContentView.md` |
 | `WorkspaceCardView` | `WorkspaceCardView.swift` | `WorkspaceCardView.md` |
 | `AheadBehindView` | `AheadBehindView.swift` | `WorkspaceCardView.md` |
+| `UncommittedCountView` | `UncommittedCountView.swift` | `WorkspaceCardView.md` |
 | `IssuePRLineView` | `IssuePRLineView.swift` | `WorkspaceCardView.md` |
 | `ChecksLineView` | `ChecksLineView.swift` | `WorkspaceCardView.md` |
 | `TestProcessesLineView`, `TestButton` | `TestProcessesLineView.swift` | `TestProcessesLineView.md` |

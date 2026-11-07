@@ -8,7 +8,9 @@ window, kept in sync with the SwiftUI view.
 Under both halves of the window, the sidebar and the right column alike. It reports
 on the app rather than on whatever the pane shows, so it does not belong to the right
 column the way `NavBarView` does. `ContentView` attaches it as a bottom safe area
-inset of the whole row, with a `Divider` along its top edge.
+inset of the whole row, with a `Divider` along its top edge. It attaches it through
+`StatusBarContainer`, which reads the store and the memory monitor in its own body,
+so a memory sample or a process starting redraws the bar and not the whole window.
 
 ```
 ┌──────────────────────────────────┬──────────────────────────────────────────┐
@@ -77,7 +79,8 @@ from `TASK_VM_INFO`), which is the number Activity Monitor's Memory column shows
 in the same binary units. It is Wietty's own process only. The shells and agents
 in its terminals are separate processes and are not included, which the tooltip
 says. `AppMemoryMonitor`, owned by `ContentView`, samples it every two seconds and
-only writes when the value changed. The item is left out until the first sample.
+only writes when the figure the bar shows changed (the footprint moves by a few
+bytes on nearly every sample). The item is left out until the first sample.
 
 ## Always there
 

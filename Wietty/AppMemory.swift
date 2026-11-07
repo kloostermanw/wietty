@@ -54,8 +54,12 @@ final class AppMemoryMonitor {
 
     private func sample() {
         let bytes = AppMemory.footprintBytes()
-        // Written only on change, so an idle app does not redraw the bar.
-        if bytes != footprintBytes { footprintBytes = bytes }
+        // Written only when the figure the bar shows changes. The footprint moves by
+        // a few bytes on nearly every sample, so comparing bytes would redraw an
+        // idle bar every interval.
+        if bytes.map(AppMemory.format(bytes:)) != footprintBytes.map(AppMemory.format(bytes:)) {
+            footprintBytes = bytes
+        }
     }
 
     func stop() {

@@ -101,10 +101,8 @@ struct ContentView: View {
         // Under both halves rather than the right column, because what it reports
         // belongs to the app, not to whatever the pane shows.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            StatusBarView(mcpStatus: store.mcpStatus,
-                          runningProcesses: store.runningProcessCounts,
-                          memoryBytes: memory.footprintBytes,
-                          onRestartMCPServer: { restartMCPServer() })
+            StatusBarContainer(store: store, memory: memory,
+                               onRestartMCPServer: { restartMCPServer() })
         }
         // Up under the hidden title bar, so the sidebar's buttons and the pane's bar
         // are the row the traffic lights sit in rather than a second row below an

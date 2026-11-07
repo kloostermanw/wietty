@@ -130,8 +130,8 @@ app can see:
 - The terminal itself exiting ends the same three.
 - `RIS` ends everything.
 - `done` and `error` survive all of those, because they are the result you come back
-  for. Visiting the row, typing into its terminal, or an MCP select acknowledges them,
-  the same moments a 🔔 is cleared.
+  for. Visiting the row, typing into its terminal, an MCP select, or stopping the
+  row acknowledges them, the same moments a 🔔 is cleared.
 - A restart or reopen starts the row over, since it is a different process.
 
 **Banners.** Settings › Notifications › "Program notifications come from" picks the

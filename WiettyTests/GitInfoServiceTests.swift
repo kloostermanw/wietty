@@ -247,4 +247,28 @@ struct FakeCommandRunner: CommandRunning {
         #expect(state != nil)
         #expect(state?.uncommitted == 0)
     }
+
+    /// A `git status` that fails prints nothing, which must not read as a clean tree:
+    /// the card would hide the count of a repository with real uncommitted work.
+    @Test func failedStatusIsUnknownNotClean() async {
+        let svc = service { _, args in
+            if args.contains("--is-inside-work-tree") { return CommandResult(stdout: "true\n", stderr: "", status: 0) }
+            if args.contains("status") {
+                return CommandResult(stdout: "", stderr: "fatal: index file smaller than expected\n", status: 128)
+            }
+            return CommandResult(stdout: "", stderr: "", status: 0)
+        }
+        #expect(await svc.workingTreeState(for: URL(fileURLWithPath: "/tmp/x")) == nil)
+    }
+
+    /// `git diff HEAD` fails in a repository with no commits yet. The status alone
+    /// still gives a count.
+    @Test func failedDiffStillCounts() async {
+        let svc = service { _, args in
+            if args.contains("--is-inside-work-tree") { return CommandResult(stdout: "true\n", stderr: "", status: 0) }
+            if args.contains("status") { return CommandResult(stdout: "?? a.txt\n", stderr: "", status: 0) }
+            return CommandResult(stdout: "", stderr: "fatal: bad revision 'HEAD'\n", status: 128)
+        }
+        #expect(await svc.workingTreeState(for: URL(fileURLWithPath: "/tmp/x"))?.uncommitted == 1)
+    }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import os
 
 protocol GitInfoProviding: Sendable {
     func gitSync(for folder: URL) async -> GitSync?
@@ -157,13 +158,22 @@ struct GitInfoService: GitInfoProviding {
     /// not change the fingerprint, because such a file appears only as `?? path`
     /// in `git status` regardless of its contents and is absent from `git diff
     /// HEAD`. Adding/removing untracked files is detected; editing one is not.
+    ///
+    /// Also nil when `git status` itself fails (a corrupt index, say). Its empty
+    /// output would otherwise read as a clean tree and hide real uncommitted work.
+    /// `git diff HEAD` is allowed to fail: it does in a repository with no commits.
     func workingTreeState(for folder: URL) async -> WorkingTreeState? {
         let isRepo = git(folder, ["rev-parse", "--is-inside-work-tree"])
         guard isRepo.status == 0,
               isRepo.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true" else {
             return nil
         }
-        let status = git(folder, ["status", "--porcelain"]).stdout
+        let statusResult = git(folder, ["status", "--porcelain"])
+        guard statusResult.status == 0 else {
+            StoreLog.store.error("git status failed in \(folder.path, privacy: .public) (\(statusResult.status, privacy: .public)): \(statusResult.stderr, privacy: .public)")
+            return nil
+        }
+        let status = statusResult.stdout
         let diff = git(folder, ["diff", "HEAD"]).stdout
         let digest = SHA256.hash(data: Data((status + "\u{1F}" + diff).utf8))
         let uncommitted = status.split(separator: "\n", omittingEmptySubsequences: true).count

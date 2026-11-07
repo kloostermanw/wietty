@@ -1805,11 +1805,14 @@ final class ProjectStore {
         case .processStatus:
             processes.refreshStatusesForWorkspace(key.projectId)
         case .workingTree:
+            // Nil for a folder that is not a repository, or when `git status` failed.
+            // Either way the last count and fingerprint stand rather than a guess.
             guard let state = await gitProvider.workingTreeState(for: url) else { return }
             forwardWorkingTreeFingerprint(state.fingerprint, projectId: key.projectId)
             // The count joins the entry `.gitSync` created. Checks in a pass run in
-            // `CheckKind` order, `.gitSync` first, so on a cold start the entry already
-            // exists; a nil entry means not a repo, and there is nothing to show.
+            // `CheckKind` order, `.gitSync` first, so on a cold start the entry usually
+            // exists. When it does not (`.gitSync` has not filled it yet), the count is
+            // skipped and the next pass picks it up.
             // Only write on change, so a steady tree does not churn the observable.
             if var info = gitInfo[key.projectId], info.uncommitted != state.uncommitted {
                 info.uncommitted = state.uncommitted

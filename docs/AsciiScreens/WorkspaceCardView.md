@@ -52,7 +52,8 @@ Legend:
   of room its label truncates in the middle instead.
 - `10`: `UncommittedCountView`, the number of uncommitted paths: every line of
   `git status --porcelain`, so staged, modified, deleted and untracked paths alike
-  (ignored paths are excluded by git). It is red whenever it shows
+  (ignored paths are excluded by git, and a new untracked directory is one line,
+  so it counts once). It is red whenever it shows
   (`UncommittedCountView.color`), and a clean tree draws nothing, not a `0`, so a
   tidy workspace stays quiet. It sits on the last ahead/behind row, its leading
   edge aligned with the project name. A repo with neither a base nor an upstream
@@ -65,8 +66,11 @@ Legend:
 
   The count comes from the `.workingTree` check (the same `git status` that
   fingerprints the tree for test staleness), which is local and runs on the fast
-  tier while the card is expanded, so an edit shows within about 15 seconds
-  without waiting for a fetch.
+  tier while the card is expanded, so an edit shows within one Fast interval (15
+  seconds by default) without waiting for a fetch. A failed `git status` leaves the
+  last count in place rather than reading as a clean tree. The snapshot carries the
+  count as `uncommitted` in the `git` object, left out for a clean tree; a remote
+  card shows it once `wietty-shared` decodes the key.
 - `(Issue #N)` / `(PR #N)`: filled pills from `IssuePRLineView`. When no issue is
   linked to the branch, the issue pill is replaced by the branch name rendered as
   plain, secondary text (no pill), so the line always shows some branch context. The
