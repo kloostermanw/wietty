@@ -461,9 +461,10 @@ final class ProjectStore {
     /// nil when it started cleanly. Shown in Settings; not persisted.
     var remoteStartupError: String?
 
-    /// Last error from starting the MCP server (e.g. the port is in use), or nil
-    /// when it started cleanly. Shown in Settings; not persisted.
-    var mcpStartupError: String?
+    /// Where the MCP server is, mirrored from `MCPServerHost` so the status bar and
+    /// Settings can show it (a failure carries its reason, e.g. the port is in
+    /// use). Not persisted.
+    var mcpStatus: MCPServerStatus = .stopped
 
     private static func clampPort(_ port: Int) -> Int {
         min(max(port, portRange.lowerBound), portRange.upperBound)
@@ -1629,12 +1630,19 @@ final class ProjectStore {
     /// `closeTerminal`, the terminal's last screen stays readable and the row remains
     /// so it can be reopened; the child is terminated and the row dims to exited. A
     /// no-op for a row that was never opened.
+    ///
+    /// Stopping a row is the user dealing with it, so its attention flag and any
+    /// `done`/`error` status go the way activating it takes them; the `attention`
+    /// observer then withdraws the banner. Left alone, the 🔔 stayed on a row whose
+    /// process was gone, with nothing short of a visit to clear it. Issue #80.
     func stopTerminal(_ ref: TerminalRef, in project: Project) async {
         guard let pIndex = projects.firstIndex(where: { $0.id == project.id }),
               let tIndex = projects[pIndex].terminals.firstIndex(where: { $0.id == ref.id }) else { return }
         let sessionId = projects[pIndex].terminals[tIndex].sessionId
         guard !sessionId.isEmpty else { return }
         await service.stop(sessionId: sessionId)
+        attention.remove(ref.id)
+        acknowledgeProgramStatus(ref.id)
     }
 
     // MARK: - MCP helpers
@@ -1797,8 +1805,19 @@ final class ProjectStore {
         case .processStatus:
             processes.refreshStatusesForWorkspace(key.projectId)
         case .workingTree:
-            guard let fingerprint = await gitProvider.workingTreeFingerprint(for: url) else { return }
-            forwardWorkingTreeFingerprint(fingerprint, projectId: key.projectId)
+            // Nil for a folder that is not a repository, or when `git status` failed.
+            // Either way the last count and fingerprint stand rather than a guess.
+            guard let state = await gitProvider.workingTreeState(for: url) else { return }
+            forwardWorkingTreeFingerprint(state.fingerprint, projectId: key.projectId)
+            // The count joins the entry `.gitSync` created. Checks in a pass run in
+            // `CheckKind` order, `.gitSync` first, so on a cold start the entry usually
+            // exists. When it does not (`.gitSync` has not filled it yet), the count is
+            // skipped and the next pass picks it up.
+            // Only write on change, so a steady tree does not churn the observable.
+            if var info = gitInfo[key.projectId], info.uncommitted != state.uncommitted {
+                info.uncommitted = state.uncommitted
+                gitInfo[key.projectId] = info
+            }
         case .freshness:
             let checks = projects.first(where: { $0.id == key.projectId })?.configChecks ?? [:]
             // No checks configured means nothing to run and nothing to show, so the

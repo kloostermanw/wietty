@@ -173,27 +173,49 @@ struct WorkspaceCardView: View {
     }
 
     /// The git ahead/behind rows, right aligned under the header: one against the
-    /// base branch, one against the upstream. Draws nothing when neither exists.
+    /// base branch, one against the upstream. The uncommitted count sits at the
+    /// leading edge of the last row, aligned with the project name, or on a line
+    /// of its own when the repo has no remote comparison. Draws nothing when there
+    /// is neither a row nor a count.
     @ViewBuilder private var aheadBehind: some View {
-        if let gitInfo, gitInfo.hasBase || gitInfo.hasUpstream {
-            VStack(alignment: .trailing, spacing: 2) {
-                if gitInfo.hasBase {
-                    AheadBehindView(
-                        label: gitInfo.baseRef ?? "base",
-                        behind: gitInfo.baseBehind,
-                        ahead: gitInfo.baseAhead
-                    )
+        if let gitInfo {
+            let rows = Self.aheadBehindRows(gitInfo)
+            let count = UncommittedCountView(count: gitInfo.uncommitted)
+            if !rows.isEmpty || count.isVisible {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(rows.indices, id: \.self) { index in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            if index == rows.count - 1 && count.isVisible {
+                                count.padding(.leading, Self.nameIndent)
+                            }
+                            Spacer(minLength: 0)
+                            AheadBehindView(label: rows[index].label,
+                                            behind: rows[index].behind,
+                                            ahead: rows[index].ahead)
+                        }
+                    }
+                    if rows.isEmpty {
+                        count.padding(.leading, Self.nameIndent)
+                    }
                 }
-                if gitInfo.hasUpstream {
-                    AheadBehindView(
-                        label: gitInfo.upstreamRef ?? "origin/\(gitInfo.branch)",
-                        behind: gitInfo.behind,
-                        ahead: gitInfo.ahead
-                    )
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
         }
+    }
+
+    /// The header's chevron slot (12pt) plus its spacing (6pt): where the project
+    /// name starts, so the uncommitted count lines up under it.
+    private static let nameIndent: CGFloat = 18
+
+    private static func aheadBehindRows(_ info: GitInfo) -> [(label: String, behind: Int, ahead: Int)] {
+        var rows: [(label: String, behind: Int, ahead: Int)] = []
+        if info.hasBase {
+            rows.append((info.baseRef ?? "base", info.baseBehind, info.baseAhead))
+        }
+        if info.hasUpstream {
+            rows.append((info.upstreamRef ?? "origin/\(info.branch)", info.behind, info.ahead))
+        }
+        return rows
     }
 
     private var header: some View {

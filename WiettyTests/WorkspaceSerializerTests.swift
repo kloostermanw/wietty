@@ -18,6 +18,21 @@ import Foundation
         #expect(checks["pending"] == .int(2))
     }
 
+    /// The uncommitted count rides in the `git` object for remote clients. Issue #81.
+    @Test func serializesUncommittedCount() {
+        var info = GitInfo(branch: "develop", behind: 0, ahead: 0, hasUpstream: true)
+        info.uncommitted = 10
+        guard case let .object(m) = WorkspaceSerializer.git(info) else { Issue.record("expected object"); return }
+        #expect(m["uncommitted"] == .int(10))
+    }
+
+    /// A clean tree omits the key, as the other conditional keys are omitted.
+    @Test func omitsUncommittedWhenClean() {
+        let info = GitInfo(branch: "develop", behind: 0, ahead: 0, hasUpstream: true)
+        guard case let .object(m) = WorkspaceSerializer.git(info) else { Issue.record("expected object"); return }
+        #expect(m["uncommitted"] == nil)
+    }
+
     @Test func serializesTerminal() {
         let ref = TerminalRef(label: "shell", sessionId: "s1", kind: .terminal, slot: "0")
         let json = WorkspaceSerializer.terminal(ref, projectId: UUID(), projectName: "demo",

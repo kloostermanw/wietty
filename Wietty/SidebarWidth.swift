@@ -49,8 +49,11 @@ enum SidebarWidth {
     /// column decides: the pane's own floor plus `NavBarView` and the divider under
     /// it. Leaving the bar out of this is the same arithmetic mistake `dividerWidth`
     /// exists to prevent horizontally, and it would push the pane exactly one bar
-    /// below its minimum.
-    static var windowMinimumHeight: Double { paneMinimumHeight + NavBarView.height + 1 }
+    /// below its minimum. `StatusBarView` spans the whole window under both halves,
+    /// so it is added the same way.
+    static var windowMinimumHeight: Double {
+        paneMinimumHeight + NavBarView.height + 1 + StatusBarView.height + 1
+    }
 
     /// Where a first launch puts the divider.
     ///

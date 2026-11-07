@@ -21,6 +21,12 @@ where one would be (`ignoresSafeArea(.container, edges: .top)`). So `SidebarTopB
 and `NavBarView` together are the window's top row, the traffic lights sit at its
 leading edge, and dragging an empty part of it moves the window. See `NavBarView.md`.
 
+Under the whole row runs `StatusBarView`, across both halves, attached as the row's
+bottom safe area inset. It reports on the app itself (whether the MCP server is
+running, how many terminals, agents, managed processes and tests are running, and
+the app's memory)
+rather than on the pane. See `StatusBarView.md`.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ ● ● ●                   ⟳  +     │ Wietty                                 ⚙ │
@@ -31,7 +37,11 @@ leading edge, and dragging an empty part of it moves the window. See `NavBarView
 │   │  ✦ Claude Code   ◀ selected  │ █                                        │
 │ ························· Divider│                                          │
 │ ▸ api-service                    │                                          │
-└──────────────────────────────────┴──────────────────────────────────────────┘
+├──────────────────────────────────┴──────────────────────────────────────────┤
+│ ● MCP 127.0.0.1:7433 ⟳                                ⚙ 6 running   ▤ 412 MB │
+└─────────────────────────────────────────────────────────────────────────────┘
+  StatusBarView, 22 points, full width, under both halves
+
   SidebarTopBar, 28 points, then     NavBarView, 28 points, then
   the sidebar, 320 points wide by    RightTerminalView with the rest
   default, the list scrolling under
@@ -289,7 +299,8 @@ content, which is what keeps the workspace list from stretching.
 
 The window's own minimum has to be restated on the split
 (`.frame(minWidth: SidebarWidth.windowMinimumWidth, minHeight: SidebarWidth.windowMinimumHeight)`,
-so 726 by 240 of content, which macOS reports as a 726 by 272 window). A
+so 726 by 292 of content: the pane's 240, `NavBarView` and its divider, and
+`StatusBarView` and its divider). A
 `GeometryReader` answers with whatever size it is offered and never reports what
 its content needs, so unlike `HSplitView`'s arranged subviews it does not carry the
 two halves' minimums up to the window. Without that line the window had no minimum

@@ -47,8 +47,8 @@ Legend:
   for permission, a speech bubble for a question, a key for a sign in, a pause sign
   otherwise), a green `checkmark.circle.fill` once it is done and a red
   `xmark.octagon.fill` on an error. Nothing for an idle program. Hovering shows the
-  program's own message. Done and error stay until the row is visited or typed
-  into. Fixed at 14 points high, so a spinner appearing does not make the row
+  program's own message. Done and error stay until the row is visited, typed
+  into, or stopped. Fixed at 14 points high, so a spinner appearing does not make the row
   taller. A remote row never has one: the LAN protocol does not carry program
   status.
 - Glyph colour tracks the session (`isRunning`, from `ProjectStore.isSessionRunning`):

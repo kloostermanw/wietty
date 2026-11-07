@@ -130,8 +130,8 @@ app can see:
 - The terminal itself exiting ends the same three.
 - `RIS` ends everything.
 - `done` and `error` survive all of those, because they are the result you come back
-  for. Visiting the row, typing into its terminal, or an MCP select acknowledges them,
-  the same moments a 🔔 is cleared.
+  for. Visiting the row, typing into its terminal, an MCP select, or stopping the
+  row acknowledges them, the same moments a 🔔 is cleared.
 - A restart or reopen starts the row over, since it is a different process.
 
 **Banners.** Settings › Notifications › "Program notifications come from" picks the
@@ -245,7 +245,7 @@ one tap that matters most, the one that started the app, is the one that is lost
 
 Visiting a row takes its notification back out of Notification Center, so bells
 already dealt with do not pile up. The hook is a `didSet` on `attention` rather than
-a call in `activate`, because a dozen paths clear a flag (activating, closing,
+a call in `activate`, because a dozen paths clear a flag (activating, stopping, closing,
 restarting, removing a row, removing a workspace, typing into the terminal) and the
 next one added would forget to call it. Remote notifications are withdrawn the same
 way, from the watcher's `cleared` set.

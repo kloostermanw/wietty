@@ -4,6 +4,15 @@ import Hummingbird
 import Logging
 import MCP
 import NIOCore
+import os
+
+/// The Mac's own record of why the MCP server is not running. The status bar and
+/// Settings show only the latest status, and the next restart replaces it.
+/// `os.Logger` explicitly because Hummingbird's `Logging` module spells its own
+/// type the same way.
+enum MCPLog {
+    static let server = os.Logger(subsystem: "eu.kloosterman.wietty", category: "mcp")
+}
 
 /// Hosts the Wietty MCP server over a loopback HTTP endpoint.
 ///
@@ -31,53 +40,126 @@ final class MCPServerHost {
     private static let maxRequestBytes = 4 * 1024 * 1024
 
     private let router: MCPToolRouter
-    private let port: Int
-    private let onStartupError: (@MainActor @Sendable (String) -> Void)?
+    private var port: Int
+    private let onStatusChange: (@MainActor (MCPServerStatus) -> Void)?
     private var runTask: Task<Void, Never>?
+    /// Bumped by every `start` and `stop`. A server's callbacks carry the value from
+    /// the start that launched them and are dropped once it has moved on, so a server
+    /// that is shutting down cannot report over the one that replaced it.
+    private var generation = 0
+    /// The last `start`, `stop` or `restart` in flight. Each one waits for the one
+    /// before it, so a second Restart cannot start binding the port while the first
+    /// is still waiting for the old server to let go of it.
+    private var transition: Task<Void, Never>?
 
-    /// Populated if the server fails to bind or start.
-    private(set) var startupError: String?
+    /// Where the server is. `running` is entered only once the port is bound.
+    private(set) var status: MCPServerStatus = .stopped
 
     init(router: MCPToolRouter, port: Int = MCPServerHost.defaultPort,
-         onStartupError: (@MainActor @Sendable (String) -> Void)? = nil) {
+         onStatusChange: (@MainActor (MCPServerStatus) -> Void)? = nil) {
         self.router = router
         self.port = port
-        self.onStartupError = onStartupError
+        self.onStatusChange = onStatusChange
     }
 
     /// Builds the MCP server + transport, wires them to a Hummingbird HTTP
     /// server, and starts serving in a detached task. Returns once the server
-    /// task has been launched; it does not block on the run loop.
+    /// task has been launched; it does not block on the run loop, so unless it
+    /// failed, `status` is still `starting` when this returns and turns `running`
+    /// once the port is bound.
     func start() async {
-        guard runTask == nil else { return }
-        do {
-            let transport = Self.makeTransport()
-            _ = try await Self.makeStartedServer(router: router, transport: transport)
+        await serialized { await $0.performStart() }
+    }
 
-            let application = makeApplication(transport: transport)
-            runTask = Task {
-                do {
-                    try await application.runService()
-                } catch is CancellationError {
-                    // Normal shutdown via `stop()`; not worth surfacing.
-                } catch {
-                    let message = "MCP server stopped: \(error.localizedDescription)"
-                    await MainActor.run {
-                        self.startupError = message
-                        self.onStartupError?(message)
-                    }
-                }
+    /// Stops the server and waits for it to let go of its port, so a `start` right
+    /// after this can bind the same one again.
+    func stop() async {
+        await serialized { await $0.performStop() }
+    }
+
+    /// Stops the server and starts it again, on `port` when one is given. What the
+    /// status bar's Restart and a port change in Settings both call.
+    func restart(port: Int? = nil) async {
+        await serialized { host in
+            await host.performStop()
+            if let port {
+                host.port = port
+                host.router.port = port
             }
-        } catch {
-            let message = "MCP server failed to start: \(error.localizedDescription)"
-            startupError = message
-            onStartupError?(message)
+            await host.performStart()
         }
     }
 
-    func stop() {
-        runTask?.cancel()
+    /// Runs `work` after every transition requested before it has finished.
+    private func serialized(_ work: @escaping @MainActor (MCPServerHost) async -> Void) async {
+        let previous = transition
+        let next = Task { @MainActor in
+            await previous?.value
+            await work(self)
+        }
+        transition = next
+        await next.value
+    }
+
+    private func performStart() async {
+        guard runTask == nil else { return }
+        generation += 1
+        let current = generation
+        let port = self.port
+        report(.starting(port: port), from: current)
+        do {
+            let transport = Self.makeTransport()
+            _ = try await Self.makeStartedServer(router: router, transport: transport)
+            // A `stop` or a second `restart` (two quick clicks) can run while this
+            // was suspended. Launching anyway would leave a server nobody stops.
+            guard current == generation else { return }
+
+            let application = makeApplication(transport: transport) { [weak self] channel in
+                // Port 0 asks the kernel to pick, so report what it picked.
+                let bound = channel.localAddress?.port ?? port
+                await self?.report(.running(port: bound), from: current)
+            }
+            runTask = Task { [weak self] in
+                do {
+                    try await application.runService()
+                    // Returning without an error and without `stop` asking means the
+                    // server went away on its own. When `stop` did ask, it has already
+                    // moved `generation` on, so `report` drops this.
+                    self?.report(.failed(port: port, message: "the server stopped"), from: current)
+                } catch is CancellationError {
+                    // Normal shutdown via `stop()`; `stop` reports it.
+                } catch {
+                    self?.report(.failed(port: port, message: Self.describe(error)), from: current)
+                }
+            }
+        } catch {
+            report(.failed(port: port, message: Self.describe(error)), from: current)
+        }
+    }
+
+    private func performStop() async {
+        generation += 1
+        let task = runTask
         runTask = nil
+        task?.cancel()
+        await task?.value
+        report(.stopped, from: generation)
+    }
+
+    /// A failure's reason as the user should read it. NIO's `IOError` (a port that
+    /// is taken) is not a `LocalizedError`, so `localizedDescription` would turn
+    /// "Address already in use" into "The operation couldn't be completed".
+    nonisolated static func describe(_ error: any Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    }
+
+    private func report(_ newStatus: MCPServerStatus, from startGeneration: Int) {
+        guard startGeneration == generation, newStatus != status else { return }
+        if case let .failed(port, message) = newStatus {
+            MCPLog.server.error("MCP server on port \(port, privacy: .public) failed: \(message, privacy: .public)")
+        }
+        status = newStatus
+        onStatusChange?(newStatus)
     }
 
     // MARK: - MCP server
@@ -176,7 +258,10 @@ final class MCPServerHost {
 
     // MARK: - HTTP server
 
-    private func makeApplication(transport: StatelessHTTPServerTransport) -> some ApplicationProtocol {
+    private func makeApplication(
+        transport: StatelessHTTPServerTransport,
+        onServerRunning: @escaping @Sendable (any Channel) async -> Void
+    ) -> some ApplicationProtocol {
         let httpRouter = Router()
         let path = Self.endpointPath
         let maxBytes = Self.maxRequestBytes
@@ -232,6 +317,7 @@ final class MCPServerHost {
                 address: .hostname("127.0.0.1", port: port),
                 serverName: "wietty"
             ),
+            onServerRunning: onServerRunning,
             logger: Logger(label: "wietty.mcp", factory: { _ in SwiftLogNoOpLogHandler() })
         )
     }

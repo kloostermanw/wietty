@@ -40,7 +40,7 @@ it, so the terminal underneath would jump every time a selection was cleared.
 
 Its height is `NavBarView.height` (28 points) and it is part of the window's
 minimum: `SidebarWidth.windowMinimumHeight` is the pane's own floor plus the bar
-plus the divider. Leaving it out would squeeze the pane exactly one bar below its
+plus the divider, plus `StatusBarView` and its divider (see `StatusBarView.md`). Leaving it out would squeeze the pane exactly one bar below its
 minimum, which is the same arithmetic mistake `SidebarWidth.dividerWidth` exists to
 prevent horizontally.
 

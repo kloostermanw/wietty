@@ -43,8 +43,9 @@ final class MCPToolRouter {
 
     /// The loopback port the MCP server, and with it `GET /tests/wait`, listens on.
     /// Only quoted in the run tools' descriptions, so an agent can copy a working
-    /// `curl` command without guessing the port.
-    private let port: Int
+    /// `curl` command without guessing the port. Settable because `MCPServerHost`
+    /// keeps one router across restarts and moves it when the port changes.
+    var port: Int
 
     init(store: ProjectStore, port: Int = MCPServerHost.defaultPort) {
         self.store = store
