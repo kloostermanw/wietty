@@ -16,13 +16,15 @@ neither the name nor the refs. They sit 2pt below the header (the other lines ar
 6pt apart) so they read as part of it. Each row is labeled with the remote ref it
 compares against: the base row against the remote default branch
 (`origin/develop`), the upstream row against the branch upstream
-(`origin/feature/issue-15`).
+(`origin/feature/issue-15`). The red number at the leading edge of the last row
+is the count of uncommitted paths in the working tree, aligned with the project
+name.
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
 │ ▾ laravel-test ⟳ !                                                  │
 │                                           origin/develop     ↑1 ↓0 │
-│                                  origin/feature/issue-15     ↑1 ↓0 │
+│   10                             origin/feature/issue-15     ↑1 ↓0 │
 │   (Issue #15)  (PR #16)                                             │
 │   1 failing, 1 successfull checks                                   │
 │   [phpunit] [feature-tests]                    [All]  (border=pass) │
@@ -48,6 +50,23 @@ Legend:
   behind count is the one number on the card that asks the user to pull; the label
   and the ahead group stay secondary. The counts never wrap; when a row is short
   of room its label truncates in the middle instead.
+- `10`: `UncommittedCountView`, the number of uncommitted paths: every line of
+  `git status --porcelain`, so staged, modified, deleted and untracked paths alike
+  (ignored paths are excluded by git). It is red whenever it shows
+  (`UncommittedCountView.color`), and a clean tree draws nothing, not a `0`, so a
+  tidy workspace stays quiet. It sits on the last ahead/behind row, its leading
+  edge aligned with the project name. A repo with neither a base nor an upstream
+  comparison has no rows, so the count takes a line of its own:
+
+  ```
+  │ ▾ scratch                                                         │
+  │   3                                                               │
+  ```
+
+  The count comes from the `.workingTree` check (the same `git status` that
+  fingerprints the tree for test staleness), which is local and runs on the fast
+  tier while the card is expanded, so an edit shows within about 15 seconds
+  without waiting for a fetch.
 - `(Issue #N)` / `(PR #N)`: filled pills from `IssuePRLineView`. When no issue is
   linked to the branch, the issue pill is replaced by the branch name rendered as
   plain, secondary text (no pill), so the line always shows some branch context. The
@@ -225,7 +244,7 @@ workspace's current rows.
 
 When collapsed, the chevron flips and everything below and beside the header is
 hidden: the terminal tree, the Processes group, the Issue/PR pills, the checks
-line, and the ahead/behind indicators. The chevron and project name remain, and so
+line, the ahead/behind indicators, and the uncommitted count. The chevron and project name remain, and so
 do the header's `⟳` and `!` markers, which are not gated by the collapsed state:
 a config change or a freshness check needing attention is worth seeing on a
 collapsed card too.

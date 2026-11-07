@@ -67,4 +67,6 @@ struct GitInfo: Equatable, Sendable {
     var issueURL: URL?
     var prURL: URL?
     var checks: ChecksSummary?
+    /// Uncommitted paths in the working tree, written by the `.workingTree` check.
+    var uncommitted: Int = 0
 }

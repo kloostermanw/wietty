@@ -195,8 +195,8 @@ struct FakeCommandRunner: CommandRunning {
             return CommandResult(stdout: "", stderr: "", status: 0)
         }
         let folder = URL(fileURLWithPath: "/tmp/x")
-        let a = await svc.workingTreeFingerprint(for: folder)
-        let b = await svc.workingTreeFingerprint(for: folder)
+        let a = await svc.workingTreeState(for: folder)?.fingerprint
+        let b = await svc.workingTreeState(for: folder)?.fingerprint
         #expect(a != nil)
         #expect(a == b)
     }
@@ -215,14 +215,36 @@ struct FakeCommandRunner: CommandRunning {
         }
 
         let folder = URL(fileURLWithPath: "/tmp/x")
-        let beforeFingerprint = await makeService(withDiff: before).workingTreeFingerprint(for: folder)
-        let afterFingerprint = await makeService(withDiff: after).workingTreeFingerprint(for: folder)
+        let beforeFingerprint = await makeService(withDiff: before).workingTreeState(for: folder)?.fingerprint
+        let afterFingerprint = await makeService(withDiff: after).workingTreeState(for: folder)?.fingerprint
         #expect(beforeFingerprint != afterFingerprint)
     }
 
     @Test func fingerprintNilForNonRepo() async {
         let svc = service { _, _ in CommandResult(stdout: "", stderr: "fatal: not a git repository", status: 128) }
-        let fp = await svc.workingTreeFingerprint(for: URL(fileURLWithPath: "/tmp/x"))
-        #expect(fp == nil)
+        let state = await svc.workingTreeState(for: URL(fileURLWithPath: "/tmp/x"))
+        #expect(state == nil)
+    }
+
+    private func porcelainService(_ status: String) -> GitInfoService {
+        service { _, args in
+            if args.contains("--is-inside-work-tree") { return CommandResult(stdout: "true\n", stderr: "", status: 0) }
+            if args.contains("status") { return CommandResult(stdout: status, stderr: "", status: 0) }
+            return CommandResult(stdout: "", stderr: "", status: 0)
+        }
+    }
+
+    /// Every porcelain line is one uncommitted path, whatever its state: staged,
+    /// modified, deleted and untracked all count, as one number. Issue #81.
+    @Test func uncommittedCountsEveryPorcelainLine() async {
+        let status = " M app/Foo.php\nA  app/New.php\n D app/Gone.php\n?? notes.txt\n?? tmp/\n"
+        let state = await porcelainService(status).workingTreeState(for: URL(fileURLWithPath: "/tmp/x"))
+        #expect(state?.uncommitted == 5)
+    }
+
+    @Test func cleanTreeHasNoUncommittedPaths() async {
+        let state = await porcelainService("").workingTreeState(for: URL(fileURLWithPath: "/tmp/x"))
+        #expect(state != nil)
+        #expect(state?.uncommitted == 0)
     }
 }
