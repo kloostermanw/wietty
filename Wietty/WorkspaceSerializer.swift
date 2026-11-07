@@ -61,6 +61,7 @@ struct WorkspaceSerializer {
             members["base_ahead"] = .int(info.baseAhead)
             members["base_behind"] = .int(info.baseBehind)
         }
+        if info.uncommitted > 0 { members["uncommitted"] = .int(info.uncommitted) }
         if let n = info.issueNumber { members["issue_number"] = .int(n) }
         if let n = info.prNumber { members["pr_number"] = .int(n) }
         if let u = info.issueURL { members["issue_url"] = .string(u.absoluteString) }

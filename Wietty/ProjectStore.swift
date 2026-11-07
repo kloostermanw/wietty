@@ -1805,8 +1805,16 @@ final class ProjectStore {
         case .processStatus:
             processes.refreshStatusesForWorkspace(key.projectId)
         case .workingTree:
-            guard let fingerprint = await gitProvider.workingTreeFingerprint(for: url) else { return }
-            forwardWorkingTreeFingerprint(fingerprint, projectId: key.projectId)
+            guard let state = await gitProvider.workingTreeState(for: url) else { return }
+            forwardWorkingTreeFingerprint(state.fingerprint, projectId: key.projectId)
+            // The count joins the entry `.gitSync` created. Checks in a pass run in
+            // `CheckKind` order, `.gitSync` first, so on a cold start the entry already
+            // exists; a nil entry means not a repo, and there is nothing to show.
+            // Only write on change, so a steady tree does not churn the observable.
+            if var info = gitInfo[key.projectId], info.uncommitted != state.uncommitted {
+                info.uncommitted = state.uncommitted
+                gitInfo[key.projectId] = info
+            }
         case .freshness:
             let checks = projects.first(where: { $0.id == key.projectId })?.configChecks ?? [:]
             // No checks configured means nothing to run and nothing to show, so the

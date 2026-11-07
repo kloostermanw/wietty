@@ -6,12 +6,21 @@ protocol GitInfoProviding: Sendable {
     func pullRequestNumber(for folder: URL, branch: String) async -> Int?
     func ciChecks(for folder: URL, prNumber: Int) async -> ChecksSummary?
     func ciChecks(for folder: URL, branch: String) async -> ChecksSummary?
-    func workingTreeFingerprint(for folder: URL) async -> String?
+    func workingTreeState(for folder: URL) async -> WorkingTreeState?
 }
 
 extension GitInfoProviding {
     func ciChecks(for folder: URL, branch: String) async -> ChecksSummary? { nil }
-    func workingTreeFingerprint(for folder: URL) async -> String? { nil }
+    func workingTreeState(for folder: URL) async -> WorkingTreeState? { nil }
+}
+
+/// One local look at the working tree: the fingerprint that stales passed tests
+/// and the number of uncommitted paths the card shows. Both come from the same
+/// `git status --porcelain`, so one check yields both.
+struct WorkingTreeState: Equatable, Sendable {
+    var fingerprint: String
+    /// Every porcelain line: staged, modified, deleted and untracked paths alike.
+    var uncommitted: Int
 }
 
 struct GitInfoService: GitInfoProviding {
@@ -137,17 +146,18 @@ struct GitInfoService: GitInfoProviding {
         return GitParsing.checksSummary(fromRollupJSON: result.stdout)
     }
 
-    /// A hash of the working tree's dirty state: `git status --porcelain` (which
-    /// files are added/modified/removed/untracked) plus `git diff HEAD` (the
-    /// content of tracked changes). Local only (no fetch). Respects `.gitignore`
+    /// The working tree's state. The fingerprint is a hash of its dirty state:
+    /// `git status --porcelain` (which files are added/modified/removed/untracked)
+    /// plus `git diff HEAD` (the content of tracked changes). Local only (no fetch). Respects `.gitignore`
     /// for free, since git excludes ignored paths from both commands. Returns nil
-    /// when the folder is not a git work tree.
+    /// when the folder is not a git work tree. The uncommitted count is the number
+    /// of porcelain lines, one per path.
     ///
     /// Known limitation: repeated edits to the *contents* of an untracked file do
     /// not change the fingerprint, because such a file appears only as `?? path`
     /// in `git status` regardless of its contents and is absent from `git diff
     /// HEAD`. Adding/removing untracked files is detected; editing one is not.
-    func workingTreeFingerprint(for folder: URL) async -> String? {
+    func workingTreeState(for folder: URL) async -> WorkingTreeState? {
         let isRepo = git(folder, ["rev-parse", "--is-inside-work-tree"])
         guard isRepo.status == 0,
               isRepo.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true" else {
@@ -156,7 +166,11 @@ struct GitInfoService: GitInfoProviding {
         let status = git(folder, ["status", "--porcelain"]).stdout
         let diff = git(folder, ["diff", "HEAD"]).stdout
         let digest = SHA256.hash(data: Data((status + "\u{1F}" + diff).utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+        let uncommitted = status.split(separator: "\n", omittingEmptySubsequences: true).count
+        return WorkingTreeState(
+            fingerprint: digest.map { String(format: "%02x", $0) }.joined(),
+            uncommitted: uncommitted
+        )
     }
 
     private func git(_ folder: URL, _ arguments: [String]) -> CommandResult {
