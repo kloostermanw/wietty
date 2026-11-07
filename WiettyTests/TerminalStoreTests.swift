@@ -831,6 +831,27 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(fake.closeCalls.isEmpty)
     }
 
+    /// Stopping a row is the user dealing with it, the same as visiting or closing it,
+    /// so its bell goes too, and the banner it posted is withdrawn through the same
+    /// callback. Issue #80.
+    @Test func stopTerminalClearsAttention() async {
+        let fake = FakeTerminalService()
+        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
+        let store = ProjectStore(defaults: makeDefaults(), service: fake)
+        store.addProject(url: makeTempFolder(named: "proj"))
+        await store.openClaude(for: store.projects[0])
+        let ref = store.projects[0].terminals[0]
+        var cleared: [Set<UUID>] = []
+        store.onAttentionCleared = { cleared.append($0) }
+
+        store.handle(.bell(sessionId: "sess-A"))
+        #expect(store.attention.contains(ref.id))
+
+        await store.stopTerminal(ref, in: store.projects[0])
+        #expect(!store.attention.contains(ref.id))
+        #expect(cleared == [[ref.id]])
+    }
+
     @Test func titleEventWithUnchangedNameSkipsUpdateButLaterChangeApplies() async {
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]

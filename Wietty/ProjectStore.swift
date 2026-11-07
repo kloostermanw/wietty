@@ -1630,12 +1630,19 @@ final class ProjectStore {
     /// `closeTerminal`, the terminal's last screen stays readable and the row remains
     /// so it can be reopened; the child is terminated and the row dims to exited. A
     /// no-op for a row that was never opened.
+    ///
+    /// Stopping a row is the user dealing with it, so its attention flag and any
+    /// `done`/`error` status go the way activating it takes them; the `attention`
+    /// observer then withdraws the banner. Left alone, the 🔔 stayed on a row whose
+    /// process was gone, with nothing short of a visit to clear it. Issue #80.
     func stopTerminal(_ ref: TerminalRef, in project: Project) async {
         guard let pIndex = projects.firstIndex(where: { $0.id == project.id }),
               let tIndex = projects[pIndex].terminals.firstIndex(where: { $0.id == ref.id }) else { return }
         let sessionId = projects[pIndex].terminals[tIndex].sessionId
         guard !sessionId.isEmpty else { return }
         await service.stop(sessionId: sessionId)
+        attention.remove(ref.id)
+        acknowledgeProgramStatus(ref.id)
     }
 
     // MARK: - MCP helpers
