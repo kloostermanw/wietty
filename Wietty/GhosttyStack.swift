@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 
 /// Composition root for the terminal stack. Builds the pieces, wires the byte and
@@ -45,15 +44,6 @@ final class GhosttyStack {
     /// Nil on a stack that could not be built, which has no service to send to.
     private let keystrokes: AsyncStream<(session: String, text: String)>.Continuation?
 
-    /// Held only so it can be removed: an observer left registered after this
-    /// stack is gone is a token `NotificationCenter` keeps forever. A `let`
-    /// because `deinit` reads it, and a nonisolated `deinit` on a main actor type
-    /// may only touch immutable state. `nonisolated(unsafe)` for the same reason
-    /// `GhosttySurfaceHost` needs it: the token is an opaque `NSObjectProtocol`
-    /// that carries no Sendable conformance, and the only access from outside the
-    /// main actor is the `deinit` that hands it straight back.
-    private nonisolated(unsafe) let terminationObserver: NSObjectProtocol?
-
     /// - Parameter helperPath: where `wietty-pty` is. Nil means it is not in
     ///   the bundle, which is a startup error rather than a per terminal one:
     ///   every surface's command would be missing.
@@ -85,8 +75,6 @@ final class GhosttyStack {
             ghosttyService = nil
             ghosttyMonitor = nil
             keystrokes = nil
-            // No terminals to tear down, so nothing to observe.
-            terminationObserver = nil
             // A census even here, because this stack knows the answer with
             // certainty: it holds no terminals and
             // never will. `PaneStreamHub.attach` skips the `ended` short circuit
@@ -216,22 +204,9 @@ final class GhosttyStack {
         // terminator, but libghostty has already parsed both, so the surface's
         // bell is the one that is reported and this hook stays unwired.
 
-        // Every terminal is torn down when the app quits, because nothing else
-        // will. A PTY the app spawned cannot outlive it usefully, and an object
-        // still alive at exit gets no `deinit`, so without this the relay's socket
-        // file is left in the temp directory for an hour until `clearStaleSockets`
-        // sweeps it, and the shell only dies because its master happened to close.
-        // Synchronous delivery is required, hence `queue: nil`: an
-        // `OperationQueue` hop may not run before the process is gone. The same
-        // notification `ITermMonitor` shuts itself down on.
-        //
-        // Weakly, so an observer that outlives this stack cannot resurrect the
-        // service and the terminals hanging off it.
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
-        ) { [weak service] _ in
-            MainActor.assumeIsolated { service?.closeAll() }
-        }
+        // Tearing every terminal down at quit belongs to `TerminalQuitTeardown`,
+        // which `TerminalStack` owns. It needs `NSApplication` and this stack is on
+        // its way to a target with no AppKit in it.
 
         self.service = service
         self.monitor = monitor
@@ -243,7 +218,6 @@ final class GhosttyStack {
     /// continuation nothing holds any more.
     deinit {
         keystrokes?.finish()
-        if let terminationObserver { NotificationCenter.default.removeObserver(terminationObserver) }
     }
 
     /// The pane's own keystrokes, by session, forwarded to the surface host.
