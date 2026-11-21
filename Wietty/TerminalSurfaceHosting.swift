@@ -64,7 +64,11 @@ enum SurfaceHostError: Error, Equatable {
 /// no such thing as a surface without one. The pane adds and removes the view
 /// from the window's hierarchy, which is how Ghostty's own tabs work and what
 /// keeps a terminal's scrollback and its running command alive while another
-/// terminal is on screen.
+/// terminal is on screen. Handing that view to the pane is `TerminalSurfaceViewing`,
+/// deliberately not this protocol: an `NSView` is the one thing here that AppKit
+/// has to be imported for, and everything else a host does is answerable without a
+/// window. Keeping the two apart is what lets this protocol, and so `GhosttyService`
+/// and `GhosttyStack` with it, live in a target that never imports AppKit.
 @MainActor
 protocol TerminalSurfaceHosting: AnyObject {
     /// Creates a surface running `command` in `directory`. `title` labels it,
@@ -72,10 +76,6 @@ protocol TerminalSurfaceHosting: AnyObject {
     func createSurface(id: String, command: String, directory: URL, title: String?) throws
 
     func destroySurface(id: String)
-
-    /// The view this surface renders into, for the pane to show. Nil for an id
-    /// with no surface.
-    func view(id: String) -> NSView?
 
     /// The surface's grid, or nil before it has one. This is the sizing authority
     /// for the substrate: Wietty resizes its own pty to match.
@@ -172,7 +172,6 @@ final class InertSurfaceHost: TerminalSurfaceHosting {
         throw SurfaceHostError.surfaceFailed
     }
     func destroySurface(id: String) {}
-    func view(id: String) -> NSView? { nil }
     func size(id: String) -> TerminalSize? { nil }
     func snapshot(id: String, maxLines: Int) -> ScreenSnapshot? { nil }
     /// libghostty's own default, which is what a launch with no libghostty would
@@ -181,4 +180,20 @@ final class InertSurfaceHost: TerminalSurfaceHosting {
     /// there is no terminal at all to turn them off for.
     var desktopNotifications: (effective: Bool, userConfig: Bool) { (true, true) }
     func reloadConfig() {}
+}
+
+/// Handing a session's surface view to the pane.
+///
+/// Split from `TerminalSurfaceHosting` because `NSView` is the only thing in that
+/// protocol that needs AppKit. A host conforms to both; only the app, which is the
+/// half with a window, ever asks for this one.
+@MainActor
+protocol TerminalSurfaceViewing: AnyObject {
+    /// The view this surface renders into, for the pane to show. Nil for an id
+    /// with no surface.
+    func view(id: String) -> NSView?
+}
+
+extension InertSurfaceHost: TerminalSurfaceViewing {
+    func view(id: String) -> NSView? { nil }
 }

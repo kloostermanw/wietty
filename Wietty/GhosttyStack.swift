@@ -274,13 +274,6 @@ final class GhosttyStack {
         }
     }
 
-    /// The view a session's surface renders into, for the pane. Nil for a session
-    /// with no surface, which is every session on a stack that failed to build.
-    ///
-    /// The pane goes through here rather than holding the host itself: the host is
-    /// the seam onto an unstable API, and one owner is the point of the seam.
-    func surfaceView(for session: String) -> NSView? { host.view(id: session) }
-
     /// How old a socket file has to be before this considers it abandoned.
     ///
     /// An hour, which is far longer than the milliseconds between a relay binding

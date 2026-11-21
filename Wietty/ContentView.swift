@@ -84,7 +84,7 @@ struct ContentView: View {
                                selection: paneSelection,
                                onOpenSettings: { router.toggleSettings() })
                     Divider()
-                    RightTerminalView(store: store, stack: terminals.ghostty,
+                    RightTerminalView(store: store, terminals: terminals,
                                       remoteConnections: remoteConnections,
                                       remoteWorkspaces: remoteWorkspaces,
                                       bells: bells,

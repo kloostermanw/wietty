@@ -58,7 +58,11 @@ enum GhosttyPaneState: Equatable {
 /// and the MCP server still get that screen (though not its scrollback, which
 /// only an on-screen surface can reach).
 struct LocalTerminalView: View {
-    let stack: GhosttyStack
+    /// `TerminalStack.setupError`: what is wrong with the terminal, if anything.
+    let setupError: String?
+    /// `TerminalStack.surfaceView(for:)`. A closure rather than the stack itself so
+    /// this view needs neither composition root to be built in a test.
+    let surfaceView: (String) -> NSView?
     /// The selected session, mirrored into SwiftUI state by `ContentView` so a
     /// selection made in `GhosttyService` redraws this view.
     let session: String?
@@ -75,7 +79,7 @@ struct LocalTerminalView: View {
 
     var body: some View {
         Group {
-            switch GhosttyPaneState.resolve(setupError: stack.setupError,
+            switch GhosttyPaneState.resolve(setupError: setupError,
                                             session: session,
                                             hasSurface: surface != nil,
                                             exited: exited) {
@@ -128,7 +132,7 @@ struct LocalTerminalView: View {
     }
 
     private var surface: NSView? {
-        session.flatMap { stack.surfaceView(for: $0) }
+        session.flatMap { surfaceView($0) }
     }
 }
 

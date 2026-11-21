@@ -8,7 +8,7 @@ import Foundation
 /// against this. That is the point of the protocol: the substrate's logic is
 /// testable in CI, and only rendering needs the app running.
 @MainActor
-final class FakeSurfaceHost: TerminalSurfaceHosting {
+final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     private(set) var created: [String] = []
     private(set) var destroyed: [String] = []
     private(set) var commands: [String: String] = [:]

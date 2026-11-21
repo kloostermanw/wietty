@@ -157,9 +157,11 @@ import SwiftUI
     /// The split is an `HStack` in a `GeometryReader` now, and the greed still has to
     /// be here: the pane is the half that has to fill.
     @Test func theEmptyPaneFillsTheHeightItIsOffered() {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true")
         #expect(stack.setupError == nil)
-        let size = heightOffered(LocalTerminalView(stack: stack, session: nil),
+        let size = heightOffered(LocalTerminalView(setupError: stack.setupError,
+                                                   surfaceView: { stack.surfaceView(for: $0) },
+                                                   session: nil),
                                  window: NSSize(width: 1369, height: 1002))
         #expect(size.height == 1002)
     }
@@ -168,9 +170,11 @@ import SwiftUI
     /// different branch of the pane's `switch`, and a fix applied inside one branch
     /// rather than to the pane would pass the test above and fail this one.
     @Test func theUnavailablePaneFillsTheHeightItIsOffered() {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: nil)
+        let stack = TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: nil)
         #expect(stack.setupError != nil)
-        let size = heightOffered(LocalTerminalView(stack: stack, session: nil),
+        let size = heightOffered(LocalTerminalView(setupError: stack.setupError,
+                                                   surfaceView: { stack.surfaceView(for: $0) },
+                                                   session: nil),
                                  window: NSSize(width: 1369, height: 1002))
         #expect(size.height == 1002)
     }
@@ -184,8 +188,10 @@ import SwiftUI
     /// with a `Double` inside `#expect` fails even for two values it prints as
     /// `480.0`, so the conversion is explicit.
     @Test func thePaneKeepsItsMinimumInAWindowSmallerThanIt() {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
-        let size = heightOffered(LocalTerminalView(stack: stack, session: nil),
+        let stack = TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let size = heightOffered(LocalTerminalView(setupError: stack.setupError,
+                                                   surfaceView: { stack.surfaceView(for: $0) },
+                                                   session: nil),
                                  window: NSSize(width: 100, height: 100))
         #expect(size.width == 480)
         #expect(size.height == 240)

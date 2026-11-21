@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// The terminal this launch runs on, built once.
@@ -31,6 +32,22 @@ struct TerminalStack {
     /// is private to `GhosttyStack`, and the composition root is the one place with it.
     let ghosttyColors: GhosttyColorSettings
 
+    /// The host again, as the half that can hand out an `NSView`.
+    ///
+    /// Held here rather than on `GhosttyStack` because this is the last composition
+    /// root that is certain to stay in the app: a view is the one thing a terminal
+    /// has that only a window can use, and `GhosttyStack` is on its way to a target
+    /// that never imports AppKit. Typed as both halves so no cast is needed; the one
+    /// place that builds the concrete host is the one place that knows it is both.
+    private let surfaces: any TerminalSurfaceViewing
+
+    /// The view a session's surface renders into, for the pane. Nil for a session
+    /// with no surface, which is every session on a stack that failed to build.
+    ///
+    /// The pane goes through here rather than holding the host itself: the host is
+    /// the seam onto an unstable API, and one owner is the point of the seam.
+    func surfaceView(for session: String) -> NSView? { surfaces.view(id: session) }
+
     /// What is wrong with the terminal, if anything. With nothing left to fall back
     /// to, this message is all a user whose libghostty failed to start ever gets,
     /// so it has to say what they can do about it.
@@ -43,7 +60,7 @@ struct TerminalStack {
     ///   real lookup. Injected for the same reason the host is: with a working host
     ///   and a real bundle nothing here can produce a `setupError`, so a test of how
     ///   this type carries one would have nothing to carry.
-    init(ghosttyHost: (any TerminalSurfaceHosting)? = nil,
+    init(ghosttyHost: (any TerminalSurfaceHosting & TerminalSurfaceViewing)? = nil,
          helperPath: String? = Self.helperPath()) {
         // A host that could not be built still yields a stack, so the app launches
         // and can explain itself rather than failing at every call site.
@@ -63,6 +80,7 @@ struct TerminalStack {
         monitor = stack.monitor
         desktopNotifications = DesktopNotificationSetting(host: built.host)
         ghosttyColors = GhosttyColorSettings(host: built.host)
+        surfaces = built.host
         // Unconditional, because the sweep answers "is this socket abandoned" itself
         // rather than trusting its caller to be the only Wietty on the machine.
         stack.clearStaleSockets()
@@ -85,8 +103,8 @@ struct TerminalStack {
     /// service that throws the SAME error the user is shown. A string would only
     /// reach `setupError`, leaving every terminal action to throw whatever the
     /// stack's own guard branch chose.
-    private static func buildHost(injected: (any TerminalSurfaceHosting)?)
-        -> (host: any TerminalSurfaceHosting, error: TerminalError?) {
+    private static func buildHost(injected: (any TerminalSurfaceHosting & TerminalSurfaceViewing)?)
+        -> (host: any TerminalSurfaceHosting & TerminalSurfaceViewing, error: TerminalError?) {
         if let injected { return (injected, nil) }
         do {
             return (try GhosttySurfaceHost(), nil)

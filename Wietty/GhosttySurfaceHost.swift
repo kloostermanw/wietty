@@ -33,7 +33,7 @@ import os
 ///   that: the surface is never recreated, because recreating it is what would
 ///   lose the scrollback.
 @MainActor
-final class GhosttySurfaceHost: TerminalSurfaceHosting {
+final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// A surface and the view libghostty renders it into. The two are created
     /// together and freed together: `ghostty_surface_new` takes the view, so a
     /// surface without one cannot exist.
