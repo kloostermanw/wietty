@@ -25,7 +25,7 @@ import WiettyShared
         let connections = RemoteConnectionsStore(defaults: defaults)
         return RightTerminalView(
             store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
-            stack: GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true"),
+            terminals: TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true"),
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: notifier(),

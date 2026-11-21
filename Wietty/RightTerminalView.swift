@@ -13,7 +13,7 @@ import WiettyShared
 /// the seam, and it holds nothing itself.
 struct RightTerminalView: View {
     let store: ProjectStore
-    let stack: GhosttyStack
+    let terminals: TerminalStack
     /// For resolving a selected remote session to the connection that serves it.
     /// Observed rather than read once: removing a connection has to take its
     /// terminal off the screen.
@@ -86,7 +86,9 @@ struct RightTerminalView: View {
                        maxHeight: .infinity)
         case .local, .none:
             let session = selection.localSession
-            LocalTerminalView(stack: stack, session: session,
+            LocalTerminalView(setupError: terminals.setupError,
+                              surfaceView: { terminals.surfaceView(for: $0) },
+                              session: session,
                               exited: session.map { store.isSessionExited(sessionId: $0) } ?? false,
                               isAgent: session.flatMap { store.terminal(paneId: $0) }?.ref.kind == .claude,
                               onRestart: { if let session { onRestartTerminal(session) } })
