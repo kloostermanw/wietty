@@ -1,5 +1,6 @@
-import SwiftUI
 import AppKit
+import SwiftUI
+import WiettyCore
 import WiettyShared
 
 struct ContentView: View {

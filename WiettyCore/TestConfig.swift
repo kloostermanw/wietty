@@ -4,19 +4,19 @@ import Foundation
 /// test is a run-to-completion check: exit 0 = pass, non-zero = fail. The file is
 /// the source of truth; the Edit workspace page (`ProjectStore.updateTest`) is the
 /// one path that changes a definition from inside the app.
-struct TestConfig: Codable, Equatable {
-    var command: String
-    var env: [String: String]
+package struct TestConfig: Codable, Equatable {
+    package var command: String
+    package var env: [String: String]
     /// When false (the default), a command that references an `WIETTY_*`
     /// variable with no value is blocked rather than run with the variable
     /// expanding to empty. Set true to opt into empty expansion.
-    var allowEmptyVars: Bool
+    package var allowEmptyVars: Bool
     /// This test's own shell lines, run in the same shell as `command`, before it.
     /// Always just what the file says: the supervisor merges the workspace-wide
     /// lines ahead of these into a separate effective prelude.
-    var shellInit: [String]
+    package var shellInit: [String]
 
-    init(command: String, env: [String: String] = [:], allowEmptyVars: Bool = false, shellInit: [String] = []) {
+    package init(command: String, env: [String: String] = [:], allowEmptyVars: Bool = false, shellInit: [String] = []) {
         self.command = command
         self.env = env
         self.allowEmptyVars = allowEmptyVars
@@ -29,7 +29,7 @@ struct TestConfig: Codable, Equatable {
         case shellInit = "shell_init"
     }
 
-    init(from decoder: Decoder) throws {
+    package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         command = try c.decode(String.self, forKey: .command)
         env = try c.decodeIfPresent([String: String].self, forKey: .env) ?? [:]
@@ -42,7 +42,7 @@ struct TestConfig: Codable, Equatable {
     /// `shell_init: []` as noise. `init(from:)` restores each omitted field to the
     /// same default it was omitted for, so the round trip holds. `command` is
     /// always written.
-    func encode(to encoder: any Encoder) throws {
+    package func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(command, forKey: .command)
         if !env.isEmpty { try c.encode(env, forKey: .env) }

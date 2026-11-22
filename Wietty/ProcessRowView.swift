@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 struct ProcessRowView: View {
     let process: ManagedProcess

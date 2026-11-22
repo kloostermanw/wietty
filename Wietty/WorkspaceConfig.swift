@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Why a `wietty.json` could not be read, worded for the user.
 ///

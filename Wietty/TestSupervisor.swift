@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WiettyCore
 
 /// Owns the test-processes of every workspace and reconciles them against the
 /// on-disk `tests` definitions. Tests are run-to-completion checks executed by a

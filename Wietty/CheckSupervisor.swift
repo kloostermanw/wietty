@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WiettyCore
 
 /// Owns the on-demand run of each workspace's freshness `checks` and reconciles
 /// them against the on-disk `checks` definitions. A check is run-to-completion, so

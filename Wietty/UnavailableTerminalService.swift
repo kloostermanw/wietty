@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Stands in when a substrate cannot work, so every terminal action that can fail
 /// does so with the actionable setup message instead of appearing to do nothing.

@@ -1,7 +1,7 @@
 import Foundation
 
 /// How a process runs and is stopped. Raw values are the on-disk `kind` strings.
-enum ProcessKind: String, Codable, Equatable {
+package enum ProcessKind: String, Codable, Equatable {
     case longRunning = "long_running"
     case daemon
     case shortRunning = "short_running"
@@ -14,26 +14,26 @@ enum ProcessKind: String, Codable, Equatable {
 /// saying exactly what the file said, so a rewrite that touches a neighbour does not
 /// rewrite it. The Edit workspace page (`ProjectStore.updateProcess`) is the one path
 /// that changes a definition on purpose.
-struct ProcessConfig: Codable, Equatable {
-    var command: String
-    var kind: ProcessKind
-    var stop: String?
-    var status: String?
-    var autoStart: Bool
-    var autoRestart: Bool
-    var restartWhenChanged: [String]
-    var env: [String: String]
+package struct ProcessConfig: Codable, Equatable {
+    package var command: String
+    package var kind: ProcessKind
+    package var stop: String?
+    package var status: String?
+    package var autoStart: Bool
+    package var autoRestart: Bool
+    package var restartWhenChanged: [String]
+    package var env: [String: String]
     /// When false (the default), a command that references an `WIETTY_*`
     /// variable with no value is blocked rather than run with the variable
     /// expanding to empty. Set true to opt into empty expansion.
-    var allowEmptyVars: Bool
+    package var allowEmptyVars: Bool
     /// This definition's own shell lines, run in the same shell as `command`,
     /// `stop`, and `status`, before each of them. Always just what the file says:
     /// the supervisor merges the workspace-wide lines ahead of these into a
     /// separate effective prelude, so this field is never the merged list.
-    var shellInit: [String]
+    package var shellInit: [String]
 
-    init(
+    package init(
         command: String,
         kind: ProcessKind = .longRunning,
         stop: String? = nil,
@@ -67,7 +67,7 @@ struct ProcessConfig: Codable, Equatable {
         case shellInit = "shell_init"
     }
 
-    init(from decoder: Decoder) throws {
+    package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         command = try c.decode(String.self, forKey: .command)
         kind = try c.decodeIfPresent(ProcessKind.self, forKey: .kind) ?? .longRunning
@@ -86,7 +86,7 @@ struct ProcessConfig: Codable, Equatable {
     /// `auto_start: false`, `env: {}` and the rest of the defaults as noise. The
     /// round trip still holds: `init(from:)` restores each omitted field to the
     /// same default it was omitted for. `command` and `kind` are always written.
-    func encode(to encoder: any Encoder) throws {
+    package func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(command, forKey: .command)
         try c.encode(kind, forKey: .kind)

@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Per session events on the libghostty substrate.
 ///

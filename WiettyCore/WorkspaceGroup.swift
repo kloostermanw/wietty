@@ -10,22 +10,22 @@ import Foundation
 /// (`ProjectStore.selectedGroupId`) is that id too. Groups persist as
 /// `group.<i>.*` lines in `~/.config/wietty/config`, a machine-local list the way
 /// the agents are, and never travel into a workspace's `wietty.json`.
-struct WorkspaceGroup: Identifiable, Equatable {
-    let id: UUID
-    var name: String
+package struct WorkspaceGroup: Identifiable, Equatable {
+    package let id: UUID
+    package var name: String
 
-    init(id: UUID = UUID(), name: String) {
+    package init(id: UUID = UUID(), name: String) {
         self.id = id
         self.name = name
     }
 
     /// A group with no name has nothing to label the menu item or the picker row, so
     /// it cannot be saved. The same gate `AgentDefinition.isValid` is.
-    var isValid: Bool { !name.trimmed.isEmpty }
+    package var isValid: Bool { !name.trimmed.isEmpty }
 
     /// The name as the menu and the picker show it, trimmed because it is typed into
     /// a text field.
-    var displayName: String { name.trimmed }
+    package var displayName: String { name.trimmed }
 }
 
 private extension String {

@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// Finding the Program Status Protocol's sequences in a terminal's raw output.

@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 struct WorkspaceCardView: View {
     let project: Project

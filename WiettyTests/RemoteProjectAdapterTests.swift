@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 import WiettyShared
 @testable import Wietty
 

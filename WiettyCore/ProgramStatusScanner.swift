@@ -13,8 +13,12 @@ import Foundation
 /// One scanner per terminal, fed in stream order. Cheap on purpose, because it sees
 /// every byte a terminal prints: one switch per byte, and a buffer only while inside
 /// an `OSC 7501` or `OSC 133`.
-struct ProgramStatusScanner {
-    enum Event: Equatable, Sendable {
+package struct ProgramStatusScanner {
+    /// Spelled out because the implicit one is internal, and the terminal that feeds
+    /// this scanner is on the other side of the module boundary.
+    package init() {}
+
+    package enum Event: Equatable, Sendable {
         /// `OSC 7501 ; ?`, which a supporting terminal must answer (section 7).
         case query
         case report(ProgramStatusReport)
@@ -62,7 +66,7 @@ struct ProgramStatusScanner {
     private static let can: UInt8 = 0x18
     private static let sub: UInt8 = 0x1A
 
-    mutating func scan(_ bytes: [UInt8]) -> [Event] {
+    package mutating func scan(_ bytes: [UInt8]) -> [Event] {
         var events: [Event] = []
         for byte in bytes { consume(byte, into: &events) }
         return events

@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// Shared by every suite in this file: `ProjectStoreDeadSessionTests` needs the

@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 /// A line of test-process buttons with an `All` button pinned to the top right.
 /// The per-test buttons flow (and wrap) on the left; each button's border color

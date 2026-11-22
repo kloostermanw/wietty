@@ -1,7 +1,7 @@
 import Foundation
 
 /// The independently schedulable periodic checks.
-enum CheckKind: CaseIterable, Hashable {
+package enum CheckKind: CaseIterable, Hashable {
     case gitSync        // git fetch + ahead/behind (+ branch/issue metadata)
     case pullRequest    // gh pr list for the branch
     case ciChecks       // gh pr checks -> ChecksLineView
@@ -13,11 +13,11 @@ enum CheckKind: CaseIterable, Hashable {
 
 /// Polling tiers, fastest first. `Instant` is not a tier; it is an event-driven
 /// one-shot handled by the scheduler, not represented here.
-enum CheckTier: Equatable {
+package enum CheckTier: Equatable {
     case fast, normal, slow
 
     /// One tier faster, clamped at `.fast`.
-    func bumped() -> CheckTier {
+    package func bumped() -> CheckTier {
         switch self {
         case .slow: return .normal
         case .normal: return .fast
@@ -30,7 +30,7 @@ enum CheckTier: Equatable {
 /// workspace is collapsed, Normal when expanded. Each applicable overlay bumps one
 /// tier faster, cumulatively, clamped at Fast: CI-pending bumps the CI check only;
 /// needs-attention bumps any check.
-func checkTier(for kind: CheckKind, collapsed: Bool, ciPending: Bool, needsAttention: Bool) -> CheckTier {
+package func checkTier(for kind: CheckKind, collapsed: Bool, ciPending: Bool, needsAttention: Bool) -> CheckTier {
     // Both are local and cheap (no network, one process), so they run fast
     // while their result is on screen and slow when it is not.
     if kind == .workingTree || kind == .jobNames { return collapsed ? .slow : .fast }

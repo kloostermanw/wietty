@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 import WiettyShared
 
 /// One remote connection's sidebar section: a header, a status line while the connection

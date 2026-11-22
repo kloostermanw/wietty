@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Composition root for the terminal stack. Builds the pieces, wires the byte and
 /// event routing between them, and reports a stack that cannot work through

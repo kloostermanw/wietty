@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 /// The colours the sidebar can be given from Settings.
 ///

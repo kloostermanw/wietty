@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
+import WiettyCore
 @testable import Wietty
 
 @Suite struct SmokeTests {

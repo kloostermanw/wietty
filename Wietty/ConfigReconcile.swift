@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Pure mapping between terminal rows and the file config. No I/O, no app state.
 enum ConfigReconcile {

@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Identifies one check for one workspace.
 struct ScheduleKey: Hashable {

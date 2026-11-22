@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// One entry in a terminal or agent row's context menu.
 ///

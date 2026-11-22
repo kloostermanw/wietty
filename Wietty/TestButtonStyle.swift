@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// A test button's outcome color: neutral (never run / stale), passed, failed.
 enum TestButtonStyle { case neutral, passed, failed }

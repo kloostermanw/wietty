@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// What a sidebar row draws for the program status its terminal reported
 /// (`OSC 7501`), decided apart from the view so it is asserted in tests rather than

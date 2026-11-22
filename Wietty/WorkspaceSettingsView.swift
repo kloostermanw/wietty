@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 /// One workspace's own page, reached from "Edit workspace…" in its card's menu and
 /// drawn in the pane beside the sidebar, the way the app's settings are.

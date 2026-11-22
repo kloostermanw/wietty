@@ -5,7 +5,7 @@ import Foundation
 /// The tool router is deliberately independent of the MCP SDK's own value
 /// type so it can be unit-tested without importing the transport layer.
 /// `MCPServerHost` converts between the SDK's `Value` and this type.
-enum JSONValue: Equatable, Sendable {
+package enum JSONValue: Equatable, Sendable {
     case null
     case bool(Bool)
     case int(Int)
@@ -16,12 +16,12 @@ enum JSONValue: Equatable, Sendable {
 
     // MARK: - Accessors
 
-    var stringValue: String? {
+    package var stringValue: String? {
         if case let .string(value) = self { return value }
         return nil
     }
 
-    var intValue: Int? {
+    package var intValue: Int? {
         switch self {
         case let .int(value): return value
         case let .double(value): return Int(value)
@@ -29,23 +29,23 @@ enum JSONValue: Equatable, Sendable {
         }
     }
 
-    var boolValue: Bool? {
+    package var boolValue: Bool? {
         if case let .bool(value) = self { return value }
         return nil
     }
 
-    var arrayValue: [JSONValue]? {
+    package var arrayValue: [JSONValue]? {
         if case let .array(value) = self { return value }
         return nil
     }
 
-    var objectValue: [String: JSONValue]? {
+    package var objectValue: [String: JSONValue]? {
         if case let .object(value) = self { return value }
         return nil
     }
 
     /// Convenience subscript for object members; returns nil for non-objects.
-    subscript(key: String) -> JSONValue? {
+    package subscript(key: String) -> JSONValue? {
         if case let .object(members) = self { return members[key] }
         return nil
     }
@@ -53,7 +53,7 @@ enum JSONValue: Equatable, Sendable {
     // MARK: - Foundation bridging
 
     /// Converts to a Foundation object suitable for `JSONSerialization`.
-    var foundationObject: Any {
+    package var foundationObject: Any {
         switch self {
         case .null: return NSNull()
         case let .bool(value): return value
@@ -66,7 +66,7 @@ enum JSONValue: Equatable, Sendable {
     }
 
     /// Serializes to a compact, key-sorted JSON string.
-    func encodedString() -> String {
+    package func encodedString() -> String {
         let data = (try? JSONSerialization.data(
             withJSONObject: foundationObject,
             options: [.sortedKeys, .fragmentsAllowed]
@@ -76,7 +76,7 @@ enum JSONValue: Equatable, Sendable {
 
     /// Builds a `JSONValue` from a Foundation object (e.g. from
     /// `JSONSerialization`). Unsupported types become `.null`.
-    static func from(foundationObject object: Any) -> JSONValue {
+    package static func from(foundationObject object: Any) -> JSONValue {
         switch object {
         case is NSNull:
             return .null

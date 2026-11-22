@@ -1,6 +1,7 @@
-import Testing
-import Foundation
 import Darwin
+import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// Lock-guarded accumulator, not a captured `var`: the output handler is

@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Reads one terminal's program status off its output, as the relay hands it over:
 /// answers the support query on the spot and reports everything else.

@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// A parsed `GET /tests/wait` request: the test ids to wait on and how long to hold
 /// the request open. Kept free of HTTP and store types so the query rules are

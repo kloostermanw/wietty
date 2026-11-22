@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Single source of truth for the workspace/git/terminal JSON shape shared by
 /// the MCP surface and the LAN control API.

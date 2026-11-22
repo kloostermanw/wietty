@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// The app-wide job name poll.
 ///

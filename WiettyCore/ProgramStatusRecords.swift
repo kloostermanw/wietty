@@ -7,7 +7,11 @@ import Foundation
 /// rule is asserted in a test rather than only visible in the sidebar. What ends a
 /// record's life (a prompt, the program exiting, the user looking at it) is the
 /// owner's to decide and is applied through `remove`.
-struct ProgramStatusRecords: Equatable {
+package struct ProgramStatusRecords: Equatable {
+    /// Spelled out because the implicit one is internal and the store is in another
+    /// module.
+    package init() {}
+
     private struct Entry: Equatable {
         var record: ProgramStatusRecord
         /// When it was last replaced, as an ordinal: what the eviction at the cap
@@ -24,9 +28,9 @@ struct ProgramStatusRecords: Equatable {
     private var entries: [String: Entry] = [:]
     private var clock = 0
 
-    var isEmpty: Bool { entries.isEmpty }
+    package var isEmpty: Bool { entries.isEmpty }
 
-    mutating func apply(_ report: ProgramStatusReport) {
+    package mutating func apply(_ report: ProgramStatusReport) {
         switch report {
         case let .set(id, record):
             let key = id ?? Self.root
@@ -43,11 +47,11 @@ struct ProgramStatusRecords: Equatable {
     }
 
     /// Drops every record in one of `states`, for the events that end them.
-    mutating func remove(_ states: Set<ProgramStatusState>) {
+    package mutating func remove(_ states: Set<ProgramStatusState>) {
         entries = entries.filter { !states.contains($0.value.record.state) }
     }
 
-    mutating func removeAll() {
+    package mutating func removeAll() {
         entries.removeAll()
     }
 
@@ -58,7 +62,7 @@ struct ProgramStatusRecords: Equatable {
     /// The protocol leaves this choice to the terminal. Urgency first, because a
     /// child waiting on the user is the thing to see even while the root is
     /// busy, and an error outranks progress for the same reason.
-    var summary: ProgramStatusRecord? {
+    package var summary: ProgramStatusRecord? {
         guard let (key, entry) = entries.max(by: { Self.ranks($0, below: $1) }) else { return nil }
         var record = entry.record
         if record.app == nil { record.app = inheritedApp(for: key) }

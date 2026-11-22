@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// How much is running across every workspace, by kind: local terminals, agents, and
 /// the managed processes and tests that workspaces declare in `wietty.json`. Shown by

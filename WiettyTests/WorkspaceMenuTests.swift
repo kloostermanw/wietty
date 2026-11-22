@@ -1,6 +1,7 @@
-import Testing
 import Foundation
 import SwiftUI
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// What a workspace card's context menu offers, in what order, and which of it a

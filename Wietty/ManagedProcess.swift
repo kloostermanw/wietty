@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WiettyCore
 
 /// One supervised process: owns its state machine, output buffer, and controls.
 /// Uses an injected `ProcessLaunching` so it is testable without spawning real

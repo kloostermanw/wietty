@@ -12,12 +12,12 @@ import Foundation
 /// still reads sensibly with only a command. The file is the source of truth; the
 /// Edit workspace page (`ProjectStore.updateCheck`) is the one path that changes a
 /// definition from inside the app.
-struct CheckConfig: Codable, Equatable {
-    let command: String
+package struct CheckConfig: Codable, Equatable {
+    package let command: String
     /// What the user should do when this check reports action needed. Empty means
     /// none, and the check's name is shown instead, mirroring how an agent's empty
     /// `prefix` means "no prefix" rather than a written-out blank.
-    let message: String
+    package let message: String
     /// A workspace-relative file whose contents gate re-running the command. When
     /// set, a passing run is remembered against the file's hash, and later ticks
     /// reuse that result without running the command until the file changes. `nil`
@@ -25,9 +25,9 @@ struct CheckConfig: Codable, Equatable {
     /// whitespace-only value is normalized to `nil`, so a blank field in the editor
     /// or a hand-edited file does not turn caching half on. The fields are `let`, so
     /// every value is built through the normalizing init and cannot drift after.
-    let watch: String?
+    package let watch: String?
 
-    init(command: String, message: String = "", watch: String? = nil) {
+    package init(command: String, message: String = "", watch: String? = nil) {
         self.command = command
         self.message = message
         self.watch = Self.normalized(watch)
@@ -39,7 +39,7 @@ struct CheckConfig: Codable, Equatable {
 
     /// `message` and `watch` are optional in the file, so a check written with only a
     /// `command` reads, the same way a test written with only a command does.
-    init(from decoder: Decoder) throws {
+    package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         command = try c.decode(String.self, forKey: .command)
         message = try c.decodeIfPresent(String.self, forKey: .message) ?? ""
@@ -57,7 +57,7 @@ struct CheckConfig: Codable, Equatable {
     /// An empty `message` and an absent `watch` are omitted, so re-encoding a decoded
     /// definition does not add `"message": ""` or a null `watch` as noise. `command`
     /// is always written.
-    func encode(to encoder: any Encoder) throws {
+    package func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(command, forKey: .command)
         if !message.isEmpty { try c.encode(message, forKey: .message) }

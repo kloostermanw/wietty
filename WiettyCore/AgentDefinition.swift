@@ -12,13 +12,13 @@ import Foundation
 /// the shell a row runs in expects (`ProjectStore.openShell`), and it is why the
 /// arguments are one free text field rather than a list: whatever the user would
 /// type at a prompt is what gets typed.
-struct AgentDefinition: Identifiable, Codable, Equatable {
-    let id: UUID
-    var name: String
-    var command: String
-    var defaultArguments: String
+package struct AgentDefinition: Identifiable, Codable, Equatable {
+    package let id: UUID
+    package var name: String
+    package var command: String
+    package var defaultArguments: String
 
-    init(id: UUID = UUID(), name: String, command: String, defaultArguments: String = "") {
+    package init(id: UUID = UUID(), name: String, command: String, defaultArguments: String = "") {
         self.id = id
         self.name = name
         self.command = command
@@ -32,7 +32,7 @@ struct AgentDefinition: Identifiable, Codable, Equatable {
     ///
     /// An entry missing a name or a command is still readable, and `isValid` is what
     /// keeps it out of the menu.
-    init(from decoder: any Decoder) throws {
+    package init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
@@ -42,7 +42,7 @@ struct AgentDefinition: Identifiable, Codable, Equatable {
 
     /// The app's own hardcoded agent, written down. A fresh install has to offer
     /// what the workspace menu offered before this list existed.
-    static let claude = AgentDefinition(name: "Claude", command: "claude")
+    package static let claude = AgentDefinition(name: "Claude", command: "claude")
 
     /// The line to type into the shell.
     ///
@@ -51,7 +51,7 @@ struct AgentDefinition: Identifiable, Codable, Equatable {
     ///   field is pre-filled with the defaults, so clearing it is how a user asks for
     ///   the bare command, and falling back to the defaults there would ignore them
     ///   doing so.
-    func launchCommand(arguments: String? = nil) -> String {
+    package func launchCommand(arguments: String? = nil) -> String {
         let chosen = (arguments ?? defaultArguments).trimmed
         let base = command.trimmed
         return chosen.isEmpty ? base : "\(base) \(chosen)"
@@ -59,21 +59,21 @@ struct AgentDefinition: Identifiable, Codable, Equatable {
 
     /// A menu item needs a name and a shell line needs a command, so an entry
     /// missing either cannot be saved.
-    var isValid: Bool { !name.trimmed.isEmpty && !command.trimmed.isEmpty }
+    package var isValid: Bool { !name.trimmed.isEmpty && !command.trimmed.isEmpty }
 
     /// The name as the menu and a row's label show it. Trimmed for the same reason
     /// the command is: it is typed into a text field.
-    var displayName: String { name.trimmed }
+    package var displayName: String { name.trimmed }
 }
 
 /// One stored entry, or nothing when it cannot be read.
 ///
 /// Wraps the element so a list decodes entry by entry: one unreadable entry costs
 /// that entry rather than every agent the user configured.
-struct FailableAgentDefinition: Decodable {
-    let agent: AgentDefinition?
+package struct FailableAgentDefinition: Decodable {
+    package let agent: AgentDefinition?
 
-    init(from decoder: any Decoder) throws {
+    package init(from decoder: any Decoder) throws {
         agent = try? AgentDefinition(from: decoder)
     }
 }
