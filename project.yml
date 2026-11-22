@@ -35,11 +35,37 @@ packages:
     url: https://github.com/Lakr233/libghostty-spm
     exactVersion: "1.3.2"
 targets:
+  # Everything Wietty does that needs no window: the store, the terminal byte path,
+  # the supervisors and the servers. A target of its own so the compiler refuses an
+  # import of SwiftUI or AppKit on this side of the boundary. See
+  # docs/superpowers/specs/2026-11-21-phase-1-core-extraction-design.md and issue #84.
+  #
+  # The three targets share SWIFT_PACKAGE_NAME so that `package` declarations reach
+  # the app and the tests while nothing else sees them. Without that, every member a
+  # view touches would have to be `public`, which turns an internal refactor into a
+  # published API, and every test reaching internal state would need a second
+  # `@testable` import.
+  WiettyCore:
+    type: framework
+    platform: macOS
+    sources: [WiettyCore]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.kloosterman.WiettyCore
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        SWIFT_PACKAGE_NAME: wietty
+        # Signed for the reason the helper is: an unsigned binary inside a signed
+        # bundle breaks the seal on the bundle that contains it.
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: YES
+        CODE_SIGNING_ALLOWED: YES
   Wietty:
     type: application
     platform: macOS
     sources: [Wietty]
     dependencies:
+      - target: WiettyCore
       - package: MCP
         product: MCP
       - package: Hummingbird
@@ -88,6 +114,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.kloosterman.wietty
+        SWIFT_PACKAGE_NAME: wietty
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.0.19"
@@ -127,9 +154,14 @@ targets:
     sources: [WiettyTests]
     dependencies:
       - target: Wietty
+      # Linked, not embedded: the host app embeds the framework and the test bundle
+      # is loaded into it, so a second copy here would be a second module at runtime.
+      - target: WiettyCore
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.kloosterman.wiettyTests
+        SWIFT_PACKAGE_NAME: wietty
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "6.0"
         CODE_SIGNING_REQUIRED: NO
@@ -138,6 +170,7 @@ schemes:
   Wietty:
     build:
       targets:
+        WiettyCore: all
         Wietty: all
         wietty-pty: all
         WiettyTests: [test]
