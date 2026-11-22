@@ -123,6 +123,24 @@ Quit Wietty first. It opens a window for a few seconds. The sanitizer build repl
 in derived data, so the run takes a few minutes and so does the next ordinary build. In an ordinary
 test run the suite is counted and reported as skipped.
 
+### The stream baseline
+
+`StreamBaselineTests` measures the terminal byte path from where `wietty-pty` stands, with the
+relay, `PaneStreamHub` and the libghostty-vt screen model in the path as the app has them. It prints
+three lines starting with `BASELINE`: the echo of one keystroke on a quiet terminal, the same while
+the main thread is busy for 50 ms out of every 60, and how fast 100 MB of output arrives. The normal
+suite skips it. Run it before and after any change to the byte path, and compare:
+
+```sh
+scripts/stream-baseline.sh
+```
+
+Quit Wietty first. It opens no window, but the test host is the app. Compare each number only with
+itself before and after a change, never the two echo numbers with each other: the busy one comes out
+several times lower than the quiet one, most likely because a spinning main thread keeps the CPU out
+of its idle states while the quiet run's pauses let it sleep. A run that comes out shifted as a
+whole happens now and then, so run it three times.
+
 ## Documentation
 The `docs/` folder must stay in sync with the code it describes. Whenever you change
 something a document covers, update that document in the same change. For example,
