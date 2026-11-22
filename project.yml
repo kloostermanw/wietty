@@ -34,6 +34,28 @@ packages:
   GhosttyKit:
     url: https://github.com/Lakr233/libghostty-spm
     exactVersion: "1.3.2"
+  # libghostty-vt: Ghostty's terminal emulation without a renderer or a window,
+  # which is what lets the core hold a terminal's state with no surface behind it.
+  #
+  # A local wrapper package rather than a remote one, because upstream publishes
+  # a bare xcframework zip (on release.files.ghostty.org, not as a GitHub release)
+  # and no Swift package. The wrapper holds a manifest and nothing else, so the
+  # 16 MB archive is fetched on first resolve and never enters the repository.
+  #
+  # Pinned exactly, and the pin is the sha256 in Packages/GhosttyVt/Package.swift
+  # rather than a version here: a local package has no version to state. The C ABI
+  # is stable from 1.0, but the snapshot byte format is versioned separately and
+  # is not covered by that promise, so moving to a new release means changing the
+  # url and the checksum together, on purpose.
+  #
+  # A dependency of WiettyCore only. The archive holds static libraries, so the
+  # framework links it and nothing is embedded. It shares several hundred symbols
+  # with GhosttyKit (simdutf, Highway, compiler builtins) and none of its API;
+  # the two never meet in one image, because GhosttyKit is linked into the app
+  # and this into the framework. scripts/coexistence-check.sh is the proof that
+  # both can be live in one process.
+  GhosttyVt:
+    path: Packages/GhosttyVt
 targets:
   # Everything Wietty does that needs no window: the store, the terminal byte path,
   # the supervisors and the servers. A target of its own so the compiler refuses an
@@ -55,6 +77,8 @@ targets:
         product: Hummingbird
       - package: HummingbirdWebSocket
         product: HummingbirdWebSocket
+      - package: GhosttyVt
+        product: GhosttyVt
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.kloosterman.WiettyCore
