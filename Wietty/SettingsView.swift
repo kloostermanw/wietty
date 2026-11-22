@@ -104,7 +104,6 @@ struct SettingsView: View {
         case .general:
             form {
                 badgeSection
-                scrollbackSection
                 groupsSection
                 periodicChecksSection
                 colorsSection
@@ -320,28 +319,6 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
-
-    /// How much history the server keeps per terminal. Directly under the badge
-    /// toggle because the two are the tab's terminal settings and share a rule: each
-    /// applies to terminals opened afterwards.
-    @ViewBuilder private var scrollbackSection: some View {
-        Section("Terminal history") {
-            Stepper(value: $store.scrollbackLines, in: TerminalScrollback.range,
-                    step: Self.scrollbackStep) {
-                HStack {
-                    Text("Scrollback")
-                    Spacer()
-                    Text("\(store.scrollbackLines.formatted(.number.grouping(.automatic))) lines")
-                        .foregroundStyle(.secondary).monospacedDigit()
-                }
-            }
-            Text("Lines of history Wietty keeps for each terminal, which is what an MCP read of its output can reach. A full terminal costs about 1 KiB per line, so 10,000 lines is about 10 MiB each. Applies to terminals opened after a change.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    /// One click of the scrollback stepper: a megabyte or so per terminal.
-    static let scrollbackStep = 1_000
 
     @ViewBuilder private var periodicChecksSection: some View {
         Section("Periodic checks") {

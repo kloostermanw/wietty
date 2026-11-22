@@ -345,8 +345,10 @@ megabytes a second, a paint frame formats one viewport). One call is not: **a ch
 reflows the whole scrollback under that lock**, and on a full scrollback that is slow enough to hold
 the terminal's own output behind each notch of a window drag. It is a known cost and not yet solved.
 
-**History is a setting**, `scrollback-lines` in `~/.config/wietty/config` and "Terminal history" in
-Settings › General (`ProjectStore.scrollbackLines`, `TerminalScrollback`). The default is 10,000 lines
+**History is a setting**, `scrollback-lines` in `~/.config/wietty/config`
+(`ProjectStore.scrollbackLines`, `TerminalScrollback`). It has no control in the settings panel yet:
+nothing a user can see changes with it until the pane and the remote viewers read their history from
+the model, which is phase 3 of issue #84. The default is 10,000 lines
 per terminal and the range is 1,000 to 100,000; a value outside it, typed into the file by hand, is
 brought to the nearer end. The number is a memory decision. A retained row costs roughly 1 KiB at 120
 columns whatever is written on it, and the cost is only paid once the rows exist. Measured on ten
