@@ -21,26 +21,12 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
     private let lock = NSLock()
     private var written: [UInt8] = []
     private var grid: TerminalSize
-    private var overtook = 0
-    /// How many bytes the hub had been handed, asked at the moment of each write.
-    private let hubCount: @Sendable () -> Int
 
-    init(size: TerminalSize, hubCount: @escaping @Sendable () -> Int = { .max }) {
-        grid = size
-        self.hubCount = hubCount
-    }
+    init(size: TerminalSize) { grid = size }
 
     var bytes: [UInt8] { lock.lock(); defer { lock.unlock() }; return written }
-    /// Writes that arrived holding bytes the hub had not been handed yet.
-    var writesAheadOfTheHub: Int { lock.lock(); defer { lock.unlock() }; return overtook }
 
-    func write(_ bytes: [UInt8]) {
-        let handed = hubCount()
-        lock.lock(); defer { lock.unlock() }
-        written += bytes
-        if written.count > handed { overtook += 1 }
-    }
-
+    func write(_ bytes: [UInt8]) { lock.lock(); written += bytes; lock.unlock() }
     func resize(to size: TerminalSize) { lock.lock(); grid = size; lock.unlock() }
     var size: TerminalSize { lock.lock(); defer { lock.unlock() }; return grid }
     func paintFrame() -> [UInt8] { [] }
@@ -54,14 +40,13 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
     private(set) var sizes: [TerminalSize] = []
     private(set) var clustering: [Bool] = []
     weak var last: RecordingScreenModel?
-    var hubCount: @Sendable () -> Int = { .max }
     var failure: (any Error)?
 
     func make(_ size: TerminalSize, _ graphemeClustering: Bool) throws -> any TerminalScreenModel {
         sizes.append(size)
         clustering.append(graphemeClustering)
         if let failure { throw failure }
-        let model = RecordingScreenModel(size: size, hubCount: hubCount)
+        let model = RecordingScreenModel(size: size)
         last = model
         return model
     }
@@ -70,17 +55,16 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
 /// The service keeping one screen model per terminal: made when a terminal opens,
 /// fed everything the terminal prints, resized with the surface, and released
 /// when the terminal is torn down.
-///
-/// Nothing in the app reads a model yet. These pin that it is there and correct
-/// to read, which is what switching the readers over will rest on.
 @MainActor
 @Suite struct GhosttyServiceScreenModelTests {
     private static let folder = URL(fileURLWithPath: "/tmp")
 
-    /// A service on the real model, as the app builds it.
-    private func service(_ host: FakeSurfaceHost) -> GhosttyService {
-        GhosttyService(host: host, helperPath: "/usr/bin/true",
-                       onOutput: { _, _ in }, onTerminated: { _ in })
+    /// A service on the real model, wired as the app wires it. Through the stack,
+    /// because the service does not write a model itself: the hub does, in the
+    /// step that accepts a chunk, and the stack is what connects the two. The
+    /// service keeps the hub alive through the hooks it was built with.
+    private func service(_ host: FakeSurfaceHost) throws -> GhosttyService {
+        try #require(GhosttyStack(host: host, helperPath: "/usr/bin/true").ghosttyService)
     }
 
     /// A service whose models are the recording kind.
@@ -100,33 +84,53 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
 
     // MARK: - Feeding
 
-    /// The same bytes the hub gets, all of them and in the same order, and never
-    /// ahead of the hub: a viewer that is already attached must not wait for a
-    /// parse it gains nothing from.
-    @Test func aTerminalsOutputReachesItsModelInOrderAfterTheHub() async throws {
+    /// The model gets the bytes the output hook was handed, all of them, in the
+    /// same order and once. The service does not write the model beside the
+    /// hook: whoever takes the output feeds it, which in the app is the hub, so
+    /// that the model and the stream are at one offset. A second write here would
+    /// put every byte on the screen twice.
+    @Test func aTerminalsOutputReachesItsModelThroughTheOutputHookAndOnlyOnce() async throws {
         let host = FakeSurfaceHost()
-        let hub = ByteSink()
+        let handed = ByteSink()
         let models = ModelFactoryLog()
-        models.hubCount = { hub.count }
-        let service = service(host, models: models, onOutput: { _, bytes in hub.append(bytes) })
+        let hub = PaneStreamHub()
+        let service = service(host, models: models, onOutput: { session, bytes in
+            handed.append(bytes)
+            hub.write(session: session, bytes: bytes)
+        })
+        let shared = service.shared
+        hub.onIngest = { session, bytes in shared.model(for: session)?.write(bytes) }
         defer { service.closeAll() }
         let session = try await open(service, "for i in 1 2 3 4 5 6 7 8; do echo line-$((i * 11)); done")
         let model = try #require(service.screenModel(for: session) as? RecordingScreenModel)
         try await waitUntil {
-            model.text(maxLines: 0).contains("line-88") && model.bytes == hub.bytes
+            model.text(maxLines: 0).contains("line-88") && model.bytes == handed.bytes
         }
-        #expect(model.writesAheadOfTheHub == 0)
         let text = model.text(maxLines: 0)
         let positions = (1...8).compactMap { text.range(of: "line-\($0 * 11)")?.lowerBound }
         #expect(positions.count == 8)
         #expect(positions == positions.sorted())
     }
 
+    /// And with nobody taking the output, nothing reaches the model. Not a
+    /// feature, a boundary: it is what says the service has no second path in.
+    @Test func theServiceDoesNotWriteAModelItself() async throws {
+        let host = FakeSurfaceHost()
+        let handed = ByteSink()
+        let models = ModelFactoryLog()
+        let service = service(host, models: models, onOutput: { _, bytes in handed.append(bytes) })
+        defer { service.closeAll() }
+        let session = try await open(service, "echo unread-$((40+2))")
+        let model = try #require(service.screenModel(for: session) as? RecordingScreenModel)
+        try await waitUntil { String(decoding: handed.bytes, as: UTF8.self).contains("unread-42") }
+        #expect(model.bytes.isEmpty)
+    }
+
     /// End to end on the real model: what a shell prints is on the screen the core
     /// holds, with no surface involved in reading it back.
     @Test func theModelHoldsWhatTheTerminalPrinted() async throws {
         let host = FakeSurfaceHost()
-        let service = service(host)
+        let service = try service(host)
         defer { service.closeAll() }
         let session = try await open(service, "echo tagged-$((6+7))")
         try await waitUntil {
@@ -137,7 +141,7 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
 
     @Test func twoTerminalsDoNotShareAModel() async throws {
         let host = FakeSurfaceHost()
-        let service = service(host)
+        let service = try service(host)
         defer { service.closeAll() }
         let first = try await open(service, "echo alpha-$((1+1)); sleep 5")
         let second = try await open(service, "echo beta-$((2+2)); sleep 5")
@@ -164,7 +168,7 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
         _ = try await open(recording, "sleep 5")
         #expect(models.sizes == [GhosttyService.initialSize])
 
-        let real = service(host)
+        let real = try service(host)
         defer { real.closeAll() }
         let session = try await open(real, "sleep 5")
         #expect(real.screenModel(for: session)?.size == GhosttyService.initialSize)
@@ -174,7 +178,7 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
     /// resizes the pty.
     @Test func aSurfaceResizeReachesTheModel() async throws {
         let host = FakeSurfaceHost()
-        let service = service(host)
+        let service = try service(host)
         defer { service.closeAll() }
         let session = try await open(service, "sleep 5")
         let other = try await open(service, "sleep 5")
@@ -206,7 +210,7 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
     @Test func aLegacyHostGivesAModelThatDoesNotClusterGraphemes() async throws {
         let bytes = Array("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}x".utf8)
         let host = FakeSurfaceHost()
-        let service = service(host)
+        let service = try service(host)
         defer { service.closeAll() }
         let clustered = try #require(service.screenModel(for: try await open(service, "sleep 5")))
         host.graphemeClustering = false
@@ -256,7 +260,7 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
     /// finishes with both.
     @Test func anExitedTerminalKeepsItsModelUntilItIsDiscarded() async throws {
         let host = FakeSurfaceHost()
-        let service = service(host)
+        let service = try service(host)
         defer { service.closeAll() }
         let session = try await open(service, "echo last-$((20+2))")
         try await waitUntil { service.liveSessions.isEmpty }

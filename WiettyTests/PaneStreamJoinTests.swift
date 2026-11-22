@@ -1,0 +1,276 @@
+import Darwin
+import Foundation
+import Testing
+import WiettyCore
+@testable import Wietty
+
+/// Everything a viewer was sent, in the order it was sent. Lock guarded for the
+/// reason every sink in this bundle is: the hub calls it from its own queue.
+private final class ViewerLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [RemoteMessage] = []
+    func add(_ message: RemoteMessage) { lock.lock(); storage.append(message); lock.unlock() }
+    var messages: [RemoteMessage] { lock.lock(); defer { lock.unlock() }; return storage }
+}
+
+/// What a viewer's own terminal ends up showing: the messages it was sent, played
+/// into a fresh terminal exactly as a browser or an iPad plays them, a `resize`
+/// setting the grid and a `data` being written.
+///
+/// A real terminal rather than a scan of the bytes, because the claim under test
+/// is about a screen. A paint is not a prefix of the stream: it is cursor
+/// addressed, it carries modes, and whether it lines up with what follows can
+/// only be read off the terminal both were written into.
+private func replay(_ messages: [RemoteMessage], scrollbackLines: Int) throws -> [String] {
+    var terminal: GhosttyVtTerminal?
+    for message in messages {
+        switch message {
+        case let .resize(cols, rows):
+            let size = TerminalSize(cols: cols, rows: rows)
+            if let terminal {
+                terminal.resize(to: size)
+            } else {
+                terminal = try GhosttyVtTerminal(size: size, scrollbackLines: scrollbackLines)
+            }
+        case let .data(text):
+            let target = try terminal ?? GhosttyVtTerminal(size: TerminalSize(cols: 80, rows: 24),
+                                                           scrollbackLines: scrollbackLines)
+            terminal = target
+            target.write(Array(text.utf8))
+        case .ended:
+            break
+        }
+    }
+    guard let terminal else { return [] }
+    return terminal.text(maxLines: scrollbackLines * 2)
+        .components(separatedBy: "\n")
+        .filter { !$0.isEmpty }
+}
+
+/// Why a run of lines is not "every number once, in order, ending at `last`", or
+/// nil when it is. A sentence rather than a boolean, so a failure names the line
+/// the join went wrong at.
+private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
+                                  startingAt first: Int? = nil) -> String? {
+    guard !lines.isEmpty else { return "the viewer shows no lines at all" }
+    var previous: Int?
+    for line in lines {
+        guard let number = Int(line) else { return "a line that is not a number: \(line.debugDescription)" }
+        if let previous {
+            if number == previous { return "line \(number) appears twice" }
+            if number < previous { return "line \(number) follows \(previous): a stretch was repeated" }
+            if number > previous + 1 { return "lines \(previous + 1) to \(number - 1) are missing" }
+        }
+        previous = number
+    }
+    if let first, lines.first != String(first) {
+        return "the lines start at \(lines[0]) and not at \(first)"
+    }
+    return previous == last ? nil : "the lines stop at \(previous ?? 0) and not at \(last)"
+}
+
+/// The join between a paint and the stream that follows it.
+///
+/// A paint taken from the screen model is exact, and an exact paint only helps if
+/// the stream picks up at the very byte the paint stops at. One byte late and a
+/// line is missing; one chunk early and a build log shows lines twice. The hub
+/// makes the join by doing three things as one step under a session's lock:
+/// taking what it has accepted, asking for the paint, and registering the viewer.
+/// These tests race a writer against that step, because nothing but a race can
+/// show it holds.
+@Suite struct PaneStreamJoinTests {
+    private static let session = "gt:join"
+
+    /// A hub wired the way `GhosttyStack` wires it, on a model of its own.
+    ///
+    /// - Parameter parseDelay: microseconds each chunk takes to reach the model,
+    ///   on top of the parse. A real parse is far too quick for a test to land an
+    ///   attach inside it, and inside it is exactly where a hub that accepted a
+    ///   chunk before the model had it would hand out a paint that is one chunk
+    ///   short. Stretching it makes that window wide enough to hit every time.
+    private func wired(_ size: TerminalSize,
+                       parseDelay: UInt32 = 0) throws -> (hub: PaneStreamHub, model: GhosttyVtScreenModel) {
+        let model = try GhosttyVtScreenModel(size: size)
+        let hub = PaneStreamHub(startTimer: true)
+        hub.onIngest = { _, bytes in
+            if parseDelay > 0 { usleep(parseDelay) }
+            model.write(bytes)
+        }
+        hub.onPaint = { _ in model.paintMessages() }
+        return (hub, model)
+    }
+
+    /// The output of `seq 1 count` as a pty hands it over, cut into chunks at
+    /// arbitrary bytes, so numbers and line endings are split across writes.
+    private static func chunks(upTo count: Int, using random: inout SystemRandomNumberGenerator) -> [[UInt8]] {
+        let bytes = Array((1...count).map { "\($0)\r\n" }.joined().utf8)
+        var chunks: [[UInt8]] = []
+        var offset = 0
+        while offset < bytes.count {
+            let length = min(Int.random(in: 1...96, using: &random), bytes.count - offset)
+            chunks.append(Array(bytes[offset..<(offset + length)]))
+            offset += length
+        }
+        return chunks
+    }
+
+    /// A viewer attaching while plain output streams sees every line exactly once.
+    ///
+    /// The writer runs on a thread of its own, as a terminal's relay queue is, and the
+    /// flush timer runs, so at the moment of the attach there are bytes the model
+    /// has parsed and the hub has not delivered: the state both old failures came
+    /// from. Many rounds, each attaching at a different point, because one round
+    /// proves nothing about a race. Every other round the model is slow to take a
+    /// chunk, which is the round that catches a chunk delivered before it was
+    /// parsed.
+    @Test func aViewerAttachingMidStreamSeesEveryLineExactlyOnce() async throws {
+        var random = SystemRandomNumberGenerator()
+        let lines = 1_500
+        for round in 0..<120 {
+            let slowParse = round % 2 == 1
+            let (hub, _) = try wired(TerminalSize(cols: 80, rows: 24), parseDelay: slowParse ? 150 : 0)
+            let chunks = Self.chunks(upTo: lines, using: &random)
+            // Anywhere from before the first chunk to just before the last.
+            let attachAt = Int.random(in: 0..<chunks.count, using: &random)
+            let session = Self.session
+            let log = ViewerLog()
+
+            let writer = Task.detached {
+                for chunk in chunks {
+                    hub.write(session: session, bytes: chunk)
+                    // Slow enough, one way or the other, that a round spans
+                    // several flushes.
+                    if !slowParse { usleep(150) }
+                }
+            }
+            let attacher = Task.detached {
+                // Roughly the moment the writer reaches `attachAt`, without the two
+                // being tied together by anything the hub could benefit from.
+                usleep(UInt32(attachAt * 190))
+                hub.attach(session: session) { log.add($0) }
+            }
+            await attacher.value
+            await writer.value
+            hub.flush()
+
+            let shown = try replay(log.messages, scrollbackLines: 10_000)
+            if let fault = faultInNumberedLines(shown, endingAt: lines) {
+                Issue.record("round \(round), attached near chunk \(attachAt) of \(chunks.count): \(fault)")
+                return
+            }
+            hub.stop()
+        }
+    }
+
+    /// A repaint has the same join to make. The grid moves, the viewers already
+    /// attached are painted again, and the bytes on either side of that paint
+    /// must neither be shown twice nor lost. A viewer attached from the first
+    /// byte has to end with every line, however many times it was repainted on
+    /// the way.
+    @Test func aRepaintMidStreamNeitherRepeatsNorDropsALine() async throws {
+        var random = SystemRandomNumberGenerator()
+        let lines = 1_500
+        for round in 0..<40 {
+            let (hub, model) = try wired(TerminalSize(cols: 80, rows: 24))
+            let chunks = Self.chunks(upTo: lines, using: &random)
+            let session = Self.session
+            let log = ViewerLog()
+            hub.attach(session: session) { log.add($0) }
+
+            let writer = Task.detached {
+                for chunk in chunks {
+                    hub.write(session: session, bytes: chunk)
+                    usleep(150)
+                }
+            }
+            let resizer = Task.detached {
+                var rows = 24
+                while !Task.isCancelled {
+                    rows = rows == 24 ? 31 : 24
+                    let size = TerminalSize(cols: 80, rows: rows)
+                    // The order the service keeps: the model first, then the hub.
+                    model.resize(to: size)
+                    hub.noteSize(session: session, size)
+                    try? await Task.sleep(for: .milliseconds(3))
+                }
+            }
+            await writer.value
+            resizer.cancel()
+            await resizer.value
+            hub.waitForPendingDeliveries()
+            hub.flush()
+
+            let shown = try replay(log.messages, scrollbackLines: 10_000)
+            if let fault = faultInNumberedLines(shown, endingAt: lines, startingAt: 1) {
+                Issue.record("round \(round): \(fault)")
+                return
+            }
+            // And it really was repainted along the way, or this proved nothing.
+            let paints = log.messages.filter { if case .resize = $0 { true } else { false } }.count
+            #expect(paints > 1, "round \(round) never repainted")
+            hub.stop()
+        }
+    }
+
+    /// A character split across the moment of an attach arrives whole. The model
+    /// has only half of it, so the paint does not show it, and the hub must then
+    /// hand the new viewer all of its bytes and not the second half alone.
+    @Test func aCharacterSplitAcrossAnAttachArrivesWhole() throws {
+        let (hub, _) = try wired(TerminalSize(cols: 40, rows: 6))
+        defer { hub.stop() }
+        let bytes = Array("caf\u{E9} \u{65E5}\u{672C}".utf8)
+        // Inside the three bytes of the first CJK character.
+        let cut = Array("caf\u{E9} ".utf8).count + 1
+        let log = ViewerLog()
+        hub.write(session: Self.session, bytes: Array(bytes[..<cut]))
+        hub.attach(session: Self.session) { log.add($0) }
+        hub.write(session: Self.session, bytes: Array(bytes[cut...]))
+        hub.flush()
+        #expect(try replay(log.messages, scrollbackLines: 100) == ["caf\u{E9} \u{65E5}\u{672C}"])
+    }
+
+    /// The viewers already watching get what was accepted before a newcomer's
+    /// paint, and the newcomer does not get it a second time on top of that paint.
+    @Test func whatWasAcceptedBeforeAnAttachGoesToEarlierViewersOnly() throws {
+        let (hub, _) = try wired(TerminalSize(cols: 40, rows: 6))
+        defer { hub.stop() }
+        let early = ViewerLog()
+        let late = ViewerLog()
+        hub.attach(session: Self.session) { early.add($0) }
+        let earlyPaint = early.messages.count
+        hub.write(session: Self.session, bytes: Array("before\r\n".utf8))
+        hub.attach(session: Self.session) { late.add($0) }
+        hub.write(session: Self.session, bytes: Array("after\r\n".utf8))
+        hub.flush()
+
+        #expect(Array(early.messages.dropFirst(earlyPaint)) == [.data("before\r\n"), .data("after\r\n")])
+        // A size, a paint that already holds "before", then only what came after.
+        #expect(late.messages.count == 3)
+        #expect(late.messages.last == .data("after\r\n"))
+        #expect(try replay(late.messages, scrollbackLines: 100) == ["before", "after"])
+    }
+
+    /// Every chunk the hub accepts is handed to the model's feed, against its own
+    /// session and in order, whether or not anybody is watching.
+    @Test func everyAcceptedChunkIsHandedToTheModelFeed() {
+        final class Fed: @unchecked Sendable {
+            private let lock = NSLock()
+            private var storage: [String: [UInt8]] = [:]
+            func add(_ session: String, _ bytes: [UInt8]) {
+                lock.lock(); storage[session, default: []] += bytes; lock.unlock()
+            }
+            func bytes(_ session: String) -> [UInt8] {
+                lock.lock(); defer { lock.unlock() }
+                return storage[session] ?? []
+            }
+        }
+        let hub = PaneStreamHub()
+        let fed = Fed()
+        hub.onIngest = { fed.add($0, $1) }
+        hub.write(session: "gt:1", bytes: Array("one ".utf8))
+        hub.write(session: "gt:2", bytes: Array("other".utf8))
+        hub.write(session: "gt:1", bytes: Array("two".utf8))
+        #expect(fed.bytes("gt:1") == Array("one two".utf8))
+        #expect(fed.bytes("gt:2") == Array("other".utf8))
+    }
+}

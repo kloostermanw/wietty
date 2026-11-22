@@ -98,7 +98,8 @@ package final class GhosttyStack {
             helperPath: helperPath,
             // Straight into the hub, off the main actor, in stream order. This is
             // the whole reason Wietty owns the PTY: the same bytes that reach
-            // the surface reach every remote viewer.
+            // the surface reach every remote viewer, and the terminal's screen
+            // model, which the hub feeds through `onIngest` below.
             onOutput: { session, bytes in hub.write(session: session, bytes: bytes) },
             // The grid, to the same hub. A viewer learns its size in the paint it
             // gets on attach and from nothing else, so without this a window resize
@@ -157,6 +158,13 @@ package final class GhosttyStack {
         // fail: the registry is in this process, so there is never an `.unknown` to
         // report.
         hub.onSessionCensus = { .sessions(shared.liveSessions) }
+        // The server's own terminal, fed by the hub in the step that accepts a
+        // chunk for delivery. The hub holds the session's lock across both, so a
+        // paint asked for under that lock is the screen at exactly the offset the
+        // viewers are served from. A session with no model is one that has been
+        // torn down while its relay was still draining, and those bytes have
+        // nobody left to read them.
+        hub.onIngest = { session, bytes in shared.model(for: session)?.write(bytes) }
         // The initial screen for a viewer attaching to a live terminal. Monochrome
         // with an approximated cursor by necessity: `ScreenSnapshot` documents why.
         //
