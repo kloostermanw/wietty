@@ -118,7 +118,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private func startFlushTimer() {
         let source = DispatchSource.makeTimerSource(queue: delivery)
         source.schedule(deadline: .now() + Self.flushInterval, repeating: Self.flushInterval)
-        source.setEventHandler { [weak self] in self?.flushNow(sessions: nil) }
+        source.setEventHandler { [weak self] in self?.flushNow(waiting: false) }
         source.resume()
         timer = source
     }
@@ -409,16 +409,27 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// a test can assert on what a viewer received as soon as it returns. Not to
     /// be called from a viewer's sink, which already runs there.
     package func flush() {
-        delivery.sync { flushNow(sessions: nil) }
+        delivery.sync { flushNow(waiting: true) }
     }
 
-    /// - Parameter sessions: which sessions to flush, or nil for all of them.
-    private func flushNow(sessions: Set<String>?) {
+    /// - Parameter waiting: whether to wait for a session whose lock is held. The
+    ///   timer does not: a session's lock is held for as long as its model takes
+    ///   to parse a chunk, and a model in the middle of reflowing a full
+    ///   scrollback after a resize can hold a write behind it for a long time.
+    ///   Waiting there would park this queue, and with it every other session's
+    ///   viewers, behind one terminal. Skipped, that session's bytes stay where
+    ///   they are and go out on the next tick, in order. A caller's own `flush()`
+    ///   does wait, because it promises everything accepted has been delivered.
+    private func flushNow(waiting: Bool) {
         lock.lock()
-        let flushing = streams.filter { sessions?.contains($0.key) ?? true }.map(\.value)
+        let flushing = Array(streams.values)
         lock.unlock()
         for stream in flushing {
-            stream.lock.lock()
+            if waiting {
+                stream.lock.lock()
+            } else if !stream.lock.try() {
+                continue
+            }
             let text = stream.takeText()
             let sinks = Array(stream.viewers.values)
             stream.lock.unlock()
