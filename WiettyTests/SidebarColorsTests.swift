@@ -1,6 +1,7 @@
-import Testing
 import Foundation
 import SwiftUI
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// The six colours the sidebar can be given. Each is optional: nil is "leave the
