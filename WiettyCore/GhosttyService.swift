@@ -19,6 +19,7 @@ package final class SharedTerminalState: @unchecked Sendable {
     private let lock = NSLock()
     private var live: Set<String> = []
     private var snapshots: [String: ScreenSnapshot] = [:]
+    private var models: [String: any TerminalScreenModel] = [:]
 
     package var liveSessions: Set<String> {
         lock.lock(); defer { lock.unlock() }
@@ -36,6 +37,30 @@ package final class SharedTerminalState: @unchecked Sendable {
     package func snapshot(for session: String) -> ScreenSnapshot? {
         lock.lock(); defer { lock.unlock() }
         return snapshots[session]
+    }
+
+    /// The screen model of a terminal, or nil for one that was never opened or has
+    /// been torn down. An exited terminal keeps its model until its row is closed,
+    /// as it keeps its surface: the last screen a command left is still worth
+    /// reading.
+    ///
+    /// Here, behind this lock, because the hub will ask for a paint from its
+    /// delivery queue. The lock covers only the lookup. The model serialises its
+    /// own calls, so a caller uses what it is handed without holding anything of
+    /// this type's.
+    package func model(for session: String) -> (any TerminalScreenModel)? {
+        lock.lock(); defer { lock.unlock() }
+        return models[session]
+    }
+
+    package func note(model: any TerminalScreenModel, for session: String) {
+        lock.lock(); models[session] = model; lock.unlock()
+    }
+
+    /// Releases a terminal's model. This is the registry's only reference once the
+    /// relay that fed it has stopped, so the terminal's memory goes with it.
+    package func removeModel(for session: String) {
+        lock.lock(); models[session] = nil; lock.unlock()
     }
 }
 
@@ -140,6 +165,10 @@ package final class GhosttyService: TerminalService {
     /// running a terminal, hearing the reports is not.
     private let onProgramStatus: @Sendable (String, ProgramStatusScanner.Event) -> Void
     private let onTerminated: @MainActor (String) -> Void
+    /// Builds the screen model of a terminal that is being opened, at the grid it
+    /// is opened with. Injected so a test can hand the service a model it can
+    /// inspect; the default is the real one.
+    private let makeScreenModel: @MainActor (TerminalSize) throws -> any TerminalScreenModel
     private var terminals: [String: Terminal] = [:]
 
     /// The terminal the frontend says is on screen, as it last told us.
@@ -217,6 +246,8 @@ package final class GhosttyService: TerminalService {
          onStreamEnded: @escaping @Sendable (String) -> Void = { _ in },
          onProgramStatus: @escaping @Sendable (String, ProgramStatusScanner.Event) -> Void = { _, _ in },
          onDisplayRequest: @escaping @MainActor (String?) -> Void = { _ in },
+         makeScreenModel: @escaping @MainActor (TerminalSize) throws -> any TerminalScreenModel
+             = { try GhosttyVtScreenModel(size: $0) },
          onTerminated: @escaping @MainActor (String) -> Void) {
         self.host = host
         self.helperPath = helperPath
@@ -226,6 +257,7 @@ package final class GhosttyService: TerminalService {
         self.onStreamEnded = onStreamEnded
         self.onProgramStatus = onProgramStatus
         self.onDisplayRequest = onDisplayRequest
+        self.makeScreenModel = makeScreenModel
         self.onTerminated = onTerminated
         host.onResized = { [weak self] session, size in
             guard let self else { return }
@@ -233,6 +265,9 @@ package final class GhosttyService: TerminalService {
             // names no pty to resize and no screen worth telling a viewer about.
             guard let terminal = self.terminals[session] else { return }
             terminal.pty.resize(to: size)
+            // The model follows the same report, so its grid is the surface's. The
+            // surface stays the authority: the model is told, never asked.
+            self.shared.model(for: session)?.resize(to: size)
             // A reflow rewrites the screen a viewer attaching next would want, so
             // this is one of the two moments the shared snapshot is refreshed.
             self.recordSnapshot(session)
@@ -348,6 +383,14 @@ package final class GhosttyService: TerminalService {
               badge: String?) async throws -> TerminalHandle {
         let session = Self.sessionPrefix + UUID().uuidString.lowercased()
         let socketPath = try TerminalRelay.socketPath(for: session)
+        // Before the pty, so a model that cannot be built leaves nothing to clean
+        // up. At the grid the pty is about to be spawned with, which is the only
+        // grid there is until the surface reports its own.
+        //
+        // Held by the relay's closure below and registered only once the terminal
+        // is, so each way out of this method that throws releases it with the
+        // relay and nothing has to remember to.
+        let model = try makeScreenModel(Self.initialSize)
         let pty = try RawPTY.spawn(command: command, directory: folder, environment: [:],
                                    size: Self.initialSize, shell: shell)
         let onOutput = self.onOutput
@@ -368,6 +411,11 @@ package final class GhosttyService: TerminalService {
                 // wait behind anything, and this runs on the relay's queue precisely
                 // so they do not.
                 onOutput(session, bytes)
+                // Then the server's own terminal, on this queue and with no hop:
+                // the model takes its own lock. After the hub, because a viewer
+                // that is already attached is served by the live stream and gains
+                // nothing from waiting for a parse.
+                model.write(bytes)
                 // Then note that the screen moved, which is what keeps the paint a
                 // viewer attaching *next* is built from within `snapshotDebounce` of
                 // the truth. Weakly, so a service that is gone cannot be resurrected
@@ -406,6 +454,7 @@ package final class GhosttyService: TerminalService {
             Task { @MainActor in self?.reap(session) }
         })
         terminals[session] = Terminal(pty: pty, relay: relay)
+        shared.note(model: model, for: session)
         shared.note(live: liveSessions)
         onDisplayRequest(session)
 
@@ -561,6 +610,8 @@ package final class GhosttyService: TerminalService {
         // by the census, and a snapshot left behind would paint a dead screen for
         // an id the app may later mint again.
         shared.record(nil, for: sessionId)
+        // The model goes with the surface. `reap` deliberately keeps both.
+        shared.removeModel(for: sessionId)
         // Told even when the child was reaped earlier, because a viewer can attach
         // between the two: the census answers an attach on a reaped terminal
         // `ended`, but a viewer that attached while it was alive is still here.
@@ -569,6 +620,15 @@ package final class GhosttyService: TerminalService {
         // Only when the one that went was the one on screen, which is the rule the
         // selection had when it lived here.
         if displayedSession == sessionId { onDisplayRequest(terminals.keys.first) }
+    }
+
+    /// A terminal's screen model, from wherever it is asked for.
+    ///
+    /// `nonisolated`, because the readers this exists for are not all on the main
+    /// actor: the hub paints from its own delivery queue. Nil for a session this
+    /// service does not hold.
+    package nonisolated func screenModel(for sessionId: String) -> (any TerminalScreenModel)? {
+        shared.model(for: sessionId)
     }
 
     package func readOutput(sessionId: String, maxLines: Int) async throws -> String {
@@ -636,6 +696,7 @@ package final class GhosttyService: TerminalService {
             terminal.pty.terminate()
             host.destroySurface(id: session)
             shared.record(nil, for: session)
+            shared.removeModel(for: session)
             // Told here too, and it is not only for tidiness at exit: this is also
             // the teardown a test performs while a viewer is attached.
             onStreamEnded(session)
