@@ -7,7 +7,7 @@ import os
 /// the fork returns before the child reaches its `execve`, so a command that cannot
 /// be executed is reported by the child's exit status of 127, the way a shell
 /// reports it, and never as an error thrown from `spawn`.
-enum RawPTYError: Error, Equatable {
+package enum RawPTYError: Error, Equatable {
     case allocationFailed
 }
 
@@ -20,8 +20,8 @@ enum RawPTYError: Error, Equatable {
 /// that never reached the pty, a resize that failed halfway, a repaint that could not
 /// be built. Logged at the site that would otherwise drop the error, so the discard
 /// is recorded instead of invisible.
-enum GhosttyLog {
-    static let stack = Logger(subsystem: "eu.kloosterman.wietty", category: "ghostty")
+package enum GhosttyLog {
+    package static let stack = Logger(subsystem: "eu.kloosterman.wietty", category: "ghostty")
 }
 
 /// One pseudo-terminal Wietty owns: the master fd, the child's process group,
@@ -38,14 +38,14 @@ enum GhosttyLog {
 /// reads; decoding here would replace the split half with U+FFFD before
 /// `UTF8Chunker` ever saw it. `PaneStreamHub` owns that boundary policy for
 /// every substrate.
-final class RawPTY: @unchecked Sendable {
-    let masterFd: Int32
+package final class RawPTY: @unchecked Sendable {
+    package let masterFd: Int32
     /// The child's pid. It becomes its own process group id, because `forkpty` does
     /// a `setsid` in the child, but not until the child runs: between the fork
     /// returning here and that call the child is still in Wietty's own group, so
     /// `killpg(pid, ...)` signals nobody. `hangUp` covers that window by signalling
     /// the group and the pid both, and its comment has the measurement.
-    let pid: pid_t
+    package let pid: pid_t
 
     /// Where every write to the master runs.
     ///
@@ -110,7 +110,7 @@ final class RawPTY: @unchecked Sendable {
     ///
     /// Set unconditionally rather than defaulted: inheriting Wietty's own TERM
     /// would tell the shell it is talking to whatever launched the app.
-    static var terminalType: String { BundledTerminfo.term }
+    package static var terminalType: String { BundledTerminfo.term }
 
     /// What names the terminal itself, as against TERM, which names what it can
     /// draw. A program that adapts to its host reads this: iTerm2 answers
@@ -126,7 +126,7 @@ final class RawPTY: @unchecked Sendable {
     /// choosing between the bell, OSC 9 and OSC 777 picks by this variable, finds
     /// nothing to match, and emits none of them, so a terminal that handles all
     /// three (`docs/notifications.md`) is never given the chance.
-    static let programName = "Wietty"
+    package static let programName = "Wietty"
 
     /// Spawns `command` on a fresh pty, or an interactive login shell when it is
     /// nil.
@@ -153,7 +153,7 @@ final class RawPTY: @unchecked Sendable {
     /// program lays itself out from the size it finds at startup, so a terminal
     /// opened at the default 80x24 and resized a moment later shows a screen drawn
     /// for the wrong grid until something forces a redraw.
-    static func spawn(command: String?,
+    package static func spawn(command: String?,
                       directory: URL,
                       environment: [String: String],
                       size: TerminalSize,
@@ -244,7 +244,7 @@ final class RawPTY: @unchecked Sendable {
     /// One serial read source, so chunks are delivered in stream order. A caller
     /// that fanned these out onto unstructured `Task`s would corrupt the screen:
     /// two Tasks created in order can still run in either order.
-    func startReading(onBytes: @escaping @Sendable ([UInt8]) -> Void,
+    package func startReading(onBytes: @escaping @Sendable ([UInt8]) -> Void,
                       onExit: @escaping @Sendable (Int32) -> Void) {
         let fd = masterFd
         let source = DispatchSource.makeReadSource(
@@ -338,7 +338,7 @@ final class RawPTY: @unchecked Sendable {
     ///
     /// Weakly, so a pty that has been released drops a write rather than being kept
     /// alive by one; there is nothing left to write to in that case anyway.
-    func write(_ bytes: [UInt8]) {
+    package func write(_ bytes: [UInt8]) {
         guard !bytes.isEmpty else { return }
         writes.async { [weak self] in self?.writeNow(bytes) }
     }
@@ -349,7 +349,7 @@ final class RawPTY: @unchecked Sendable {
     /// asynchronous by design, and only a test asserting on what a write did or did
     /// not reach needs the barrier. Never call this from a thread a parked write has
     /// to be released by.
-    func waitForPendingWrites() {
+    package func waitForPendingWrites() {
         writes.sync {}
     }
 
@@ -384,7 +384,7 @@ final class RawPTY: @unchecked Sendable {
 
     /// Applies the surface's geometry. Idempotent, and safe to call on a pty
     /// whose child has already exited: the ioctl simply fails.
-    func resize(to size: TerminalSize) {
+    package func resize(to size: TerminalSize) {
         var window = winsize(ws_row: UInt16(size.rows), ws_col: UInt16(size.cols),
                             ws_xpixel: 0, ws_ypixel: 0)
         withMaster { _ = ioctl($0, TIOCSWINSZ, &window) }
@@ -398,7 +398,7 @@ final class RawPTY: @unchecked Sendable {
     /// believes is not running, so a failed query read as an absence submits that
     /// text into a live agent as a prompt. This is the polled counterpart of
     /// `FocusResult.jobKnown`.
-    func foregroundJobName() -> String? {
+    package func foregroundJobName() -> String? {
         guard let group = withMaster({ tcgetpgrp($0) }), group > 0 else { return nil }
         // 2 * MAXCOMLEN is the size of `proc_bsdinfo.pbi_name`, which is the field
         // `proc_name` copies out, and it refuses anything smaller: handed a
@@ -419,7 +419,7 @@ final class RawPTY: @unchecked Sendable {
     /// `SIGHUP` rather than `SIGKILL`: a hangup is what closing a terminal means,
     /// and it gives a shell the chance to run its own exit handling. The group is
     /// the target because the terminal may be running a pipeline.
-    func terminate() {
+    package func terminate() {
         lock.lock()
         let alreadyClosed = closed
         closed = true

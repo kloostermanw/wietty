@@ -1,11 +1,6 @@
 import AppKit
 import Foundation
-
-/// A terminal's grid, in cells.
-struct TerminalSize: Equatable, Sendable {
-    let cols: Int
-    let rows: Int
-}
+import WiettyCore
 
 /// One terminal's visible screen, as plain text.
 ///

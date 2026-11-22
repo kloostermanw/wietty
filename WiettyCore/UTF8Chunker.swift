@@ -7,10 +7,14 @@ import Foundation
 /// bytes, and an invalid lead byte or a bad continuation is replaced with
 /// U+FFFD immediately. Without that, one byte of binary output (`cat` on a
 /// binary file) would wedge a pane permanently.
-struct UTF8Chunker {
+package struct UTF8Chunker {
+    /// Spelled out because the implicit one is internal and its tests are in the
+    /// other module.
+    package init() {}
+
     private var pending: [UInt8] = []
 
-    mutating func take(_ bytes: [UInt8]) -> String {
+    package mutating func take(_ bytes: [UInt8]) -> String {
         pending.append(contentsOf: bytes)
         var out = ""
         var index = 0

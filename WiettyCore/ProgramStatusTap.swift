@@ -1,5 +1,4 @@
 import Foundation
-import WiettyCore
 
 /// Reads one terminal's program status off its output, as the relay hands it over:
 /// answers the support query on the spot and reports everything else.
@@ -17,22 +16,22 @@ import WiettyCore
 ///
 /// One per terminal, fed in stream order from that terminal's read queue and from
 /// nowhere else, which is the only reason the unguarded scanner is safe.
-final class ProgramStatusTap: @unchecked Sendable {
+package final class ProgramStatusTap: @unchecked Sendable {
     /// `OSC 7501 ; ? ST`, the fixed reply section 7 requires. Nothing else is ever
     /// written back: section 8 forbids echoing anything a program reported.
-    static let answer = Array("\u{1B}]7501;?\u{1B}\\".utf8)
+    package static let answer = Array("\u{1B}]7501;?\u{1B}\\".utf8)
 
     private var scanner = ProgramStatusScanner()
     private let reply: @Sendable ([UInt8]) -> Void
     private let report: @Sendable (ProgramStatusScanner.Event) -> Void
 
-    init(reply: @escaping @Sendable ([UInt8]) -> Void,
+    package init(reply: @escaping @Sendable ([UInt8]) -> Void,
          report: @escaping @Sendable (ProgramStatusScanner.Event) -> Void) {
         self.reply = reply
         self.report = report
     }
 
-    func ingest(_ bytes: [UInt8]) {
+    package func ingest(_ bytes: [UInt8]) {
         for event in scanner.scan(bytes) {
             if event == .query { reply(Self.answer) } else { report(event) }
         }

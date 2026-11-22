@@ -3,10 +3,10 @@ import Foundation
 /// A dot-separated numeric version, compared component by component.
 /// Tolerant of a leading `v`/`V` and of a missing trailing component
 /// (`"1.2"` equals `"1.2.0"`). Non-numeric components parse as `0`.
-struct AppVersion: Comparable, Equatable, CustomStringConvertible {
-    let components: [Int]
+package struct AppVersion: Comparable, Equatable, CustomStringConvertible {
+    package let components: [Int]
 
-    init(_ string: String) {
+    package init(_ string: String) {
         var trimmed = string.trimmingCharacters(in: .whitespaces)
         if let first = trimmed.first, first == "v" || first == "V" {
             trimmed.removeFirst()
@@ -18,7 +18,7 @@ struct AppVersion: Comparable, Equatable, CustomStringConvertible {
         index < components.count ? components[index] : 0
     }
 
-    static func < (lhs: AppVersion, rhs: AppVersion) -> Bool {
+    package static func < (lhs: AppVersion, rhs: AppVersion) -> Bool {
         for i in 0..<max(lhs.components.count, rhs.components.count) {
             let l = lhs.component(at: i)
             let r = rhs.component(at: i)
@@ -27,7 +27,7 @@ struct AppVersion: Comparable, Equatable, CustomStringConvertible {
         return false
     }
 
-    static func == (lhs: AppVersion, rhs: AppVersion) -> Bool {
+    package static func == (lhs: AppVersion, rhs: AppVersion) -> Bool {
         for i in 0..<max(lhs.components.count, rhs.components.count)
         where lhs.component(at: i) != rhs.component(at: i) {
             return false
@@ -35,12 +35,12 @@ struct AppVersion: Comparable, Equatable, CustomStringConvertible {
         return true
     }
 
-    func isNewer(than other: AppVersion) -> Bool { self > other }
+    package func isNewer(than other: AppVersion) -> Bool { self > other }
 
-    var description: String { components.map(String.init).joined(separator: ".") }
+    package var description: String { components.map(String.init).joined(separator: ".") }
 
     /// The running app's version, from `CFBundleShortVersionString`.
-    static var current: AppVersion {
+    package static var current: AppVersion {
         let string = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
         return AppVersion(string)
     }

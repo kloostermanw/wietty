@@ -20,7 +20,7 @@ import Foundation
 /// `xterm-256color` fallback they see an unknown terminal and stay silent, so
 /// the bundled entry is what makes an agent's notifications work without the
 /// user configuring anything. See `docs/notifications.md`.
-enum BundledTerminfo {
+package enum BundledTerminfo {
     /// Resource subdirectory holding the compiled entry.
     private static let resourceName = "terminfo"
 
@@ -31,15 +31,15 @@ enum BundledTerminfo {
 
     /// The bundled terminfo directory, or nil when this build did not produce a
     /// compiled `xterm-ghostty` under it.
-    static let directory: URL? = resolve(in: .main)
+    package static let directory: URL? = resolve(in: .main)
 
     /// The `TERM` to advertise to a child.
-    static var term: String { term(bundled: directory != nil) }
+    package static var term: String { term(bundled: directory != nil) }
 
     /// `xterm-ghostty` when the entry is bundled, else the fallback every macOS
     /// terminfo database carries. Split from `term` so the choice is testable
     /// without a built app bundle.
-    static func term(bundled: Bool) -> String {
+    package static func term(bundled: Bool) -> String {
         bundled ? "xterm-ghostty" : "xterm-256color"
     }
 
@@ -47,13 +47,13 @@ enum BundledTerminfo {
     /// the child would otherwise inherit so every other `TERM` still resolves.
     /// Nil when there is nothing bundled to point at, which leaves the caller's
     /// existing value untouched.
-    static func terminfoDirs(inheriting existing: String?) -> String? {
+    package static func terminfoDirs(inheriting existing: String?) -> String? {
         terminfoDirs(directory: directory, inheriting: existing)
     }
 
     /// The composition rule, parameterised on the directory so it is testable
     /// without the bundle.
-    static func terminfoDirs(directory: URL?, inheriting existing: String?) -> String? {
+    package static func terminfoDirs(directory: URL?, inheriting existing: String?) -> String? {
         guard let directory else { return nil }
         if let existing, !existing.isEmpty { return "\(directory.path):\(existing)" }
         // A trailing separator keeps the compiled in default databases on the
@@ -64,7 +64,7 @@ enum BundledTerminfo {
     /// Locates the bundled directory and confirms the compiled entry is in it.
     /// Parameterised on the bundle and the existence check so the layout logic
     /// is testable without a built app bundle.
-    static func resolve(in bundle: Bundle,
+    package static func resolve(in bundle: Bundle,
                         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> URL? {
         guard let dir = bundle.url(forResource: resourceName, withExtension: nil),
               hasEntry(in: dir, fileExists: fileExists) else { return nil }
@@ -72,7 +72,7 @@ enum BundledTerminfo {
     }
 
     /// Whether `directory` holds a compiled `xterm-ghostty` in either layout.
-    static func hasEntry(in directory: URL,
+    package static func hasEntry(in directory: URL,
                          fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> Bool {
         entryPaths.contains { fileExists(directory.appendingPathComponent($0).path) }
     }
