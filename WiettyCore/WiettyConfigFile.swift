@@ -12,26 +12,26 @@ import Foundation
 /// keys, e.g. `agent.0.name`, `workspace.1.path`, `approved.<uuid>.0`. This type does
 /// not know those shapes: it reads and writes flat `key = value` pairs, and the
 /// mapping between a domain list and its indexed keys lives with the domain.
-struct WiettyConfigFile {
-    let url: URL
+package struct WiettyConfigFile {
+    package let url: URL
 
     /// `~/.config/wietty/config`, beside `ghostty.cfg`.
-    static var defaultURL: URL {
+    package static var defaultURL: URL {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".config/wietty/config")
     }
 
-    init(url: URL = WiettyConfigFile.defaultURL) {
+    package init(url: URL = WiettyConfigFile.defaultURL) {
         self.url = url
     }
 
-    enum WriteError: LocalizedError {
+    package enum WriteError: LocalizedError {
         /// A value (or key) carried a newline, which the one-value-per-line format
         /// cannot hold. Refused rather than written, so the second line does not
         /// reappear as a stray or injected key on the next read.
         case multilineValue(key: String)
 
-        var errorDescription: String? {
+        package var errorDescription: String? {
             switch self {
             case let .multilineValue(key):
                 return "A setting value contains a line break and cannot be saved (\(key))."
@@ -46,7 +46,7 @@ struct WiettyConfigFile {
     /// write, permissions) throws instead of reading as empty, because the two must not
     /// be confused: treating an unreadable file as empty would let the caller migrate
     /// or seed over it and lose everything it held. See `ProjectStore`'s init.
-    func read() throws -> [String: String] {
+    package func read() throws -> [String: String] {
         guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
         let text = try String(contentsOf: url, encoding: .utf8)
         var values: [String: String] = [:]
@@ -67,7 +67,7 @@ struct WiettyConfigFile {
     /// remove `agent.2.*` through `agent.4.*`, none of which appear in `pairs`.
     ///
     /// Creates the file and its directory when absent.
-    func write(_ pairs: [(key: String, value: String)],
+    package func write(_ pairs: [(key: String, value: String)],
                managedKeys: Set<String> = [],
                managedPrefixes: [String] = []) throws {
         // Checked before any file is touched, so a value the format cannot hold fails

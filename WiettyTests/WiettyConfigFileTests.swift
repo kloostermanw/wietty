@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// The `~/.config/wietty/config` file I/O, in isolation from any setting that lives

@@ -35,7 +35,7 @@ enum StoreError: LocalizedError, Equatable {
 
 @MainActor
 @Observable
-final class ProjectStore {
+final class ProjectStore: SettingsPairSource {
     private(set) var projects: [Project] = []
     var lastError: String?
     private(set) var gitInfo: [UUID: GitInfo] = [:]
@@ -171,10 +171,9 @@ final class ProjectStore {
 
     private let defaults: UserDefaults
     private let configFile: WiettyConfigFile
-    /// False when the config file was present but could not be read at launch, so the
-    /// app must not write over it. Blocks `persistSettings` for the process's life;
-    /// the next launch that reads the file cleanly clears the condition.
-    private var settingsPersistable = true
+    /// Every settings write goes through this, including `UIPreferences`' own, so the
+    /// file keeps the single order it had when one object wrote all of it.
+    private let settingsWriter: SettingsWriter
     private let service: TerminalService
     private let gitProvider: GitInfoProviding
     private let freshProvider: FreshnessChecking
@@ -542,7 +541,9 @@ final class ProjectStore {
         now: @escaping @MainActor () -> ContinuousClock.Instant = { ContinuousClock.now }
     ) {
         self.defaults = defaults
-        self.configFile = config ?? Self.defaultConfig(for: defaults)
+        let file = config ?? Self.defaultConfig(for: defaults)
+        self.configFile = file
+        self.settingsWriter = SettingsWriter(file: file)
         self.service = service
         self.jobEvents = jobEvents
         self.now = now
@@ -631,6 +632,10 @@ final class ProjectStore {
             self.selectedGroupId = nil
         }
 
+        // Registered before anything can write. The store is the first source, so its
+        // lines keep the position they had when it was the only writer.
+        settingsWriter.add(self)
+
         // Loads workspaces (from the file, or by migrating the old bookmarks) and
         // reconciles every one that has a `wietty.json`, which needs the approvals
         // read just above.
@@ -640,7 +645,7 @@ final class ProjectStore {
             // Present but unreadable: refuse to write until the next launch reads it
             // cleanly, and say so. `lastError` is the store's usual channel and is
             // shown as an alert by `ContentView`.
-            settingsPersistable = false
+            settingsWriter.isPersistable = false
             lastError = "Could not read \(configFile.url.path): \(readError.localizedDescription). "
                 + "The file was left untouched; fix or remove it, then relaunch."
         } else if migrating {
@@ -2443,9 +2448,16 @@ final class ProjectStore {
     /// decide whether it is safe to drop the old `UserDefaults` keys.
     @discardableResult
     private func persistSettings() -> Bool {
-        // A launch that could not read the file does not write one either, so a
-        // corrupt or half-written file is not overwritten with defaults.
-        guard settingsPersistable else { return false }
+        let wrote = settingsWriter.write()
+        // Reported here rather than inside the writer, because this is the object
+        // with somewhere to put it: `lastError` is what the UI shows.
+        if let failure = settingsWriter.lastError { lastError = failure }
+        return wrote
+    }
+
+    /// This store's half of the file. Order is the order it was written in before
+    /// the writer was split out, and that is the whole point of keeping it here.
+    var settingsPairs: [(key: String, value: String)] {
         var pairs: [(key: String, value: String)] = [
             (SettingsKeys.showWorkspaceBadge, showWorkspaceBadge ? "true" : "false"),
             (SettingsKeys.bellSound, bellSound.stored),
@@ -2481,14 +2493,7 @@ final class ProjectStore {
         for (i, project) in projects.enumerated() {
             pairs.append(contentsOf: Self.workspacePairs(project, index: i))
         }
-        do {
-            try configFile.write(pairs, managedKeys: SettingsKeys.scalars,
-                                 managedPrefixes: SettingsKeys.prefixes)
-            return true
-        } catch {
-            lastError = "Could not save settings: \(error.localizedDescription)"
-            return false
-        }
+        return pairs
     }
 
     private static func workspacePairs(_ project: Project, index: Int) -> [(key: String, value: String)] {
