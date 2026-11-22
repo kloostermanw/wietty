@@ -77,3 +77,18 @@ package enum SettingsKeys {
     /// The list prefixes, so a list that shrank loses its trailing entries.
     package static let prefixes: [String] = [agentPrefix, workspacePrefix, approvedPrefix, groupPrefix]
 }
+
+/// The scalar keys `UIPreferences` owns: the settings that are this Mac's view of
+/// the data rather than part of it (issue #84).
+///
+/// Here rather than on `UIPreferences`, which is in the app, because the store needs
+/// to name the complement of this set and cannot see across the boundary.
+package enum UIPreferencesKeys {
+    package static let all: Set<String> = [
+        SettingsKeys.bellSound, SettingsKeys.sidebarWidth, SettingsKeys.selectedGroup,
+        SettingsKeys.colorBackground, SettingsKeys.colorForeground,
+        SettingsKeys.colorActiveWorkspaceBackground, SettingsKeys.colorActiveWorkspaceForeground,
+        SettingsKeys.colorActiveTerminalRowBackground, SettingsKeys.colorActiveTerminalRowForeground,
+        SettingsKeys.colorPillBackground, SettingsKeys.colorPillForeground,
+    ]
+}

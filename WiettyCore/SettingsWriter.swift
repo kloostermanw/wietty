@@ -9,6 +9,13 @@ import Foundation
 package protocol SettingsPairSource: AnyObject {
     /// This source's lines, in the order they should appear.
     var settingsPairs: [(key: String, value: String)] { get }
+
+    /// The scalar keys this source is responsible for, emitted or not.
+    ///
+    /// Omitting a key it owns is how a setting back at its default loses its line,
+    /// so the writer has to tell that apart from a key no registered source speaks
+    /// for at all. See `SettingsWriter.preservingUnowned`.
+    var ownedKeys: Set<String> { get }
 }
 
 /// What the config file held at launch, and whether that launch migrated from the
@@ -68,6 +75,30 @@ package final class SettingsWriter {
         sources.append(source)
     }
 
+    /// Keeps the scalar settings that no registered source speaks for.
+    ///
+    /// `WiettyConfigFile.write` removes every managed key the pairs do not mention,
+    /// which is what lets a setting back at its default drop its line. The hazard is
+    /// a source that is not registered yet: the file holds its keys, nothing emits
+    /// them, and the write deletes a user's settings. That is not hypothetical, it
+    /// happened to the sidebar colours while this split was being made.
+    ///
+    /// So a managed scalar that no registered source owns keeps the value the file
+    /// already had. A key its owner deliberately left out is still dropped, which is
+    /// how clearing a colour removes its line. Only scalars: the list prefixes must
+    /// prune, because a group or an agent that was deleted has to lose its lines, and
+    /// the source that owns a list always emits the whole list or none of it.
+    static func preservingUnowned(_ pairs: [(key: String, value: String)],
+                                  owned: Set<String>,
+                                  existing: [String: String]?) -> [(key: String, value: String)] {
+        guard let existing else { return pairs }
+        let kept = SettingsKeys.scalars
+            .subtracting(owned)
+            .subtracting(pairs.map(\.key))
+            .compactMap { key in existing[key].map { (key: key, value: $0) } }
+        return pairs + kept
+    }
+
     /// Puts the collected pairs into the file's declared order.
     ///
     /// Stable, so entries sharing a prefix keep the order their source emitted them
@@ -94,7 +125,10 @@ package final class SettingsWriter {
     @discardableResult
     package func write() -> Bool {
         guard isPersistable else { return false }
-        let pairs = Self.ordered(sources.flatMap(\.settingsPairs))
+        let owned = sources.reduce(into: Set<String>()) { $0.formUnion($1.ownedKeys) }
+        let pairs = Self.ordered(Self.preservingUnowned(sources.flatMap(\.settingsPairs),
+                                                        owned: owned,
+                                                        existing: try? file.read()))
         do {
             try file.write(pairs, managedKeys: SettingsKeys.scalars,
                            managedPrefixes: SettingsKeys.prefixes)

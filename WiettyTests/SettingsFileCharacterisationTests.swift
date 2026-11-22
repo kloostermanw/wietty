@@ -118,3 +118,85 @@ import WiettyCore
         try? FileManager.default.removeItem(at: root)
     }
 }
+
+/// What a launch does to a config file that already holds every setting.
+///
+/// Splitting the writer put a window between the store registering itself and
+/// `UIPreferences` registering: the store's own init and its first actions can write,
+/// and `WiettyConfigFile.write` removes every managed key the pairs it is handed do
+/// not mention. A write in that window would therefore delete the four settings that
+/// moved, which is a user losing their sidebar colours and width on launch.
+@MainActor
+@Suite struct SettingsLaunchPreservationTests {
+    @Test func aLaunchThatClearsDeadSessionsKeepsTheMovedSettings() throws {
+        let config = WiettyConfigFile.temporary()
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("launch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        // A file as a real one looks: the four that moved, and a workspace carrying a
+        // session id, which is what makes the next launch write.
+        try config.write([
+            ("bell-sound", "named:Ping"),
+            ("sidebar-width", "283.0"),
+            ("color-background", "#23292b"),
+            ("workspace.0.path", folder.path),
+            ("workspace.0.id", UUID().uuidString),
+            ("workspace.0.collapsed", "false"),
+            ("workspace.0.terminal-seq", "1"),
+            ("workspace.0.claude-seq", "0"),
+            ("workspace.0.terminal.0.id", UUID().uuidString),
+            ("workspace.0.terminal.0.label", "shell1"),
+            ("workspace.0.terminal.0.kind", "terminal"),
+            ("workspace.0.terminal.0.slot", "shell1"),
+            ("workspace.0.terminal.0.session-id", "gt:dead"),
+        ], managedKeys: SettingsKeys.scalars, managedPrefixes: SettingsKeys.prefixes)
+
+        let fixture = SettingsFixture(config: config)
+        #expect(fixture.preferences.bellSound == .named("Ping"))
+        fixture.store.clearDeadSessions()
+
+        let values = try config.read()
+        #expect(values["bell-sound"] == "named:Ping")
+        #expect(values["sidebar-width"] == "283.0")
+        #expect(values["color-background"] == "#23292b")
+        #expect(values["workspace.0.terminal.0.session-id"] == nil)
+
+        try? FileManager.default.removeItem(at: folder)
+    }
+}
+
+/// A settings source that is not registered must not cost the user its settings.
+@MainActor
+@Suite struct SettingsWriterPreservationTests {
+    @Test func aWriteWithOnlyTheStoreRegisteredKeepsTheOtherSourcesSettings() throws {
+        let config = WiettyConfigFile.temporary()
+        try config.write([("bell-sound", "named:Ping"),
+                          ("sidebar-width", "283.0"),
+                          ("color-background", "#23292b"),
+                          ("group.0.id", UUID().uuidString),
+                          ("group.0.name", "Gone")],
+                         managedKeys: SettingsKeys.scalars, managedPrefixes: SettingsKeys.prefixes)
+
+        // The store alone, as during the window before UIPreferences registers.
+        let store = ProjectStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
+                                 config: config, service: FakeTerminalService())
+        store.addGroup(WorkspaceGroup(name: "Kept"))   // forces a write
+
+        let values = try config.read()
+        #expect(values["bell-sound"] == "named:Ping")
+        #expect(values["sidebar-width"] == "283.0")
+        #expect(values["color-background"] == "#23292b")
+        // The store owns the group list, so it rewrites the whole thing: the one the
+        // file held is loaded and kept, and the new one is appended.
+        #expect(values["group.0.name"] == "Gone")
+        #expect(values["group.1.name"] == "Kept")
+
+        // And the list still prunes, which is why preservation is limited to scalars.
+        store.removeGroup(id: store.groups[0].id)
+        let pruned = try config.read()
+        #expect(pruned["group.0.name"] == "Kept")
+        #expect(pruned["group.1.name"] == nil)
+        #expect(pruned["bell-sound"] == "named:Ping")
+    }
+}

@@ -2390,6 +2390,11 @@ package final class ProjectStore: SettingsPairSource {
 
     /// This store's half of the file. Order is the order it was written in before
     /// the writer was split out, and that is the whole point of keeping it here.
+    /// Every managed scalar except the four `UIPreferences` took.
+    package var ownedKeys: Set<String> {
+        SettingsKeys.scalars.subtracting(UIPreferencesKeys.all)
+    }
+
     package var settingsPairs: [(key: String, value: String)] {
         var pairs: [(key: String, value: String)] = [
             (SettingsKeys.showWorkspaceBadge, showWorkspaceBadge ? "true" : "false"),
