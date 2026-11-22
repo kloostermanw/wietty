@@ -314,20 +314,27 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     ///
     /// Strictly greater, and the boundary is the whole point: `maxLines` exactly
     /// equal to the grid's height is the visible screen, which the cheap viewport
-    /// read answers in full. It is also the case that runs most often by far,
-    /// because `GhosttyService.recordSnapshot` asks for precisely the grid's own row
-    /// count on every refresh. Reading this as `>=` sent that call down the whole
-    /// screen path, so every recorded snapshot paid roughly 34 ms of main actor time
-    /// instead of 0.14 ms.
+    /// read answers in full. Reading this as `>=` sends a read of exactly the
+    /// grid down the whole screen path, roughly 34 ms of main actor time against
+    /// 0.14 ms.
     ///
-    /// Extracted from `snapshot` so the boundary can be asserted without a live
+    /// Extracted from `readText` so the boundary can be asserted without a live
     /// surface, a Metal device, or a deep scrollback to measure against.
     nonisolated static func readsScrollback(maxLines: Int, gridRows: Int) -> Bool {
         maxLines > gridRows
     }
 
-    /// The last `maxLines` rows of the surface's screen, reaching into scrollback
-    /// when more than the visible grid is asked for.
+    /// The last `maxLines` rows of the surface's own screen as plain text, or nil
+    /// for a surface with no grid. Empty for a surface that is not on screen,
+    /// which libghostty reads as blank.
+    ///
+    /// Nothing the app does reads a terminal this way any more. The core keeps a
+    /// screen model per terminal and answers from that, for exactly the reason in
+    /// the line above: a surface only answers while it is displayed, in plain
+    /// text, with no cursor. This stays for one caller, the coexistence check
+    /// (`scripts/coexistence-check.sh`), which has to ask the surface itself what
+    /// it drew in order to compare it with the model. That is also why it is not
+    /// part of `TerminalSurfaceHosting`.
     ///
     /// Two reads, because they cost very differently and only one of them can see
     /// history. `ghostty_surface_read_text` takes a selection, and a selection's
@@ -343,9 +350,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// the viewport read is 0.14 ms and the whole screen read is 29 ms, plus 5 ms to
     /// decode and split it. So the viewport read is used whenever it can answer the
     /// question, which is every call asking for no more rows than the grid has, the
-    /// boundary included; see `readsScrollback`. A caller asking for more than the
-    /// grid on every resize will pay the 34 ms.
-    func snapshot(id: String, maxLines: Int) -> ScreenSnapshot? {
+    /// boundary included; see `readsScrollback`.
+    func readText(id: String, maxLines: Int) -> [String]? {
         guard maxLines > 0, let surface = surfaces[id] else { return nil }
         let size = ghostty_surface_size(surface.handle)
         guard size.columns > 0, size.rows > 0 else { return nil }
@@ -374,14 +380,13 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         guard ghostty_surface_read_text(surface.handle, selection, &text) else { return nil }
         defer { ghostty_surface_free_text(surface.handle, &text) }
         guard let pointer = text.text, text.text_len > 0 else {
-            return ScreenSnapshot(rows: [], cols: Int(size.columns))
+            return []
         }
         let joined = String(decoding: UnsafeRawBufferPointer(start: pointer,
                                                              count: Int(text.text_len)),
                             as: UTF8.self)
         let rows = joined.components(separatedBy: "\n")
-        return ScreenSnapshot(rows: rows.count > maxLines ? Array(rows.suffix(maxLines)) : rows,
-                              cols: Int(size.columns))
+        return rows.count > maxLines ? Array(rows.suffix(maxLines)) : rows
     }
 
     /// Records a surface's label, and mirrors it onto the view so assistive

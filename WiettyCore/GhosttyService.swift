@@ -4,21 +4,15 @@ import OSLog
 /// The parts of the terminal registry `PaneStreamHub` reads, behind a lock rather
 /// than the main actor.
 ///
-/// The hub asks two questions from its own delivery queue, and neither can wait
-/// for a hop to the main actor. The census gates an attach, which has to be
-/// answered before the viewer is registered. The paint has to be ordered against
-/// the flush that carries the bytes produced while it ran, and that ordering is
-/// the delivery queue's. Hopping either would put a viewer's first frame behind
-/// whatever the UI is doing.
-///
-/// The cost is that the paint is as fresh as the last recorded snapshot rather
-/// than the instant of attach. `GhosttyService` records on every resize and every
-/// selection change, which is when the screen a viewer would want has changed
-/// shape; between those, the live byte stream is what keeps a viewer current.
+/// The hub asks from its own queues and cannot wait for a hop to the main actor.
+/// The census gates an attach, which has to be answered before the viewer is
+/// registered. A terminal's screen model is fed on the relay's queue with every
+/// chunk and asked for a paint on the hub's delivery queue, under the hub's lock
+/// for that session. Hopping any of them would put a terminal's bytes, or a
+/// viewer's first frame, behind whatever the UI is doing.
 package final class SharedTerminalState: @unchecked Sendable {
     private let lock = NSLock()
     private var live: Set<String> = []
-    private var snapshots: [String: ScreenSnapshot] = [:]
     private var models: [String: any TerminalScreenModel] = [:]
 
     package var liveSessions: Set<String> {
@@ -30,22 +24,13 @@ package final class SharedTerminalState: @unchecked Sendable {
         lock.lock(); live = sessions; lock.unlock()
     }
 
-    package func record(_ snapshot: ScreenSnapshot?, for session: String) {
-        lock.lock(); snapshots[session] = snapshot; lock.unlock()
-    }
-
-    package func snapshot(for session: String) -> ScreenSnapshot? {
-        lock.lock(); defer { lock.unlock() }
-        return snapshots[session]
-    }
-
     /// The screen model of a terminal, or nil for one that was never opened or has
     /// been torn down. An exited terminal keeps its model until its row is closed,
     /// as it keeps its surface: the last screen a command left is still worth
     /// reading.
     ///
-    /// Here, behind this lock, because the hub will ask for a paint from its
-    /// delivery queue. The lock covers only the lookup. The model serialises its
+    /// Here, behind this lock, because the hub looks it up off the main actor,
+    /// to feed it and to paint from it. The lock covers only the lookup. The model serialises its
     /// own calls, so a caller uses what it is handed without holding anything of
     /// this type's.
     package func model(for session: String) -> (any TerminalScreenModel)? {
@@ -61,40 +46,6 @@ package final class SharedTerminalState: @unchecked Sendable {
     /// relay that fed it has stopped, so the terminal's memory goes with it.
     package func removeModel(for session: String) {
         lock.lock(); models[session] = nil; lock.unlock()
-    }
-}
-
-/// Which terminals have printed something since their screen was last recorded,
-/// and whether a refresh is already on its way.
-///
-/// Lock guarded rather than actor isolated because it is marked from the relay's
-/// own queue, where every byte of terminal output arrives, and read on the main
-/// actor where the surface can be asked for a screen. Hopping to the main actor per
-/// chunk of output is exactly what the byte path exists to avoid.
-package final class SnapshotBacklog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var dirty: Set<String> = []
-    private var scheduled = false
-
-    /// Marks a session dirty, and answers whether the caller now owns scheduling
-    /// the refresh. True exactly once per window, so a terminal printing a
-    /// megabyte schedules one refresh rather than one per chunk.
-    package func note(_ session: String) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        dirty.insert(session)
-        guard !scheduled else { return false }
-        scheduled = true
-        return true
-    }
-
-    /// Takes the dirty set and reopens the window, in one step: a session marked
-    /// after this returns belongs to the next refresh rather than being dropped.
-    package func drain() -> Set<String> {
-        lock.lock(); defer { lock.unlock() }
-        let sessions = dirty
-        dirty = []
-        scheduled = false
-        return sessions
     }
 }
 
@@ -177,10 +128,11 @@ package final class GhosttyService: TerminalService {
     ///
     /// Remembered rather than decided. The service used to own the selection and move
     /// it, which meant an MCP tool call or a tap on an iPad moved the Mac's pane as a
-    /// side effect of asking a question. It still has to know which terminal is
-    /// displayed, because libghostty reads an off-screen surface as empty, so the one
-    /// leaving the pane has to have its screen recorded on the way out. Knowing is
-    /// not deciding: the frontend decides and calls `displayedSessionChanged`.
+    /// side effect of asking a question. The frontend decides and calls
+    /// `displayedSessionChanged`. The one thing left that reads this is `tearDown`,
+    /// which asks for another terminal to be shown when the one that went was the
+    /// one on screen. Nothing that can be read depends on it any more: a
+    /// terminal's screen is held by its model, displayed or not.
     private var displayedSession: String?
 
     /// The service would like a terminal shown, or the pane emptied.
@@ -197,25 +149,6 @@ package final class GhosttyService: TerminalService {
     /// from its own delivery queue, so an access that needed a hop to the main
     /// actor would not compile there at all.
     package nonisolated let shared = SharedTerminalState()
-
-    /// Terminals that have printed since their screen was recorded.
-    ///
-    /// `nonisolated` and lock guarded, and it has to be: it is marked from the
-    /// relay's queue as output arrives.
-    package nonisolated let backlog = SnapshotBacklog()
-
-    /// How long a burst of output is allowed to run before the screen a remote
-    /// viewer would be painted from is brought up to date.
-    ///
-    /// This is the paint's staleness bound, so it is the number that matters.
-    /// Long enough that a terminal printing continuously coalesces into a handful
-    /// of reads per second rather than one per chunk, and short enough that a
-    /// viewer attaching a moment after a command finished sees that command's
-    /// output. A viewport read costs 0.14 ms, so even at one refresh per interval
-    /// per terminal this is not measurable.
-    /// `nonisolated` because the scheduling that reads it happens on the relay's
-    /// queue, and an immutable interval needs no isolation to be read safely.
-    package nonisolated static let snapshotDebounce: TimeInterval = 0.3
 
     /// What every session id this app mints starts with.
     ///
@@ -270,14 +203,12 @@ package final class GhosttyService: TerminalService {
             terminal.pty.resize(to: size)
             // The model follows the same report, so its grid is the surface's. The
             // surface stays the authority: the model is told, never asked.
+            //
+            // BEFORE the report below, because that report is what makes an already
+            // attached viewer repaint, and the repaint is taken from the model: told
+            // first, it would paint the screen as it was before the reflow and then
+            // be contradicted by the bytes the reflow produced.
             self.shared.model(for: session)?.resize(to: size)
-            // A reflow rewrites the screen a viewer attaching next would want, so
-            // this is one of the two moments the shared snapshot is refreshed.
-            self.recordSnapshot(session)
-            // And only AFTER that snapshot, because this is what makes an already
-            // attached viewer repaint: told first, the repaint would read the screen
-            // as it was before the reflow and then be contradicted by the bytes the
-            // reflow produced.
             self.onResized(session, size)
         }
         // libghostty asking for a surface to be closed means the terminal has
@@ -288,98 +219,6 @@ package final class GhosttyService: TerminalService {
         // guarded. It also covers a `close_surface` keybinding in the user's own
         // Ghostty configuration, which has no other way in.
         host.onCloseRequested = { [weak self] session in self?.reap(session) }
-    }
-
-    /// Records the screen the hub paints from, whatever the host answers.
-    ///
-    /// Not monotonic, and nothing downstream may assume it is: a host that answers
-    /// nil, which it does for a surface with no grid yet, overwrites a good screen
-    /// with nothing. The hub reads that as a capture that failed rather than as an
-    /// empty screen, so the viewer keeps whatever it had and the live bytes bring it
-    /// current. That is the honest reading, and keeping the older screen instead
-    /// would mean painting a viewer a state the terminal has since left.
-    ///
-    /// Asks for the grid's own height, never a fixed larger number. A paint wants
-    /// the visible screen, and `read_text` reaching into scrollback is not free:
-    /// measured at roughly 29 ms in the call plus 5 ms to decode, against 0.14 ms
-    /// for the viewport, all on the main actor. Asking for more rows than the grid
-    /// has turns every notch of a window drag into a 34 ms stall.
-    ///
-    /// That saving depends on the host treating exactly the grid's height as the
-    /// viewport read, which is the boundary `GhosttySurfaceHost.readsScrollback`
-    /// exists to pin. It was `>=` there once, so this call, the most frequent one in
-    /// the substrate, took the whole screen path every time and this comment
-    /// described a saving that was not happening.
-    private func recordSnapshot(_ session: String) {
-        let rows = host.size(id: session)?.rows ?? Self.initialSize.rows
-        let fresh = host.snapshot(id: session, maxLines: rows)
-        // A blank read never replaces a screen already recorded. libghostty reads a
-        // surface as empty the instant it leaves the screen, and output arriving then
-        // would otherwise record that blank over what the terminal printed, which is
-        // what `readOutput` falls back to for every off-screen (so every MCP) read.
-        // A live screen always has at least its prompt row, so an empty read is the
-        // off-screen case rather than a genuinely cleared screen. Clearing a recorded
-        // screen is left to `close`/`discard` (via `tearDown`) and `closeAll`, which
-        // record `nil` directly; `reap` deliberately keeps the screen so a terminal
-        // stays readable after its child exits.
-        if fresh?.rows.isEmpty ?? true, let existing = shared.snapshot(for: session),
-           !existing.rows.isEmpty {
-            return
-        }
-        shared.record(fresh, for: session)
-    }
-
-    /// Notes that a terminal printed something, and schedules the refresh that keeps
-    /// a remote viewer's first frame honest.
-    ///
-    /// Output is what this is driven from, because output is the only thing that
-    /// changes a screen. A resize and a selection change are the two moments a screen
-    /// changes *shape*, and for a while they were the only moments the screen was
-    /// recorded at all: a terminal opened and then attached to from a browser had had
-    /// neither since its shell printed anything, so the viewer was painted the empty
-    /// screen from the instant the surface was created. Measured against a running
-    /// instance, that paint was `ESC[2J ESC[H` and a row count of zero.
-    ///
-    /// The monitor poll was the first fix and was not good enough. That poll is the
-    /// app wide job check, whose interval is 15 seconds when a workspace is expanded
-    /// and 300 when every one is collapsed, so a viewer could be shown a screen five
-    /// minutes old and only then start receiving live bytes, with everything between
-    /// missing from its first frame. Bounding the staleness at
-    /// `snapshotDebounce` instead makes it a property of this type rather than of an
-    /// unrelated setting.
-    ///
-    /// `nonisolated`, because it is called from the relay's queue as the bytes
-    /// arrive. Only the scheduling happens there; the read itself is main actor work.
-    package nonisolated func noteOutput(_ session: String) {
-        guard backlog.note(session) else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.snapshotDebounce) { [weak self] in
-            MainActor.assumeIsolated { self?.refreshSnapshots(self?.backlog.drain() ?? []) }
-        }
-    }
-
-    /// Refreshes the snapshot of every live terminal.
-    ///
-    /// The backstop, called once per monitor poll from `GhosttyStack.storeSubstrate`.
-    /// `noteOutput` is what bounds the staleness in practice; this covers an idle
-    /// terminal whose screen was changed by something other than its own output,
-    /// which is cheaper than reasoning about whether such a case exists.
-    package func refreshSnapshots() {
-        refreshSnapshots(Set(terminals.keys))
-    }
-
-    /// Cheap on purpose. Each read asks for the grid's own height, which is the
-    /// viewport read at roughly 0.14 ms rather than the whole screen read at 34 ms,
-    /// so a workspace of eight terminals costs about a millisecond. Cheap only while
-    /// the host reads that boundary as the viewport; see `recordSnapshot`.
-    ///
-    /// An exited terminal is skipped, and one that has been closed is simply absent:
-    /// its screen cannot change again, a viewer attaching to it is answered `ended`
-    /// by the census rather than painted, and recording against an id the app may
-    /// mint again is how a dead screen ends up under a live terminal.
-    private func refreshSnapshots(_ sessions: Set<String>) {
-        for session in sessions where terminals[session].map({ !$0.exited }) == true {
-            recordSnapshot(session)
-        }
     }
 
     package func open(folder: URL, existingWindowId: String?, command: String?,
@@ -408,7 +247,7 @@ package final class GhosttyService: TerminalService {
                                       report: { event in onProgramStatus(session, event) })
         let relay: TerminalRelay
         do {
-            relay = try TerminalRelay(pty: pty, socketPath: socketPath) { [weak self] bytes in
+            relay = try TerminalRelay(pty: pty, socketPath: socketPath) { bytes in
                 // Ahead of everything, because this is what answers `OSC 7501 ; ?`,
                 // and that answer has to be queued before the relay forwards this
                 // chunk to the helper and libghostty answers what follows the query.
@@ -424,11 +263,6 @@ package final class GhosttyService: TerminalService {
                 // only way a paint taken from the model can line up with the
                 // stream that follows it. See `PaneStreamHub.onIngest`.
                 onOutput(session, bytes)
-                // Then note that the screen moved, which is what keeps the paint a
-                // viewer attaching *next* is built from within `snapshotDebounce` of
-                // the truth. Weakly, so a service that is gone cannot be resurrected
-                // by a relay still draining.
-                self?.noteOutput(session)
             }
         } catch {
             // Nothing is registered yet, so nothing else will clean this up.
@@ -492,22 +326,14 @@ package final class GhosttyService: TerminalService {
     /// handler that asks `liveSessions` what is running never sees the terminal it
     /// is being told about.
     ///
-    /// The surface is deliberately NOT destroyed. The last screen the command left
-    /// behind is what an MCP read wants when something died, and `readOutput`
-    /// keeps working on it; `close`, `discard` and `closeAll` are what tear it
-    /// down. Guarded by `exited`, because the child can be reaped once and closed
-    /// later and neither may free anything twice.
-    ///
-    /// That screen is recorded here, first, because this is the last moment it can
-    /// be. The pane swaps an ended terminal for its stopped screen as soon as
-    /// `onTerminated` lands (issue #70), libghostty reads an off-screen surface as
-    /// empty, and `refreshSnapshots` skips exited terminals, so output that arrives
-    /// after this would record nothing. A terminal that was not on screen records
-    /// an empty read, which `recordSnapshot` discards in favour of what it already
-    /// holds.
+    /// The surface is deliberately NOT destroyed, and neither is the model. The
+    /// last screen the command left behind is what an MCP read wants when
+    /// something died, and `readOutput` keeps answering from the model; `close`,
+    /// `discard` and `closeAll` are what tear both down. Guarded by `exited`,
+    /// because the child can be reaped once and closed later and neither may free
+    /// anything twice.
     private func reap(_ session: String) {
         guard let terminal = terminals[session], !terminal.exited else { return }
-        recordSnapshot(session)
         terminals[session]?.exited = true
         terminal.relay.stop()
         terminal.pty.terminate()
@@ -609,7 +435,7 @@ package final class GhosttyService: TerminalService {
     }
 
     /// Retires a terminal for good: the relay, the pty, the surface and the
-    /// recorded screen all go, and its viewers are told.
+    /// screen model all go, and its viewers are told.
     private func tearDown(_ sessionId: String) {
         guard let terminal = terminals.removeValue(forKey: sessionId) else { return }
         // Both are idempotent, which is what makes closing a row whose child was
@@ -619,11 +445,9 @@ package final class GhosttyService: TerminalService {
         terminal.pty.terminate()
         host.destroySurface(id: sessionId)
         shared.note(live: liveSessions)
-        // Cleared, not left stale: an attach to this id must be answered `ended`
-        // by the census, and a snapshot left behind would paint a dead screen for
-        // an id the app may later mint again.
-        shared.record(nil, for: sessionId)
-        // The model goes with the surface. `reap` deliberately keeps both.
+        // The model goes with the surface. `reap` deliberately keeps both. Gone,
+        // not left behind: a full scrollback is megabytes, and an attach to this
+        // id is answered `ended` by the census from here on.
         shared.removeModel(for: sessionId)
         // Told even when the child was reaped earlier, because a viewer can attach
         // between the two: the census answers an attach on a reaped terminal
@@ -668,19 +492,13 @@ package final class GhosttyService: TerminalService {
 
     /// The frontend has put a different terminal on screen.
     ///
-    /// The body `select` had, minus the part that decided. The outgoing terminal's
-    /// screen is recorded before it leaves the view hierarchy: it keeps running and
-    /// keeps producing bytes, but nothing refreshes its snapshot again until it comes
-    /// back, so this is the last chance to capture what a viewer attaching to it would
-    /// want to see.
-    ///
-    /// Phase 2 empties this method. Once a `TerminalScreenModel` holds the screen,
-    /// what can be read stops depending on what is on screen.
+    /// All that is left of what `select` did is remembering it, for `tearDown`.
+    /// This used to record the outgoing and the incoming terminal's screen,
+    /// because a surface can only be read while it is displayed. A terminal's
+    /// screen is held by its model now, so what can be read no longer depends on
+    /// what is on screen and there is nothing to capture on the way past.
     package func displayedSessionChanged(from previous: String?, to current: String?) {
-        guard previous != current else { return }
-        if let previous, terminals[previous] != nil { recordSnapshot(previous) }
         displayedSession = current
-        if let current, terminals[current] != nil { recordSnapshot(current) }
     }
 
     /// One event per live terminal whose foreground job is known.
@@ -706,7 +524,6 @@ package final class GhosttyService: TerminalService {
             terminal.relay.stop()
             terminal.pty.terminate()
             host.destroySurface(id: session)
-            shared.record(nil, for: session)
             shared.removeModel(for: session)
             // Told here too, and it is not only for tidiness at exit: this is also
             // the teardown a test performs while a viewer is attached.

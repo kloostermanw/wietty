@@ -46,39 +46,35 @@ import WiettyCore
         return Wired(terminals: terminals, selection: selection, router: router, store: store)
     }
 
-    /// When a screen is captured is behaviour, not an implementation detail: an
-    /// off-screen surface reads as empty, so the outgoing terminal's screen has to be
-    /// recorded while it is still the one on screen. `readOutput` and a remote
-    /// viewer's first frame are what read it afterwards.
-    @Test func movingThePaneRecordsBothScreensAtTheMoveNotAfter() async throws {
-        let host = FakeSurfaceHost()
-        let app = wired(host)
+    /// What can be read does not depend on what is on screen. A surface can only be
+    /// read while it is displayed, so moving the pane used to be a moment the
+    /// service had to capture the screen that was leaving. Each terminal's screen
+    /// is held by its model now, so both read the same before the move and after
+    /// it, whichever one the pane shows.
+    @Test func movingThePaneLeavesBothTerminalsReadable() async throws {
+        let app = wired()
         defer { app.stack.ghosttyService?.closeAll() }
-        let first = try await open(app)
-        let second = try await open(app)
+        let service = app.terminals.service
+        let first = try await service.open(folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
+                                           command: "echo first-$((10+1)); sleep 5", badge: nil).sessionId
+        let second = try await service.open(folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
+                                            command: "echo second-$((20+2)); sleep 5", badge: nil).sessionId
         #expect(app.displayed == second)
+        let models = try #require(app.stack.ghosttyService)
+        let deadline = ContinuousClock.now + .seconds(6)
+        while ContinuousClock.now < deadline,
+              models.screenModel(for: first)?.text(maxLines: 5) != "first-11"
+                || models.screenModel(for: second)?.text(maxLines: 5) != "second-22" {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(try await service.readOutput(sessionId: first, maxLines: 5) == "first-11")
+        #expect(try await service.readOutput(sessionId: second, maxLines: 5) == "second-22")
 
-        let firstBefore = host.snapshotCalls[first] ?? 0
-        let secondBefore = host.snapshotCalls[second] ?? 0
         _ = try await ask(app, for: first)
-
-        // Both: the one leaving the pane and the one arriving.
-        #expect((host.snapshotCalls[second] ?? 0) > secondBefore)
-        #expect((host.snapshotCalls[first] ?? 0) > firstBefore)
+        #expect(app.displayed == first)
+        #expect(try await service.readOutput(sessionId: first, maxLines: 5) == "first-11")
+        #expect(try await service.readOutput(sessionId: second, maxLines: 5) == "second-22")
     }
-
-    /// Moving the pane to the terminal already on it records nothing, because nothing
-    /// moved. `select` returns early on an unchanged selection.
-    @Test func showingTheTerminalAlreadyOnScreenRecordsNothing() async throws {
-        let host = FakeSurfaceHost()
-        let app = wired(host)
-        defer { app.stack.ghosttyService?.closeAll() }
-        let only = try await open(app)
-        let before = host.snapshotCalls[only] ?? 0
-        _ = try await ask(app, for: only)
-        #expect((host.snapshotCalls[only] ?? 0) == before)
-    }
-
 
     private func open(_ app: Wired) async throws -> String {
         try await app.terminals.service.open(folder: URL(fileURLWithPath: "/tmp"),

@@ -19,17 +19,7 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// Scripted answers. A missing `size` stands for a surface with no grid yet,
     /// which is a real state: a view that has not been laid out has no columns.
     var sizes: [String: TerminalSize] = [:]
-    var snapshots: [String: ScreenSnapshot] = [:]
     var failNextCreate = false
-
-    /// The `maxLines` of the last `snapshot` call per id.
-    ///
-    /// Recorded because the number itself is the contract, not just the rows that
-    /// come back: reaching scrollback costs roughly 34 ms on the main actor against
-    /// 0.14 ms for the viewport, and a caller that asks for more rows than the grid
-    /// has pays it on every notch of a window drag. Without this, changing that
-    /// argument to a fixed large number would pass the whole suite.
-    private(set) var requestedMaxLines: [String: Int] = [:]
 
     private var views: [String: NSView] = [:]
 
@@ -59,32 +49,6 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
 
     func view(id: String) -> NSView? { views[id] }
     func size(id: String) -> TerminalSize? { sizes[id] }
-
-    /// The scripted snapshot, trimmed to its last `maxLines` rows.
-    ///
-    /// The cursor row moves up with the rows that were dropped rather than being
-    /// carried over unchanged. A `cursorY` left pointing at an index the trimmed
-    /// snapshot no longer has is out of range for anything that paints it, and
-    /// the real host cannot produce that state: it derives the cursor from the
-    /// rows it returns.
-    /// How many times each id's screen has been read.
-    ///
-    /// The count, not just the last `maxLines`, because when a screen is captured is
-    /// itself behaviour: the service records the outgoing terminal's screen before it
-    /// leaves the pane, which is its last chance while libghostty can still read it.
-    private(set) var snapshotCalls: [String: Int] = [:]
-
-    func snapshot(id: String, maxLines: Int) -> ScreenSnapshot? {
-        requestedMaxLines[id] = maxLines
-        snapshotCalls[id, default: 0] += 1
-        guard let full = snapshots[id] else { return nil }
-        guard full.rows.count > maxLines else { return full }
-        let dropped = full.rows.count - maxLines
-        return ScreenSnapshot(rows: Array(full.rows.suffix(maxLines)),
-                              cols: full.cols,
-                              cursorX: full.cursorX,
-                              cursorY: max(full.cursorY - dropped, 0))
-    }
 
     /// What this host claims libghostty resolved, and what it would have resolved
     /// without Wietty's overlay. Settable so a test can put the two out of step,

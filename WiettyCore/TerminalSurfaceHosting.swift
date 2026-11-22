@@ -1,43 +1,5 @@
 import Foundation
 
-/// One terminal's visible screen, as plain text.
-///
-/// Plain text is not a simplification, it is the API's ceiling.
-/// `ghostty_surface_read_text` is the only read back libghostty offers and
-/// `ghostty_text_s` carries no attributes, so nothing here can be coloured. This
-/// is what a remote viewer's first paint is built from, which is why that paint
-/// is monochrome and the live bytes after it are exact.
-///
-/// The cursor is approximated for the same reason: the C API has no cursor
-/// getter of any kind. It is placed at the end of the last non-empty row, which
-/// is right for a shell sitting at a prompt and wrong for a full screen program.
-/// The next byte the terminal produces moves it to the truth, so the cost is one
-/// frame of a misplaced cursor on attach.
-package struct ScreenSnapshot: Equatable, Sendable {
-    package let rows: [String]
-    package let cols: Int
-    package let cursorX: Int
-    package let cursorY: Int
-
-    /// Builds a snapshot from rows, placing the cursor as described above.
-    package init(rows: [String], cols: Int) {
-        self.rows = rows
-        self.cols = cols
-        let lastContent = rows.lastIndex { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        self.cursorY = lastContent ?? max(rows.count - 1, 0)
-        // Clamped to the last column: a full row would otherwise put the cursor
-        // one cell past the right edge, which a viewer draws outside the grid.
-        self.cursorX = lastContent.map { min(rows[$0].count, max(cols - 1, 0)) } ?? 0
-    }
-
-    package init(rows: [String], cols: Int, cursorX: Int, cursorY: Int) {
-        self.rows = rows
-        self.cols = cols
-        self.cursorX = cursorX
-        self.cursorY = cursorY
-    }
-}
-
 package enum SurfaceHostError: Error, Equatable {
     case initFailed(String)
     case surfaceFailed
@@ -73,17 +35,6 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// The surface's grid, or nil before it has one. This is the sizing authority
     /// for the substrate: Wietty resizes its own pty to match.
     func size(id: String) -> TerminalSize?
-
-    /// The last `maxLines` rows of the surface's screen, reaching into scrollback
-    /// when more rows are asked for than the visible grid holds.
-    ///
-    /// Reading history is far more expensive than reading the visible screen: on a
-    /// 50,000 line scrollback the real host measures 0.14 ms for the grid and 34 ms
-    /// for the whole screen, on the main actor. Asking for exactly the grid's row
-    /// count is the cheap read, not the expensive one; only more than that reaches
-    /// history. A caller that asks for more than the grid on every resize pays the
-    /// 34 ms every time, so ask for what you will use.
-    func snapshot(id: String, maxLines: Int) -> ScreenSnapshot?
 
     /// libghostty reported a title change (OSC 0 or OSC 2).
     var onTitle: (@MainActor (_ id: String, _ title: String) -> Void)? { get set }
@@ -180,7 +131,6 @@ package final class InertSurfaceHost: TerminalSurfaceHosting {
     }
     package func destroySurface(id: String) {}
     package func size(id: String) -> TerminalSize? { nil }
-    package func snapshot(id: String, maxLines: Int) -> ScreenSnapshot? { nil }
     /// libghostty's own default, which is what a launch with no libghostty would
     /// have resolved to. Reporting the default rather than false keeps the Settings
     /// toggle from claiming notifications are turned off when the truth is that

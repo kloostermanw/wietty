@@ -147,11 +147,11 @@ package final class GhosttyStack {
             onDisplayRequest: { session in requests.call(session) },
             onTerminated: { session in monitor.emit([.terminated(sessionId: session)]) })
 
-        // Both hooks read `shared`, never the service itself. The hub calls them
-        // from its own delivery queue and `GhosttyService` is main actor isolated,
-        // so reaching into it here would either deadlock or need an
-        // `assumeIsolated` that is simply untrue. `SharedTerminalState` exists for
-        // exactly these two questions.
+        // Every hook below reads `shared`, never the service itself. The hub calls
+        // them from the relay's queue and from its own delivery queue, and
+        // `GhosttyService` is main actor isolated, so reaching into it here would
+        // either deadlock or need an `assumeIsolated` that is simply untrue.
+        // `SharedTerminalState` exists for exactly these questions.
         let shared = service.shared
         // Asked on attach, so a session id whose terminal is gone is answered with
         // `ended` rather than a socket that opens and then never speaks. It cannot
@@ -253,20 +253,10 @@ package final class GhosttyStack {
         set { host.onInput = newValue }
     }
 
-    /// The store facing half of this substrate, bound to this stack.
-    ///
-    /// The poll does two things, because it is the app's one main actor heartbeat on
-    /// this substrate. It collects the job events the sidebar reads, and it refreshes
-    /// the screen a remote viewer's first frame is painted from: the hub asks for
-    /// that paint on its own delivery queue and cannot wait for a hop, so something
-    /// on the main actor has to keep it current. See
-    /// `GhosttyService.refreshSnapshots`.
+    /// The store facing half of this substrate, bound to this stack: the job
+    /// events the sidebar reads, collected on the app's poll.
     package var pollJobs: @MainActor () -> [MonitorEvent] {
-        { [weak self] in
-            guard let service = self?.ghosttyService else { return [] }
-            service.refreshSnapshots()
-            return service.jobEvents()
-        }
+        { [weak self] in self?.ghosttyService?.jobEvents() ?? [] }
     }
 
     /// How old a socket file has to be before this considers it abandoned.

@@ -101,8 +101,8 @@ package enum TerminalScrollback {
 /// One lock per model, held for the whole of each call. libghostty-vt's terminal
 /// is not reentrant and nothing in it checks, so a read that overlapped a write
 /// would walk pages the parser is rewriting. The lock is the same shape
-/// `SharedTerminalState` and `SnapshotBacklog` use, for the same reason: the
-/// callers are on three different queues and none of them can hop.
+/// `SharedTerminalState` uses, for the same reason: the callers are on three
+/// different queues and none of them can hop.
 ///
 /// The lock is only cheap because what is called often is cheap. A write parses at
 /// hundreds of megabytes a second and a paint frame formats one viewport in
