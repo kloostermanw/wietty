@@ -83,6 +83,16 @@ Sessions: `list_processes`, `get_process_status`, `spawn_process`,
 `spawn_agent` (claude shorthand), `send_input`, `close_process`,
 `select_process`, `rename_process`, `get_process_output`, `restart_process`.
 
+`get_process_output` answers from the server's own model of the terminal, not
+from the window. It returns the last lines the terminal printed, most recent
+last, up to the number asked for: a line the terminal wrapped is one line, and
+the blank rows below the last line are left off. It reaches into scrollback
+(10,000 lines are kept per terminal) for any terminal, whether or not it is the
+one on screen and whether or not its command has exited. That is a change for a
+terminal that is not displayed: such a read used to return one viewport however
+many lines were asked for, so a consumer that assumed a screenful now gets as
+many lines as it requested.
+
 Managed processes and tests: `list_managed_processes`,
 `get_managed_process_output`, `get_managed_process_status`. These are the
 `processes` and `tests` a workspace declares in `wietty.json`, which are
