@@ -65,20 +65,32 @@ deletes sources leaves a stale file list behind and the test count silently chan
 
 ### A first build can hang on package resolution
 
-`GhosttyKit` is a binary artifact (a 52 MB release asset), and SwiftPM asks the keychain for
-credentials for the host serving it. From a non interactive session nobody can answer that prompt,
-so `xcodebuild` parks in `BinaryArtifactsManager.download` with near zero CPU and an empty
-`SourcePackages/artifacts/libghostty-spm/libghostty/` directory, for as long as you let it. It is
-not the "cannot lock ref" failure and clearing caches does not help. `xcodebuild` cannot turn the
-keychain lookup off, the `swift` CLI can, and the artifact cache is shared, so warm it once:
+Two dependencies are binary artifacts, each served by a different host, and SwiftPM asks the
+keychain for credentials for the host serving one:
+
+| artifact | size | host | declared in |
+|---|---|---|---|
+| `GhosttyKit` | 52 MB | `github.com` (a release asset of `Lakr233/libghostty-spm`) | `project.yml` |
+| `GhosttyVt` (libghostty-vt) | 16 MB | `release.files.ghostty.org` | `Packages/GhosttyVt/Package.swift` |
+
+From a non interactive session nobody can answer that prompt, so `xcodebuild` parks in
+`BinaryArtifactsManager.download` with near zero CPU and an empty directory under
+`SourcePackages/artifacts/` (`libghostty-spm/libghostty/` for the first), for as long as you let it.
+It is not the "cannot lock ref" failure and clearing caches does not help. The prompt is per host,
+so a cache that already holds one artifact says nothing about the other. `xcodebuild` cannot turn
+the keychain lookup off, the `swift` CLI can, and the artifact cache is shared, so warm each once:
 
 ```sh
 swift package --package-path <a scratch package depending on libghostty-spm> \
   --disable-keychain --disable-netrc resolve
+swift package --package-path Packages/GhosttyVt --disable-keychain --disable-netrc resolve
 xcodebuild -scheme Wietty -destination 'platform=macOS' -resolvePackageDependencies
 ```
 
-The download itself takes a few seconds once the keychain is out of the way.
+`GhosttyVt` needs no scratch package: the wrapper in `Packages/GhosttyVt` is one, and resolving it
+leaves only a gitignored `.build` directory behind. The download itself takes a few seconds once the
+keychain is out of the way. If `xcodebuild` is already parked, kill it and warm the cache, waiting
+does not help.
 
 Running the test suite is safe for your own settings. `WiettyTests` is hosted by the app, so a run
 launches Wietty, and its defaults used to resolve to the real `~/.config/wietty/`. Under a test host
@@ -91,6 +103,23 @@ Build and test from the command line:
 xcodebuild -scheme Wietty -destination 'platform=macOS' build
 xcodebuild -scheme Wietty -destination 'platform=macOS' test
 ```
+
+### The coexistence check
+
+libghostty (the surface, linked into the app) and libghostty-vt (terminal state with no window,
+linked into `WiettyCore`) share several hundred symbols and run in one process. That they can is
+proven by one test the normal suite skips, because it needs a real window and a Metal device:
+`GhosttyVtCoexistenceTests` feeds a real surface and a `GhosttyVtTerminal` the same five megabytes
+and compares their visible grids. Run it, with the address sanitizer, after changing the pin of
+either library:
+
+```sh
+scripts/coexistence-check.sh
+```
+
+Quit Wietty first. It opens a window for a few seconds. The sanitizer build replaces the normal one
+in derived data, so the run takes a few minutes and so does the next ordinary build. In an ordinary
+test run the suite is counted and reported as skipped.
 
 ## Documentation
 The `docs/` folder must stay in sync with the code it describes. Whenever you change
