@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftUI
+import WiettyCore
 
 /// The Settings window's control over the terminal's colours, written to
 /// `GhosttyOverrideFile` (`~/.config/wietty/ghostty.cfg`) and applied by asking the

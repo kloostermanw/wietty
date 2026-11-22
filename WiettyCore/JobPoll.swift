@@ -1,5 +1,4 @@
 import Foundation
-import WiettyCore
 
 /// The app-wide job name poll.
 ///
@@ -10,16 +9,16 @@ import WiettyCore
 /// workspace.
 ///
 /// It costs no fork at all: one `tcgetpgrp` per terminal plus one `proc_name`.
-enum JobPoll {
+package enum JobPoll {
     /// Fixed schedule key for the app-wide poll. Workspace ids are random UUIDs,
     /// so this reserved one cannot collide with a workspace's own keys.
-    static let key = ScheduleKey(
+    package static let key = ScheduleKey(
         projectId: UUID(uuidString: "00000000-0000-0000-0000-00000000704D")!,
         kind: .jobNames)
 
     /// Fast while any workspace is expanded, because that is when an agent's
     /// status is on screen; slow when everything is collapsed.
-    static func tier(anyExpanded: Bool) -> CheckTier {
+    package static func tier(anyExpanded: Bool) -> CheckTier {
         checkTier(for: .jobNames, collapsed: !anyExpanded, ciPending: false, needsAttention: false)
     }
 }

@@ -1,21 +1,28 @@
 import Foundation
 
-struct TerminalHandle: Equatable, Sendable {
-    let sessionId: String
-    let windowId: String
+package struct TerminalHandle: Equatable, Sendable {
+    package let sessionId: String
+    package let windowId: String
+
+    /// Spelled out because the implicit memberwise one is internal and the fake
+    /// services the store's tests run against are in the other module.
+    package init(sessionId: String, windowId: String) {
+        self.sessionId = sessionId
+        self.windowId = windowId
+    }
 }
 
 /// Every way any substrate can refuse to open a terminal. All three sets of
 /// cases exist at all times, because the app is built with one substrate but
 /// ships three, and a case that only one of them raises still has to be
 /// describable when another is live.
-enum TerminalError: LocalizedError, Equatable {
+package enum TerminalError: LocalizedError, Equatable {
     /// Something one terminal action could not do, already worded for the user.
     case failed(String)
     case ghosttyInitFailed(String)
     case ghosttyHelperMissing
 
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .failed(let message):
             return message
@@ -27,9 +34,9 @@ enum TerminalError: LocalizedError, Equatable {
     }
 }
 
-struct FocusResult: Equatable, Sendable {
-    let found: Bool
-    let jobName: String?
+package struct FocusResult: Equatable, Sendable {
+    package let found: Bool
+    package let jobName: String?
     /// Whether `jobName` is an answer rather than the absence of one.
     ///
     /// A nil `jobName` used to mean both "the pane's foreground process is a
@@ -40,16 +47,16 @@ struct FocusResult: Equatable, Sendable {
     /// running agent as a prompt. False here means nothing is known and the
     /// caller must not act on the job, matching what `ProjectStore.runState`
     /// already does with a job it has never been told.
-    let jobKnown: Bool
+    package let jobKnown: Bool
 
-    init(found: Bool, jobName: String?, jobKnown: Bool = true) {
+    package init(found: Bool, jobName: String?, jobKnown: Bool = true) {
         self.found = found
         self.jobName = jobName
         self.jobKnown = jobKnown
     }
 }
 
-protocol TerminalService: Sendable {
+package protocol TerminalService: Sendable {
     /// - Parameter badge: When non-nil, labels the terminal with this text,
     ///   independent of any other name it carries. Nil leaves the
     ///   label untouched.
@@ -86,7 +93,7 @@ protocol TerminalService: Sendable {
     func stop(sessionId: String) async
 }
 
-extension TerminalService {
-    func discard(sessionId: String) async {}
-    func stop(sessionId: String) async {}
+package extension TerminalService {
+    package func discard(sessionId: String) async {}
+    package func stop(sessionId: String) async {}
 }

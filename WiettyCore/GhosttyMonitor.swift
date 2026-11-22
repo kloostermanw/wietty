@@ -1,5 +1,4 @@
 import Foundation
-import WiettyCore
 
 /// Per session events on the libghostty substrate.
 ///
@@ -29,12 +28,12 @@ import WiettyCore
 /// hopped through a `Task`: the only caller today is `ContentView.task`, already
 /// on the main actor, and synchronous delivery leaves no window in which an
 /// event queued before `stop()` can still land after it.
-final class GhosttyMonitor: SessionMonitoring, @unchecked Sendable {
+package final class GhosttyMonitor: SessionMonitoring, @unchecked Sendable {
     private let lock = NSLock()
     private var listener: (@MainActor (MonitorEvent) -> Void)?
 
     @MainActor
-    init(host: any TerminalSurfaceHosting) {
+    package init(host: any TerminalSurfaceHosting) {
         host.onTitle = { [weak self] session, title in
             self?.emit([.title(sessionId: session, name: title)])
         }
@@ -46,13 +45,13 @@ final class GhosttyMonitor: SessionMonitoring, @unchecked Sendable {
         }
     }
 
-    func start(onEvent: @escaping @MainActor (MonitorEvent) -> Void) {
+    package func start(onEvent: @escaping @MainActor (MonitorEvent) -> Void) {
         lock.lock()
         listener = onEvent
         lock.unlock()
     }
 
-    func stop() {
+    package func stop() {
         lock.lock()
         listener = nil
         lock.unlock()
@@ -61,7 +60,7 @@ final class GhosttyMonitor: SessionMonitoring, @unchecked Sendable {
     /// Delivers events the monitor did not derive itself. Terminations arrive
     /// here from `GhosttyService`, so the app has one listener rather than two.
     @MainActor
-    func emit(_ events: [MonitorEvent]) {
+    package func emit(_ events: [MonitorEvent]) {
         lock.lock()
         let handler = listener
         lock.unlock()

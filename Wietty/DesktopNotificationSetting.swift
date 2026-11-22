@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WiettyCore
 
 /// The Settings window's control over `desktop-notifications`, which is the gate
 /// every `OSC 9` and `OSC 777` notification passes through.
