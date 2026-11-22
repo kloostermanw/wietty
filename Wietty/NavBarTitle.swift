@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Where the thing in the pane comes from.
 ///

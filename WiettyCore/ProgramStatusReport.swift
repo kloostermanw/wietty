@@ -5,24 +5,42 @@ import Foundation
 /// The protocol is a draft by Mitchell Hashimoto
 /// (https://gist.github.com/mitchellh/7acae3abd8355c1c00287d67e96c913a, revision
 /// 0.1). Section numbers in the comments below refer to it.
-enum ProgramStatusState: String, Equatable, Sendable {
+package enum ProgramStatusState: String, Equatable, Sendable {
     case idle, working, done, blocked, error
 }
 
 /// What a `blocked` program is waiting for (section 6).
-enum ProgramStatusKind: String, Equatable, Sendable {
+package enum ProgramStatusKind: String, Equatable, Sendable {
     case permission, question, auth
 }
 
 /// One record as the terminal stores it: exactly the keys of the last report that
 /// addressed its id, already validated and decoded.
-struct ProgramStatusRecord: Equatable, Sendable {
-    var state: ProgramStatusState
-    var kind: ProgramStatusKind? = nil
-    var progress: Int? = nil
-    var app: String? = nil
-    var title: String? = nil
-    var msg: String? = nil
+package struct ProgramStatusRecord: Equatable, Sendable {
+    package var state: ProgramStatusState
+    package var kind: ProgramStatusKind? = nil
+    package var progress: Int? = nil
+    package var app: String? = nil
+    package var title: String? = nil
+    package var msg: String? = nil
+
+    /// Spelled out because the implicit memberwise one is internal, and the store,
+    /// the sidebar indicator and their tests are all in the other module. The
+    /// defaults are repeated here rather than left to the properties, because a
+    /// memberwise initializer written by hand does not inherit them.
+    package init(state: ProgramStatusState,
+                 kind: ProgramStatusKind? = nil,
+                 progress: Int? = nil,
+                 app: String? = nil,
+                 title: String? = nil,
+                 msg: String? = nil) {
+        self.state = state
+        self.kind = kind
+        self.progress = progress
+        self.app = app
+        self.title = title
+        self.msg = msg
+    }
 }
 
 /// One `OSC 7501` report, parsed from the text between `7501;` and the terminator.
@@ -31,7 +49,7 @@ struct ProgramStatusRecord: Equatable, Sendable {
 /// every rule is applied here, before anything reaches a stored record: a report
 /// that breaks a limit, carries text that does not decode, or names no state this
 /// build knows is `nil`, and nothing of it is applied.
-enum ProgramStatusReport: Equatable, Sendable {
+package enum ProgramStatusReport: Equatable, Sendable {
     /// Replaces the record at `id`, or the root record when `id` is nil.
     case set(id: String?, ProgramStatusRecord)
     /// Removes the record at `id` and every record beneath it, or every record on
@@ -50,7 +68,7 @@ enum ProgramStatusReport: Equatable, Sendable {
     private static let titleEncodedLimit = 256
     private static let titleDecodedLimit = 192
 
-    static func parse(_ body: String) -> ProgramStatusReport? {
+    package static func parse(_ body: String) -> ProgramStatusReport? {
         var pairs: [String: String] = [:]
         for pair in body.split(separator: ":", omittingEmptySubsequences: false) {
             guard let equals = pair.firstIndex(of: "=") else { continue }

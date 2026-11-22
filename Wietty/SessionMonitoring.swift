@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Pushes per-session events (title, bell, job, termination) to the app,
 /// whichever substrate they were derived from.

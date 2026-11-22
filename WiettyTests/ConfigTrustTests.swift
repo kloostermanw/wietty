@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// A `wietty.json` is a list of shell lines this app will run in the folder it came

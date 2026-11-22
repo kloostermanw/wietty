@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// The store's settings now live in `~/.config/wietty/config` rather than

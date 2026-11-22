@@ -1,6 +1,7 @@
-import Testing
 import Foundation
 import HTTPTypes
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// `POST /api/terminals/{ref_id}/activate`, the served side of a click on a

@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 import WiettyShared
 
 /// The decoded remote state in the shape the local UI consumes.

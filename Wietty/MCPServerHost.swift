@@ -4,6 +4,7 @@ import Hummingbird
 import Logging
 import MCP
 import NIOCore
+import WiettyCore
 import os
 
 /// The Mac's own record of why the MCP server is not running. The status bar and

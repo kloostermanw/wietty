@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// The on-demand side of a workspace's `checks`: one `ManagedProcess` per check,

@@ -1,16 +1,16 @@
 import Foundation
 
-enum TerminalKind: String, Codable {
+package enum TerminalKind: String, Codable {
     case terminal
     case claude
 }
 
-struct TerminalRef: Identifiable, Equatable, Codable {
-    let id: UUID
-    var label: String
-    var sessionId: String
-    var kind: TerminalKind
-    var slot: String
+package struct TerminalRef: Identifiable, Equatable, Codable {
+    package let id: UUID
+    package var label: String
+    package var sessionId: String
+    package var kind: TerminalKind
+    package var slot: String
     /// The line this row types into its shell, or nil for a row that runs whatever
     /// its kind runs (`ProjectStore.command(for:)`: nothing for a terminal, `claude`
     /// for an agent row).
@@ -23,16 +23,16 @@ struct TerminalRef: Identifiable, Equatable, Codable {
     /// would be a surprise. Nil on every row stored before the list existed and on
     /// every row imported from a `wietty.json`, which is what keeps those running
     /// `claude`.
-    var command: String?
+    package var command: String?
     /// When true, an agent row keeps showing its `slot` and a reported title is
     /// ignored rather than replacing `label`. Set from the agent's `fixed_naming` in
     /// `wietty.json`; false for terminal rows and rows predating the field. Issue #37.
-    var fixedNaming: Bool
+    package var fixedNaming: Bool
     /// Prepended to the displayed name, with a single space, whatever the name is.
     /// Set from the agent's `prefix` in `wietty.json`; empty means no prefix.
-    var prefix: String
+    package var prefix: String
 
-    init(id: UUID = UUID(), label: String, sessionId: String, kind: TerminalKind = .terminal,
+    package init(id: UUID = UUID(), label: String, sessionId: String, kind: TerminalKind = .terminal,
          slot: String? = nil, command: String? = nil, fixedNaming: Bool = false, prefix: String = "") {
         self.id = id
         self.label = label
@@ -55,7 +55,7 @@ struct TerminalRef: Identifiable, Equatable, Codable {
     ///
     /// The prefix is trimmed so a stray trailing space in the config does not double
     /// up the separator, and a prefix that is only whitespace reads as none. Issue #37.
-    var displayName: String { displayName(liveLabel: nil) }
+    package var displayName: String { displayName(liveLabel: nil) }
 
     /// The name a row shows, given an optional live agent-reported title.
     ///
@@ -65,7 +65,7 @@ struct TerminalRef: Identifiable, Equatable, Codable {
     /// display-only override held outside the model (`ProjectStore.liveLabels`), so a
     /// busy agent retitling constantly no longer mutates the row and re-renders the
     /// sidebar. Issue #60.
-    func displayName(liveLabel: String?) -> String {
+    package func displayName(liveLabel: String?) -> String {
         let base = fixedNaming ? slot : (liveLabel ?? label)
         let p = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
         return p.isEmpty ? base : "\(p) \(base)"
@@ -75,7 +75,7 @@ struct TerminalRef: Identifiable, Equatable, Codable {
         case id, label, sessionId, kind, slot, command, fixedNaming, prefix
     }
 
-    init(from decoder: Decoder) throws {
+    package init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         label = try container.decode(String.self, forKey: .label)

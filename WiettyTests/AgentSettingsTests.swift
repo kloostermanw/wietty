@@ -1,6 +1,7 @@
-import Testing
 import Foundation
 import SwiftUI
+import Testing
+import WiettyCore
 import WiettyShared
 @testable import Wietty
 

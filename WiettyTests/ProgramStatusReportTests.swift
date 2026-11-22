@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// The body of one `OSC 7501` report, after `7501;` and before the terminator.

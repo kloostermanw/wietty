@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 import WiettyShared
 
 struct SettingsView: View {

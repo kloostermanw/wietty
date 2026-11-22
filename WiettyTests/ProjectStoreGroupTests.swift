@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// Groups are a machine-local list the store carries, like the agents: the set of

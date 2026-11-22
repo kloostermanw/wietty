@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Pure builder for the `/api/sessions` payload: one entry per workspace with
 /// its terminal sessions. Kept separate from `RemoteServer` so it can be tested

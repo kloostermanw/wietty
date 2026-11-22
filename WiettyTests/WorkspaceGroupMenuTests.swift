@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// The Group menu's shape and the sidebar filter are facts about the app, so they

@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// Lock-guarded accumulator, not a captured `var`: a hub viewer's sink is

@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 struct TerminalRowView: View {
     let label: String

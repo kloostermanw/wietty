@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// The Edit workspace page writes `wietty.json` through the store's config-editing

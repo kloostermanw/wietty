@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Describes one MCP tool for `tools/list`.
 struct MCPToolDescriptor: Equatable, Sendable {

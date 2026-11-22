@@ -1,6 +1,7 @@
-import Testing
 import Foundation
 import Observation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// A reference flag the `@Sendable` `withObservationTracking` onChange closure can

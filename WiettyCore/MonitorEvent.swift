@@ -2,7 +2,7 @@ import Foundation
 
 /// An event about one terminal, from libghostty's action callback or from the
 /// periodic job poll.
-enum MonitorEvent: Equatable, Sendable {
+package enum MonitorEvent: Equatable, Sendable {
     case title(sessionId: String, name: String)
     case bell(sessionId: String)
     /// A notification the process asked for by name, through `OSC 9` or `OSC 777`,
@@ -26,7 +26,7 @@ enum MonitorEvent: Equatable, Sendable {
     /// types. Nothing in the app produces these lines today: the events are built
     /// directly. It stays because the wire shape is what a monitor outside this
     /// process would have to emit, and the parser is cheap to keep honest.
-    static func decode(line: String) -> MonitorEvent? {
+    package static func decode(line: String) -> MonitorEvent? {
         guard let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = object["type"] as? String,

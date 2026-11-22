@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Which terminal a bell notification is about, and therefore what tapping it
 /// should show.

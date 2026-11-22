@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// Adding a folder used to be enough to run whatever its `wietty.json` said: the

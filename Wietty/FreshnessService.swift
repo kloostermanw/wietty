@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import WiettyCore
 
 /// One entry in a workspace's freshness cache: the result of a passing check kept
 /// against the hash of its `watch` file, so a later tick can reuse the result

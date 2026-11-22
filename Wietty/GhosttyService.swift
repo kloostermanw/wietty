@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import WiettyCore
 
 /// The parts of the terminal registry `PaneStreamHub` reads, behind a lock rather
 /// than the main actor.

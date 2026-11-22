@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// One entry in the app menu's Group submenu: "All", then one per group. Values
 /// rather than closures, so the menu's shape can be asserted without opening it.

@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// Every test here waits for the OUTPUT it asserts on, not only for the exit.
