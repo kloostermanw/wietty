@@ -390,7 +390,10 @@ session to keep it:
   of it, and everything after follows it.
 
 The lock is per session because a parse runs under it, and one terminal printing a build log must not
-hold up the bytes of the terminal next to it. Delivery is a separate matter and has one serial queue
+hold up the bytes of the terminal next to it. For the same reason the flush timer never waits for a
+session's lock: a session whose model is busy (a reflow after a resize can hold a write for a long
+time) is skipped for that tick and its bytes go out on the next one, so the viewers of every other
+terminal keep receiving. Delivery is a separate matter and has one serial queue
 for the whole hub: the flush timer, an attach, a repaint and an ending each take bytes and then hand
 them to viewers, and two of those running at once could take in one order and deliver in the other.
 `attach` therefore runs on that queue synchronously, which is also what puts a viewer's paint ahead

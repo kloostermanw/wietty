@@ -250,6 +250,49 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
         #expect(try replay(late.messages, scrollbackLines: 100) == ["before", "after"])
     }
 
+    /// One terminal's parse must not hold up another terminal's viewers. A
+    /// session's lock is held while its model takes a chunk, and a model that is
+    /// reflowing a full scrollback after a resize can keep a write waiting for a
+    /// long time. The flush timer skips a session it cannot lock and delivers
+    /// everyone else's bytes; were it to wait, every viewer of every terminal
+    /// would stall behind the one being resized.
+    @Test func aSessionStuckInItsModelDoesNotStallAnotherSessionsViewers() async throws {
+        let hub = PaneStreamHub(startTimer: true)
+        defer { hub.stop() }
+        let release = DispatchSemaphore(value: 0)
+        let entered = ViewerLog()
+        hub.onIngest = { session, _ in
+            guard session == "gt:stuck" else { return }
+            entered.add(.ended)
+            release.wait()
+        }
+        let stuck = ViewerLog()
+        let free = ViewerLog()
+        hub.attach(session: "gt:stuck") { stuck.add($0) }
+        hub.attach(session: "gt:free") { free.add($0) }
+
+        let writer = Task.detached { hub.write(session: "gt:stuck", bytes: Array("held".utf8)) }
+        while entered.messages.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
+        // Two writes a few ticks apart: a timer that waited on the stuck session
+        // could still deliver the first on its way to getting parked, never the
+        // second.
+        hub.write(session: "gt:free", bytes: Array("one ".utf8))
+        try await Task.sleep(for: .milliseconds(40))
+        hub.write(session: "gt:free", bytes: Array("two".utf8))
+        let deadline = ContinuousClock.now + .seconds(2)
+        while free.messages.count < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(free.messages == [.data("one "), .data("two")])
+        #expect(stuck.messages.isEmpty)
+
+        // And nothing of the stuck session was lost by being skipped.
+        release.signal()
+        await writer.value
+        hub.flush()
+        #expect(stuck.messages == [.data("held")])
+    }
+
     /// Every chunk the hub accepts is handed to the model's feed, against its own
     /// session and in order, whether or not anybody is watching.
     @Test func everyAcceptedChunkIsHandedToTheModelFeed() {
