@@ -42,10 +42,6 @@ struct TerminalStack {
     /// place that builds the concrete host is the one place that knows it is both.
     private let surfaces: any TerminalSurfaceViewing
 
-    /// Closes every terminal when the app quits. Held so it lives as long as this
-    /// stack does and hands its observer back when it does not.
-    private let quitTeardown: TerminalQuitTeardown?
-
     /// The view a session's surface renders into, for the pane. Nil for a session
     /// with no surface, which is every session on a stack that failed to build.
     ///
@@ -86,9 +82,6 @@ struct TerminalStack {
         desktopNotifications = DesktopNotificationSetting(host: built.host)
         ghosttyColors = GhosttyColorSettings(host: built.host)
         surfaces = built.host
-        // Nil on a stack that could not be built: it holds no terminals and never
-        // will, so there is nothing to tear down and nothing to observe.
-        quitTeardown = stack.ghosttyService.map { TerminalQuitTeardown(service: $0) }
         // Unconditional, because the sweep answers "is this socket abandoned" itself
         // rather than trusting its caller to be the only Wietty on the machine.
         stack.clearStaleSockets()
