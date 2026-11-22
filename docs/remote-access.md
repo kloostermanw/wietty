@@ -70,8 +70,11 @@ The path from the browser back to the terminal, in order:
   id the app minted. `TerminalRelay` writes every chunk of the child's own output
   into the hub, which coalesces on an 8 ms timer (a shell echoing a typed line
   emits one notification per character) and fans it out to every viewer of that
-  session: the browser, the iPad, and the app's own pane all consume the same
-  bytes, so a rendering fault is fixed once. Bytes are split on UTF-8 boundaries,
+  session: the browser and the iPad consume the same bytes, so a rendering fault in
+  either is fixed once. The app's own pane is not among them. It reads the surface
+  libghostty draws into directly, and `RemoteServer` is the only caller of
+  `PaneStreamHub.attach`; phase 3 of issue #84 is what puts the local pane on this
+  route too. Bytes are split on UTF-8 boundaries,
   so a multibyte character straddling two flushes is not cut in half. A viewer that
   attaches is painted first, from a `ScreenSnapshot` read off the surface, because
   a session sitting idle emits no output and would otherwise show a blank screen.

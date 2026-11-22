@@ -13,7 +13,7 @@ happens on every launch, and a notice each time would be noise.
 
 **The wipe takes only `gt:` ids.** A workspace stored by an older version can still hold rows whose
 ids iTerm2 or a tmux server minted. Those are left exactly as they are, because they cost nothing:
-`ProjectStore.activate` asks the service to focus one, is told it is gone, and opens a real terminal
+`ProjectStore.activate` asks the service to probe one, is told it is gone, and opens a real terminal
 in its place. Stored `Project.windowId` values are left alone for the same reason. Nothing reads
 them.
 
@@ -680,3 +680,31 @@ package rather than a version range.
 A first resolve of this package can park indefinitely on a keychain prompt, with near zero CPU and an
 empty artifacts directory. It is not the "cannot lock ref" failure and clearing caches does not help.
 `CLAUDE.md` carries the workaround under "A first build can hang on package resolution".
+
+## Where the terminal lives
+
+Everything above except the surface is in `WiettyCore`, a framework target that imports
+neither SwiftUI nor AppKit. The pty, the relay, the stream hub, the service and the
+stack are all there; `GhosttySurfaceHost`, the one type that touches libghostty and an
+`NSView`, stays in the app. The split is not for reuse. It is so the compiler refuses
+an import of the UI on the side that will become a separate process in phase 5 of issue
+#84, years before the process is cut.
+
+Two seams follow from it and are worth knowing before changing this code.
+
+**The surface protocol is in two halves.** `TerminalSurfaceHosting` is the AppKit free
+one and lives in the core beside the service that uses it. `TerminalSurfaceViewing`,
+which is the single method returning an `NSView`, is in the app, and the pane reaches a
+view through `TerminalStack.surfaceView(for:)`. `GhosttySurfaceHost` conforms to both.
+
+**The service does not decide what the pane shows.** It used to: `focus` answered
+whether a session was alive and selected it while answering, so an MCP tool call or a
+tap on an iPad moved the Mac's pane as a side effect. `focus` is `probe` now and only
+answers. Showing a terminal is a request: the service raises one when a terminal is
+opened, when the displayed one is closed and another remains, and when everything is
+torn down, and `ProjectStore` raises `StoreEvent.showTerminal` when a row is asked for.
+`TerminalSelection`, owned by `WiettyApp` and wired by `TerminalSelectionWiring`,
+honours them synchronously, so with a window open the pane moves exactly when it did
+before. The service still has to be told which terminal is displayed, through
+`displayedSessionChanged(from:to:)`, because libghostty reads an off screen surface as
+empty and the one leaving the pane has to have its screen recorded on the way out.

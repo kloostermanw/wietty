@@ -76,8 +76,8 @@ to `ProcessLogView`, which is text this app already holds; settings to
 (see `WorkspaceSettingsView.md`).
 
 `PaneSelection` decides which, from two pieces of state that live apart and stay
-apart: the local selection belongs to `GhosttyService`, and `PaneRouter.override`
-holds whatever covers it. That override is one value (`PaneOverride`: a remote
+apart: the local selection belongs to `TerminalSelection`, owned by `WiettyApp`, and
+`PaneRouter.override` holds whatever covers it. That override is one value (`PaneOverride`: a remote
 session, a log, settings, or a workspace page) rather than four, because no two of
 them can be on screen at once: held apart, every place that set one would have to
 remember to clear the others, and the one that forgot would leave the sidebar
@@ -119,15 +119,15 @@ and clearing the override puts the local terminal back. Three things clear it.
 Activating a terminal row clears it directly (`ContentView.activate`). This is not
 redundant with the callback below, it is the main path: because an override *covers*
 the local selection, the terminal a user clicks to get back is usually the one that is
-still selected, and `GhosttyService.select` returns early when the session is already
-selected, so no callback arrives. Relying on the callback alone left that click dead
+still selected, and `TerminalSelection.show` returns early when the session is already
+the displayed one, so nothing is reported. Relying on the callback alone left that click dead
 and left the settings panel, which has no close button, with no exit at all.
 
-A selection the service reports clears it too, which is what makes a click on a
+A change `TerminalSelection` reports clears it too, which is what makes a click on a
 different row, the MCP server, or a remote client show that terminal even while
 something else is on screen. That is deliberately keyed on a non-nil selection: the
-service also selects nil when the last local terminal closes, and blanking a pane
-someone is reading would be a bug rather than an intent. Closing one local terminal
+pane is also emptied when the last local terminal closes, and blanking a pane someone
+is reading would be a bug rather than an intent. Closing one local terminal
 while another remains does take the pane, because the service selects that other
 terminal and nothing here can tell that apart from a click.
 
@@ -163,9 +163,12 @@ is in the window's view hierarchy at a time; every other one stays alive and kee
 reading, which is how Ghostty's own tabs behave and is why a terminal keeps
 running while another is on screen. Selecting a row moves that one view rather
 than building a new one, and a surface is never rebuilt: rebuilding is what would
-lose the scrollback. `ContentView` mirrors `GhosttyService.selected` into
-`selectedTerminal` through `onSelectionChanged`, so a selection made by a click, by
-the MCP server, or by a remote client redraws the pane the same way. The pane's
+lose the scrollback. The pane reads `TerminalSelection.current`, which every path
+that can move it reaches through a request: the service raises one when a terminal is
+opened or the displayed one is closed, and `ProjectStore` raises
+`StoreEvent.showTerminal` when a row is asked for. `TerminalSelectionWiring` joins
+them when the app builds its object graph, so a click, the MCP server and a remote
+client all redraw the pane the same way. The pane's
 four states are `GhosttyPaneState`: the terminal's setup error, the selected
 terminal, a stopped screen when the selected terminal has ended, or a placeholder
 when nothing is selected. See `LocalTerminalView`.

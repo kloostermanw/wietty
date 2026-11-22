@@ -131,10 +131,11 @@ struct SettingsCommand: Commands {
             // the system does. The gear is the toggle, and it is the one on screen
             // while the panel is up.
             Button("Settings…") {
-                // The main window can be closed while the app runs, and settings put
-                // in a pane nobody can see is not an answer. `openWindow` reopens a
-                // closed `Window` scene and focuses an open one, the same way a
-                // tapped bell notification gets back to it.
+                // `openWindow` focuses the window whether or not this process was
+                // already running, the same way a tapped bell notification gets back
+                // to it. Not for reopening a window closed while the app runs: there
+                // is one `Window` scene and no app delegate, so closing it quits the
+                // app (established by experiment during issue #84).
                 openWindow(id: WiettyApp.mainWindowID)
                 NSApp.activate()
                 router.show(.settings)

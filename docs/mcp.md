@@ -38,8 +38,8 @@ port somebody else holds never shows green.
 
 Both places carry a Restart, which stops the server, waits for it to let go of its
 port, and starts it again on the same one. A port change in Settings goes through
-the same `MCPServerHost.restart(port:)`. One host lives as long as the window, and
-each start bumps a generation that the server's callbacks are checked against, so a
+the same `MCPServerHost.restart(port:)`. One host lives as long as the app, owned by
+`ServerRuntime` rather than by a view, and each start bumps a generation that the server's callbacks are checked against, so a
 server that is shutting down cannot report over the one that replaced it.
 
 ### Handshake
@@ -190,3 +190,18 @@ name without colliding. It stops resolving when the workspace is removed, or whe
 definition is dropped from `wietty.json` and the process is not still alive (a
 running process whose definition is dropped is kept as `orphaned` and keeps resolving
 until it stops).
+
+## `select_process` and the Mac's pane
+
+`select_process` asks the store for a row and answers whether it is alive and what it
+is running. It also puts that row in the window's pane, which is what the name
+promises.
+
+How it does that changed with issue #84 and is worth knowing, because the old shape is
+the one most people would guess. The service used to select the row as a side effect of
+being asked about it, so the answer and the pane move were one call. `GhosttyService`
+no longer decides what is displayed: `probe` answers, and `ProjectStore.focus` raises
+`StoreEvent.showTerminal`, which `TerminalSelection` honours synchronously. With a
+window open the pane therefore moves exactly when it did before. With no frontend
+listening nothing moves and the row is still answered for, which is what lets the
+server run without a window in phase 5.

@@ -787,9 +787,13 @@ struct ContentView: View {
     /// A tapped notification, which does exactly what clicking the row does, after
     /// bringing the window it lives in forward.
     ///
-    /// `openWindow` rather than reaching into `NSApp.windows`, so this also works when
-    /// the main window has been closed: for a `Window` scene it reopens a closed one
-    /// and focuses an open one.
+    /// `openWindow` rather than reaching into `NSApp.windows`, because it focuses the
+    /// window whether or not this process was already running: a tapped notification
+    /// can relaunch a quit app, and the scene is then restored rather than found.
+    ///
+    /// It does not exist to reopen a window closed while the app runs. That cannot
+    /// happen: there is one `Window` scene and no app delegate, so closing it quits
+    /// the app, which was established by experiment during issue #84.
     private func showBell(_ target: BellTarget) {
         openWindow(id: WiettyApp.mainWindowID)
         NSApp.activate()
