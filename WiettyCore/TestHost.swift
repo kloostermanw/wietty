@@ -32,27 +32,37 @@ package enum TestHost {
             || NSClassFromString("XCTest") != nil
     }()
 
-    /// A directory of this run's own, under the temporary directory.
+    /// The one directory a test host writes into, under the temporary directory.
     ///
-    /// One per process rather than one per call, so the pieces a run writes stay
-    /// together and a test can assert that a path is inside it.
+    /// A fixed name, emptied as this run starts rather than named uniquely per run.
+    /// Unique names are the obvious choice and the wrong one: nothing can be relied on
+    /// to remove them, because a test host is routinely killed rather than allowed to
+    /// exit, so they accumulate. Clearing a fixed one on the way in gives the same
+    /// isolation and leaves at most one behind however the process dies.
     package static let sandbox: URL = {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("wietty-test-host-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)")
+            .appendingPathComponent("wietty-test-host")
+        try? FileManager.default.removeItem(at: url)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()
 
+    /// The defaults domain a test host writes into. Fixed, for the reason `sandbox` is.
+    package static let defaultsSuiteName = "eu.kloosterman.wietty.test-host"
+
     /// The `UserDefaults` the app should use: its own domain normally, a throwaway
     /// suite under test.
     ///
-    /// The suite name carries the run's sandbox id, so two runs never share one and
-    /// nothing a run writes outlives it in a domain the user keeps.
+    /// Emptied as this run starts, so one run cannot read what another left, and so
+    /// `~/Library/Preferences` holds one file rather than one per run. A unique suite
+    /// name per run was the first attempt and leaked: every run left its plist behind,
+    /// because a test host is killed rather than asked to tidy up after itself.
     /// `nonisolated(unsafe)` because `UserDefaults` carries no `Sendable`
     /// conformance, and this is one instance decided once and then only read.
     /// The app has always shared `UserDefaults.standard` across actors the same way.
     package nonisolated(unsafe) static let defaults: UserDefaults = {
         guard isActive else { return .standard }
-        return UserDefaults(suiteName: "test-host.\(sandbox.lastPathComponent)") ?? .standard
+        UserDefaults.standard.removePersistentDomain(forName: defaultsSuiteName)
+        return UserDefaults(suiteName: defaultsSuiteName) ?? .standard
     }()
 }
