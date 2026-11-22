@@ -8,7 +8,11 @@ import Foundation
 /// title BEL` on every command, so counting every 0x07 as a bell would ring it
 /// several times per command. A sequence can be split across two writes, so the
 /// state has to persist between calls.
-struct OSCStringTracker {
+package struct OSCStringTracker {
+    /// Spelled out because the implicit one is internal and the hub's tests are in
+    /// the other module.
+    package init() {}
+
     private enum State {
         case ground
         case escape        // saw ESC, waiting to see what follows
@@ -18,7 +22,7 @@ struct OSCStringTracker {
     private var state: State = .ground
 
     /// Feeds bytes and returns the number of genuine bells among them.
-    mutating func bells(in bytes: [UInt8]) -> Int {
+    package mutating func bells(in bytes: [UInt8]) -> Int {
         var count = 0
         for byte in bytes {
             switch state {

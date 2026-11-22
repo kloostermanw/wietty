@@ -1,6 +1,7 @@
-import Testing
-import Foundation
 import Darwin
+import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// The PTY Wietty owns. Every property asserted here is one the libghostty

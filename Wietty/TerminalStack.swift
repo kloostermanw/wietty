@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import WiettyCore
 
 /// The terminal this launch runs on, built once.
 ///

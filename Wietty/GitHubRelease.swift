@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// The subset of a GitHub `/releases/latest` payload the updater needs.
 struct GitHubRelease: Equatable, Decodable {

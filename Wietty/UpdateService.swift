@@ -1,6 +1,7 @@
+import AppKit
 import Foundation
 import Observation
-import AppKit
+import WiettyCore
 import os
 
 @MainActor

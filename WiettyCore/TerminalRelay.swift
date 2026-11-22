@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-enum TerminalRelayError: Error, Equatable {
+package enum TerminalRelayError: Error, Equatable {
     case socketPathTooLong(String)
     case socketFailed(Int32)
     case bindFailed(Int32)
@@ -45,7 +45,7 @@ enum TerminalRelayError: Error, Equatable {
 /// 3. The client fd is published to `clientFd` only once a source is guaranteed
 ///    to be created for it, and cleared before that source is cancelled, so no
 ///    use can start against a descriptor already on its way out.
-final class TerminalRelay: @unchecked Sendable {
+package final class TerminalRelay: @unchecked Sendable {
     /// How much output to hold for a helper that has not connected yet.
     ///
     /// A surface is created after the shell is spawned, so anything printed in
@@ -59,7 +59,7 @@ final class TerminalRelay: @unchecked Sendable {
     /// `sockaddr_un.sun_path` is this many bytes, terminator included.
     private static let sunPathLimit = 104
 
-    let socketPath: String
+    package let socketPath: String
 
     private let pty: RawPTY
     private let onOutput: @Sendable ([UInt8]) -> Void
@@ -96,7 +96,7 @@ final class TerminalRelay: @unchecked Sendable {
     /// inherited from whatever launched the app, and a path that does not fit has
     /// to fail loudly rather than bind a silently truncated one, which would leave
     /// the helper connecting to a socket nobody listens on.
-    static func socketPath(for sessionId: String,
+    package static func socketPath(for sessionId: String,
                            in directory: String = NSTemporaryDirectory()) throws -> String {
         let compact = sessionId
             .replacingOccurrences(of: "gt:", with: "")
@@ -109,7 +109,7 @@ final class TerminalRelay: @unchecked Sendable {
         return path
     }
 
-    init(pty: RawPTY, socketPath: String,
+    package init(pty: RawPTY, socketPath: String,
          onOutput: @escaping @Sendable ([UInt8]) -> Void) throws {
         guard socketPath.utf8.count < Self.sunPathLimit else {
             throw TerminalRelayError.socketPathTooLong(socketPath)
@@ -153,7 +153,7 @@ final class TerminalRelay: @unchecked Sendable {
         return fd
     }
 
-    func start(onExit: @escaping @Sendable (Int32) -> Void) {
+    package func start(onExit: @escaping @Sendable (Int32) -> Void) {
         acceptHelper()
         pty.startReading(onBytes: { [weak self] bytes in
             guard let self else { return }
@@ -363,7 +363,7 @@ final class TerminalRelay: @unchecked Sendable {
     }
 
     /// Tears the relay down and removes the socket file. Idempotent.
-    func stop() {
+    package func stop() {
         lock.lock()
         guard !stopped else { lock.unlock(); return }
         stopped = true

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import WiettyCore
 @testable import Wietty
 
 /// A `TerminalSurfaceHosting` with no libghostty behind it.

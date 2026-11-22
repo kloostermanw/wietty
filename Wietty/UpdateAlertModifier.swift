@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 /// Presents update-related alerts driven by `UpdateService.state`.
 struct UpdateAlertModifier: ViewModifier {

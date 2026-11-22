@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import GhosttyKit
+import WiettyCore
 import os
 
 /// The one `ghostty_app_t` and every live surface.

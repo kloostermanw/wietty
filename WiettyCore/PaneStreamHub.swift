@@ -8,7 +8,7 @@ import Foundation
 /// it, and a shell echoing a typed line produces one per character, so forwarding
 /// each one directly would put a WebSocket message on the wire for every
 /// keystroke.
-final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
+package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private struct Viewer {
         let pane: String
         let sink: @Sendable (RemoteMessage) -> Void
@@ -35,9 +35,9 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private let delivery = DispatchQueue(label: "eu.kloosterman.wietty.pane-stream")
 
     /// Sends a command to the control client owning a pane. Wired in Task 12.
-    var onSend: (@Sendable (_ pane: String, _ text: String) -> Void)?
+    package var onSend: (@Sendable (_ pane: String, _ text: String) -> Void)?
     /// Supplies the initial screen for a pane. Wired in Task 12.
-    var onPaint: (@Sendable (_ pane: String) -> [RemoteMessage])?
+    package var onPaint: (@Sendable (_ pane: String) -> [RemoteMessage])?
     /// Which sessions are live, asked once per attach so a
     /// viewer is never registered for a session that cannot produce output. Left
     /// nil where there is nothing to ask, in which case an attach proceeds as it
@@ -46,16 +46,16 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Deliberately not folded into `onPaint`: an empty paint already means "no
     /// capture available right now", which a live session can return, so it
     /// cannot also mean "this session is gone".
-    var onSessionCensus: (@Sendable () -> SessionCensus)?
+    package var onSessionCensus: (@Sendable () -> SessionCensus)?
     /// Reports a genuine bell in a pane's output. Wired in Task 12, where the
     /// monitor turns it into a `.bell` event.
-    var onBell: (@Sendable (_ pane: String) -> Void)?
+    package var onBell: (@Sendable (_ pane: String) -> Void)?
 
     /// Interval chosen so typing feels immediate while a burst of output still
     /// coalesces into one message.
     private static let flushInterval = DispatchTimeInterval.milliseconds(8)
 
-    init(startTimer: Bool = false) {
+    package init(startTimer: Bool = false) {
         if startTimer { startFlushTimer() }
     }
 
@@ -73,7 +73,7 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// rows, then the cursor. A session sitting idle produces no output, so a
     /// viewer that only subscribed would face a blank screen until something
     /// happened to change it.
-    static func paintMessages(rows: [String], cursorX: Int, cursorY: Int,
+    package static func paintMessages(rows: [String], cursorX: Int, cursorY: Int,
                               cols: Int, rows rowCount: Int) -> [RemoteMessage] {
         var vt = "\u{1B}[2J\u{1B}[H"
         vt += rows.joined(separator: "\r\n")
@@ -98,7 +98,7 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     ///
     /// Asynchronous, like a repaint, so a test that asserts on what a viewer received
     /// needs `waitForPendingDeliveries()`.
-    func endViewers(ofSession session: String) {
+    package func endViewers(ofSession session: String) {
         endViewers(ofSessions: [session])
     }
 
@@ -140,7 +140,7 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// An empty id is not attachable and is not worth a census: it is what a
     /// terminal row that was configured but never opened carries, and asking about
     /// it would resolve it to something nobody asked for.
-    static func isStreamable(session: String, census: SessionCensus) -> Bool {
+    package static func isStreamable(session: String, census: SessionCensus) -> Bool {
         guard !session.isEmpty else { return false }
         switch census {
         case let .sessions(live): return live.contains(session)
@@ -150,7 +150,7 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     }
 
     @discardableResult
-    func attach(session: String, onMessage: @escaping @Sendable (RemoteMessage) -> Void) -> UUID {
+    package func attach(session: String, onMessage: @escaping @Sendable (RemoteMessage) -> Void) -> UUID {
         let id = UUID()
         lock.lock()
         let paint = onPaint
@@ -180,7 +180,7 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         return id
     }
 
-    func detach(connectionId: UUID) {
+    package func detach(connectionId: UUID) {
         lock.lock()
         guard let viewer = viewers.removeValue(forKey: connectionId) else { lock.unlock(); return }
         let paneGone = !viewers.values.contains { $0.pane == viewer.pane }
@@ -192,7 +192,7 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         lock.unlock()
     }
 
-    func send(session: String, text: String) {
+    package func send(session: String, text: String) {
         lock.lock()
         let handler = onSend
         lock.unlock()
@@ -202,7 +202,7 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Drops the viewers and their buffers, and stops the flush timer. The sizes
     /// survive: a session id stays valid across a stop and start, and clearing them
     /// would make the next `noteSize` look like a change that never happened.
-    func stop() {
+    package func stop() {
         lock.lock()
         viewers = [:]
         buffers = [:]
@@ -224,7 +224,7 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Callers must call this in stream order and from one thread per session.
     /// Terminal output delivered out of order is corrupt on screen, and this
     /// method does not reorder anything.
-    func write(session: String, bytes: [UInt8]) {
+    package func write(session: String, bytes: [UInt8]) {
         lock.lock()
         buffers[session, default: []].append(contentsOf: bytes)
         var tracker = trackers[session] ?? OSCStringTracker()
@@ -251,7 +251,7 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     ///
     /// Called from the main actor. Safe: the state is lock guarded and the delivery
     /// itself is handed to `delivery`.
-    func noteSize(session: String, _ size: TerminalSize) {
+    package func noteSize(session: String, _ size: TerminalSize) {
         lock.lock()
         let changed = sizeForPane[session] != size
         sizeForPane[session] = size
@@ -312,13 +312,13 @@ final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// then wants to observe its result needs the barrier. Tests drive `ingest`
     /// from the test thread and assert on what a viewer received; in the app the
     /// flush timer gets the same ordering for free by running on this queue.
-    func waitForPendingDeliveries() {
+    package func waitForPendingDeliveries() {
         delivery.sync {}
     }
 
     /// Emits one `.data` per pane holding buffered output, dropping any trailing
     /// incomplete UTF-8 sequence into the next flush.
-    func flush() {
+    package func flush() {
         flush(sessions: nil)
     }
 
