@@ -390,9 +390,8 @@ package final class GhosttyService: TerminalService {
         // up. At the grid the pty is about to be spawned with, which is the only
         // grid there is until the surface reports its own.
         //
-        // Held by the relay's closure below and registered only once the terminal
-        // is, so each way out of this method that throws releases it with the
-        // relay and nothing has to remember to.
+        // Registered only once the surface exists, so each way out of this method
+        // that throws simply drops it and nothing has to remember to.
         //
         // Grapheme clustering is asked of the host here, once, because this is the
         // moment the surface is created from the same configuration. A terminal
@@ -418,12 +417,13 @@ package final class GhosttyService: TerminalService {
                 // The hub next and unconditionally: a live viewer's bytes must not
                 // wait behind anything, and this runs on the relay's queue precisely
                 // so they do not.
+                //
+                // This is also what feeds the terminal's screen model. Not a line
+                // of its own here, on purpose: the hub writes the model in the
+                // same step that accepts the chunk for delivery, which is the
+                // only way a paint taken from the model can line up with the
+                // stream that follows it. See `PaneStreamHub.onIngest`.
                 onOutput(session, bytes)
-                // Then the server's own terminal, on this queue and with no hop:
-                // the model takes its own lock. After the hub, because a viewer
-                // that is already attached is served by the live stream and gains
-                // nothing from waiting for a parse.
-                model.write(bytes)
                 // Then note that the screen moved, which is what keeps the paint a
                 // viewer attaching *next* is built from within `snapshotDebounce` of
                 // the truth. Weakly, so a service that is gone cannot be resurrected
@@ -458,11 +458,16 @@ package final class GhosttyService: TerminalService {
             throw error
         }
 
+        // Registered before the relay starts reading, because the first chunk is
+        // looked up here: the hub feeds the model it finds for the session, and a
+        // model registered a moment later would have missed the shell's first
+        // lines. Nothing after this point can throw, so nothing has to take it
+        // back out.
+        shared.note(model: model, for: session)
         relay.start(onExit: { [weak self] _ in
             Task { @MainActor in self?.reap(session) }
         })
         terminals[session] = Terminal(pty: pty, relay: relay)
-        shared.note(model: model, for: session)
         shared.note(live: liveSessions)
         onDisplayRequest(session)
 

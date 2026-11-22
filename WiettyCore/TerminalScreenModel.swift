@@ -43,6 +43,46 @@ package protocol TerminalScreenModel: AnyObject, Sendable {
     var size: TerminalSize { get }
 }
 
+extension TerminalScreenModel {
+    /// What a viewer is sent to show this terminal as it is now: its grid, then
+    /// the VT that paints it.
+    ///
+    /// The same two messages a viewer has always been painted with, so nothing
+    /// about the protocol moves; there are simply colours, modes and a real cursor
+    /// inside the second one. The size comes first because a viewer learns its
+    /// grid from this and from nothing else.
+    ///
+    /// The frame paints a terminal that has just been reset, and a viewer being
+    /// repainted after a resize is not one, so the payload starts by making it
+    /// close enough to one: see `TerminalPaint.reset`.
+    package func paintMessages() -> [RemoteMessage] {
+        let size = self.size
+        let frame = paintFrame()
+        guard !frame.isEmpty else { return [] }
+        return [.resize(cols: size.cols, rows: size.rows),
+                .data(TerminalPaint.reset + String(decoding: frame, as: UTF8.self))]
+    }
+}
+
+package enum TerminalPaint {
+    /// What a paint frame is prefixed with: a soft reset (DECSTR), erase the
+    /// screen, home.
+    ///
+    /// The frame itself erases nothing. It walks the rows and writes what is in
+    /// them, so on a viewer that already shows something, whatever a shorter row
+    /// leaves uncovered would stay. The soft reset is there for the margins and
+    /// origin mode: with either still set from before, the erase and every row
+    /// after it would land inside the old scrolling region.
+    ///
+    /// Deliberately not a hard reset, which would also throw away the scrollback
+    /// a viewer has built up from the stream, on every notch of a window drag.
+    /// And deliberately without leaving the alternate screen: a viewer that is
+    /// on it is there because the terminal is, the frame puts it there again
+    /// anyway, and leaving first would aim the erase at the primary screen the
+    /// viewer is keeping underneath.
+    package static let reset = "\u{1B}[!p\u{1B}[2J\u{1B}[H"
+}
+
 /// How much history a terminal's model keeps.
 ///
 /// One place, because the number is a memory decision: a retained row costs
