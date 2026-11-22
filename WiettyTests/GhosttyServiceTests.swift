@@ -84,6 +84,14 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
                        onTerminated: onTerminated)
     }
 
+    /// A service wired as the app wires it, for the tests that read a terminal
+    /// back. Through the stack, because the service does not write a screen model
+    /// itself: the hub does, and the stack is what connects the two. The service
+    /// keeps the hub alive through the hooks it was built with.
+    private func wiredService(_ host: FakeSurfaceHost) throws -> GhosttyService {
+        try #require(GhosttyStack(host: host, helperPath: "/usr/bin/true").ghosttyService)
+    }
+
     /// A program asking whether the terminal speaks `OSC 7501` gets the answer on
     /// its own stdin, byte for byte. The child puts its tty in raw mode first so the
     /// reply is neither echoed nor held for a newline, then prints what it read as
@@ -273,39 +281,17 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
     /// `terminate` would take the test host down with it rather than fail.
     @Test func anExitedTerminalKeepsItsSurfaceUntilItIsClosed() async throws {
         let host = FakeSurfaceHost()
-        let service = service(host)
+        let service = try wiredService(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "exit 0", badge: nil)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["died here"], cols: 80)
+                                            existingWindowId: nil,
+                                            command: "echo died-$((20+3))", badge: nil)
         try await waitUntil { service.liveSessions.isEmpty }
         #expect(host.destroyed.isEmpty)
         let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 10)
-        #expect(text == "died here")
+        #expect(text == "died-23")
         try await service.close(sessionId: handle.sessionId)
         #expect(host.destroyed == [handle.sessionId])
-    }
-
-    /// The pane swaps an ended terminal for its stopped screen (issue #70), which
-    /// takes the surface off screen, and libghostty reads an off-screen surface as
-    /// empty. Output arriving after the exit records nothing, because the refresh
-    /// skips exited terminals, so the one chance to keep the last screen is the
-    /// reap itself, while the surface is still in the window. Without that an MCP
-    /// read of the terminal the user was just looking at comes back as "".
-    @Test func reapingRecordsTheLastScreenForAnOffScreenRead() async throws {
-        let host = FakeSurfaceHost()
-        let service = service(host)
-        defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "exit 0", badge: nil)
-        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["last words"], cols: 80)
-        try await waitUntil { service.liveSessions.isEmpty }
-
-        // Off screen now: the stopped screen has replaced the surface.
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: [], cols: 80)
-        let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 10)
-        #expect(text == "last words")
     }
 
     /// Output is what brings the paint up to date, within `snapshotDebounce`.
@@ -464,11 +450,11 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
     /// that a user can read what died, and a query must not be what destroys it.
     @Test func anExitedTerminalIsNotFoundSoItsRowCanReopen() async throws {
         let host = FakeSurfaceHost()
-        let service = service(host)
+        let service = try wiredService(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "exit 0", badge: nil)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["died here"], cols: 80)
+                                            existingWindowId: nil,
+                                            command: "echo died-$((20+3))", badge: nil)
         try await waitUntil { service.liveSessions.isEmpty }
 
         let result = try await service.probe(sessionId: handle.sessionId)
@@ -476,7 +462,7 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         #expect(result.jobKnown == false)
         #expect(host.destroyed.isEmpty)
         #expect(try await service.readOutput(sessionId: handle.sessionId, maxLines: 10)
-                == "died here")
+                == "died-23")
     }
 
     /// The other half of that: the reopen path frees the surface the exited entry was
@@ -654,17 +640,23 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         #expect(FileManager.default.fileExists(atPath: socket) == false)
     }
 
-    /// `readOutput` is the MCP path and the one place the plain text limitation
-    /// costs nothing.
-    @Test func readOutputReturnsTheSnapshotRows() async throws {
+    /// `readOutput` is the MCP path: the most recent lines, capped at the number
+    /// asked for, with the blank rows below the last line left off.
+    @Test func readOutputReturnsTheMostRecentLines() async throws {
         let host = FakeSurfaceHost()
-        let service = service(host)
+        let service = try wiredService(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 5", badge: nil)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["one", "two", "three"], cols: 80)
-        let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 2)
-        #expect(text == "two\nthree")
+                                            existingWindowId: nil,
+                                            command: #"printf 'one\ntwo\nthree-%s\n' $((1+2)); sleep 5"#,
+                                            badge: nil)
+        try await waitUntil {
+            service.screenModel(for: handle.sessionId)?.text(maxLines: 10).contains("three-3") ?? false
+        }
+        #expect(try await service.readOutput(sessionId: handle.sessionId, maxLines: 10)
+                == "one\ntwo\nthree-3")
+        #expect(try await service.readOutput(sessionId: handle.sessionId, maxLines: 2)
+                == "two\nthree-3")
     }
 
     /// The protocol requires a throw for a session that is not there, and MCP
@@ -677,78 +669,27 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         }
     }
 
-    /// A terminal that is not the on-screen pane reads empty from the live surface.
-    /// libghostty's `read_text` succeeds but hands back no text for a surface that is
-    /// not the displayed pane, and the host turns that into a snapshot with empty rows
-    /// (`GhosttySurfaceHost.snapshot` returns `ScreenSnapshot(rows: [], ...)`, not
-    /// nil). That is the case for every MCP read, since the session read is almost
-    /// never the one pane the window shows, so `readOutput` must answer from the screen
-    /// recorded from the terminal's own output rather than return an empty string.
-    @Test func readOutputFallsBackToTheRecordedScreenWhenTheLiveReadIsEmpty() async throws {
+    /// A terminal that is not on screen reads in full, scrollback included.
+    ///
+    /// This is the read an agent makes, since the session it asks about is almost
+    /// never the one pane the window shows. A surface answers nothing for a
+    /// terminal that is not displayed, so this used to come back as one recorded
+    /// viewport however many lines were asked for. Nothing here is displayed at
+    /// all: the host is a fake with no window, and the answer still reaches two
+    /// hundred lines up, on a grid of thirty four rows.
+    @Test func readOutputReachesScrollbackForATerminalThatIsNotDisplayed() async throws {
         let host = FakeSurfaceHost()
-        let service = service(host)
+        let service = try wiredService(host)
         defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 5", badge: nil)
-        // The output path recorded a screen while the surface was still readable.
-        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["prompt$ echo hi", "hi"], cols: 80)
-        service.refreshSnapshots()
-        try #require(service.shared.snapshot(for: handle.sessionId)?.rows == ["prompt$ echo hi", "hi"])
-
-        // Now it is off-screen: the live read is an empty-rows screen, exactly as the
-        // real host produces for a surface that is not the displayed pane. This drives
-        // the `!live.rows.isEmpty` branch, which a nil read would skip over instead.
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: [], cols: 80)
-
-        let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 50)
-        #expect(text == "prompt$ echo hi\nhi")
-    }
-
-    /// The nil live read (a surface with no grid yet) falls back the same way. This is
-    /// the other shape a live read comes back unusable in, distinct from the empty-rows
-    /// off-screen case, and it too must reach the recorded screen rather than "".
-    @Test func readOutputFallsBackToTheRecordedScreenWhenTheSurfaceHasNoGrid() async throws {
-        let host = FakeSurfaceHost()
-        let service = service(host)
-        defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 5", badge: nil)
-        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["prompt$ echo hi", "hi"], cols: 80)
-        service.refreshSnapshots()
-        try #require(service.shared.snapshot(for: handle.sessionId)?.rows == ["prompt$ echo hi", "hi"])
-
-        // No grid: the host answers nil, not an empty-rows screen.
-        host.snapshots[handle.sessionId] = nil
-        host.sizes[handle.sessionId] = nil
-
-        let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 50)
-        #expect(text == "prompt$ echo hi\nhi")
-    }
-
-    /// The displayed pane answers from the live read, never the recorded screen. The
-    /// live read reaches scrollback and the recorded screen is only the viewport, so a
-    /// pane that is on screen must not be served the older, shorter recording. Guards
-    /// against the two branches of `readOutput` being swapped.
-    @Test func readOutputPrefersTheLiveReadOverAStaleRecordedScreen() async throws {
-        let host = FakeSurfaceHost()
-        let service = service(host)
-        defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 5", badge: nil)
-        // A stale screen is recorded first.
-        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["old recorded screen"], cols: 80)
-        service.refreshSnapshots()
-        try #require(service.shared.snapshot(for: handle.sessionId)?.rows == ["old recorded screen"])
-
-        // The pane is on screen now, so the live read has the current scrollback.
-        host.snapshots[handle.sessionId] =
-            ScreenSnapshot(rows: ["line one", "line two", "line three"], cols: 80)
-
-        let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 50)
-        #expect(text == "line one\nline two\nline three")
+        let handle = try await service.open(
+            folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
+            command: "i=0; while [ $i -lt 300 ]; do i=$((i+1)); echo row-$i; done; sleep 5",
+            badge: nil)
+        try await waitUntil {
+            service.screenModel(for: handle.sessionId)?.text(maxLines: 1).contains("row-300") ?? false
+        }
+        let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 200)
+        #expect(text.components(separatedBy: "\n") == (101...300).map { "row-\($0)" })
     }
 
     /// Recording a screen never replaces a real one with a blank. A surface reads

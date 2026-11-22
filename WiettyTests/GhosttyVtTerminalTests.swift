@@ -59,6 +59,50 @@ import WiettyCore
         #expect(terminal.scrollbackRows > 0)
     }
 
+    /// A line the terminal wrapped is one line of text, as a surface reports it.
+    /// Whoever reads this counts lines a program printed, not rows of a grid they
+    /// have never seen.
+    @Test func aWrappedLineIsOneLineOfText() throws {
+        let terminal = try terminal(cols: 10, rows: 6)
+        write("0123456789abcdefghijKLMNO\r\nshort", to: terminal)
+        #expect(terminal.viewportLines().count == 4)
+        #expect(terminal.text(maxLines: 10) == "0123456789abcdefghijKLMNO\nshort")
+    }
+
+    /// The cap counts lines, so it has to keep looking further up while the rows
+    /// it has read hold fewer lines than were asked for. Every line here takes
+    /// four rows, on a grid that shows five, far up into the scrollback.
+    @Test func theCapCountsLinesNotRows() throws {
+        let terminal = try terminal(cols: 10, rows: 5)
+        let body = String(repeating: "x", count: 32)
+        for line in 1...60 { write("\(100 + line)\(body)\r\n", to: terminal) }
+        let lines = terminal.text(maxLines: 25).components(separatedBy: "\n")
+        #expect(lines == (36...60).map { "\(100 + $0)\(body)" })
+    }
+
+    /// A read that starts part of the way up the history can start in the middle
+    /// of a wrapped line. The tail of that line is not a line, and must not come
+    /// back as the first one.
+    @Test func aLineCutByTheTopOfTheReadIsNotReturnedInPart() throws {
+        let terminal = try terminal(cols: 10, rows: 3)
+        for line in 1...40 { write("head\(100 + line)-tail-of-the-line\r\n", to: terminal) }
+        for count in 1...12 {
+            let lines = terminal.text(maxLines: count).components(separatedBy: "\n")
+            #expect(lines.count == count)
+            #expect(lines.allSatisfy { $0.hasPrefix("head") && $0.hasSuffix("-tail-of-the-line") },
+                    "asked for \(count): \(lines)")
+        }
+    }
+
+    /// Asking for more than there is returns what there is, and a number that
+    /// large must not overflow the arithmetic on the way.
+    @Test func askingForMoreLinesThanThereAreReturnsThemAll() throws {
+        let terminal = try terminal(cols: 40, rows: 5)
+        for line in 1...12 { write("line \(line)\r\n", to: terminal) }
+        let lines = terminal.text(maxLines: .max).components(separatedBy: "\n")
+        #expect(lines == (1...12).map { "line \($0)" })
+    }
+
     /// A chunk boundary can fall anywhere, including inside an escape sequence or a
     /// multibyte character. The relay hands over whatever one read returned.
     @Test func aSequenceSplitAcrossWritesIsStillOneSequence() throws {

@@ -197,31 +197,47 @@ package final class GhosttyVtTerminal {
     /// The last `maxLines` lines of plain text, oldest first, reaching into
     /// scrollback when the visible screen holds fewer.
     ///
-    /// One line per row of the grid: a line the terminal wrapped stays wrapped.
-    /// Trailing spaces are removed from each line, and the blank rows below the
-    /// last one with text are not lines at all, so a prompt at the top of an empty
-    /// screen comes back as that one line rather than as a screenful.
+    /// A line is a line the program printed, not a row of the grid: one the
+    /// terminal wrapped comes back joined, which is how a surface reports its
+    /// text and what a reader counting lines means by one. Trailing spaces are
+    /// removed from each line, and the blank rows below the last one with text
+    /// are not lines at all, so a prompt at the top of an empty screen comes back
+    /// as that one line rather than as a screenful.
     package func text(maxLines: Int) -> String {
         guard maxLines > 0 else { return "" }
         let size = self.size
         let total = count(GHOSTTY_TERMINAL_DATA_TOTAL_ROWS)
         guard total > 0 else { return "" }
         // The last line with text is somewhere in the active screen or above it,
-        // so `maxLines` rows above the active screen plus the active screen itself
-        // always contain the lines asked for. Formatting just that window, rather
-        // than everything, is what keeps a small read cheap on a deep scrollback.
-        let first = max(total - size.rows - maxLines, 0)
-        guard let selection = selection(tag: GHOSTTY_POINT_TAG_SCREEN,
-                                        firstRow: first,
-                                        lastRow: total - 1,
-                                        cols: size.cols) else { return "" }
-        let bytes = format(emit: GHOSTTY_FORMATTER_FORMAT_PLAIN,
-                           extras: GHOSTTY_FORMATTER_EXTRAS_NONE,
-                           trim: true,
-                           unwrap: false,
-                           selection: selection)
-        let lines = String(decoding: bytes, as: UTF8.self).components(separatedBy: "\n")
-        return lines.suffix(maxLines).joined(separator: "\n")
+        // so the active screen plus one row per line asked for holds the answer
+        // when nothing is wrapped. Formatting just that window, rather than
+        // everything, is what keeps a small read cheap on a deep scrollback.
+        //
+        // One row more than that, and one line more than asked for before the
+        // window is accepted: a window that does not start at the top of the
+        // history can start in the middle of a wrapped line, and that first entry
+        // is then the tail of a line, not a line. It is only ever dropped, never
+        // returned.
+        var window = min(total, size.rows + min(maxLines, total) + 1)
+        while true {
+            let first = total - window
+            guard let selection = selection(tag: GHOSTTY_POINT_TAG_SCREEN,
+                                            firstRow: first,
+                                            lastRow: total - 1,
+                                            cols: size.cols) else { return "" }
+            let bytes = format(emit: GHOSTTY_FORMATTER_FORMAT_PLAIN,
+                               extras: GHOSTTY_FORMATTER_EXTRAS_NONE,
+                               trim: true,
+                               unwrap: true,
+                               selection: selection)
+            let lines = String(decoding: bytes, as: UTF8.self).components(separatedBy: "\n")
+            // Wrapped lines make a window hold fewer lines than rows. Doubling
+            // reaches the top of the history in a handful of steps at worst.
+            if first == 0 || lines.count > maxLines {
+                return lines.suffix(maxLines).joined(separator: "\n")
+            }
+            window = min(total, window * 2)
+        }
     }
 
     /// The visible viewport as plain text, one entry per row that has text or has a
