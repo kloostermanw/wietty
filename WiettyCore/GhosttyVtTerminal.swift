@@ -142,8 +142,8 @@ package final class GhosttyVtTerminal {
 
     /// VT that paints the visible viewport into a terminal that has just been
     /// reset: the cells with their colours and attributes, then the cursor, the
-    /// modes, the palette, the scrolling region, the tab stops and the rest of what
-    /// the formatter can carry.
+    /// modes, the scrolling region, the tab stops and the rest of what the
+    /// formatter can carry, the palette excepted (see `paintExtras`).
     ///
     /// The viewport only, by a selection between its two corners. That is what a
     /// client attaching now needs, and it costs a hundredth of formatting the whole
@@ -159,11 +159,24 @@ package final class GhosttyVtTerminal {
                                         lastRow: size.rows - 1,
                                         cols: size.cols) else { return [] }
         return format(emit: GHOSTTY_FORMATTER_FORMAT_VT,
-                      extras: GHOSTTY_FORMATTER_EXTRAS_ALL,
+                      extras: Self.paintExtras,
                       trim: false,
                       unwrap: false,
                       selection: selection)
     }
+
+    /// Everything the formatter can restore except the palette.
+    ///
+    /// The palette extra writes all 256 entries with `OSC 4`, and what it writes
+    /// is this terminal's own table, which nothing configures: the library's
+    /// default colours, not the theme the surface draws with and not the theme
+    /// of whoever is attaching. Sent to a viewer it would replace that viewer's
+    /// colours with a third set for as long as it stays attached, and add about
+    /// six kilobytes to every frame to do it. Without it a viewer keeps drawing
+    /// indexed colours with its own theme, as it does for the stream. The one
+    /// thing lost is a palette entry a program changed before the attach.
+    private static let paintExtras: GhosttyFormatterExtras =
+        GHOSTTY_FORMATTER_EXTRAS_ALL & ~GHOSTTY_FORMATTER_EXTRA_PALETTE
 
     /// The whole terminal in libghostty-vt's snapshot format: both screens, the
     /// scrollback, the title and the modes. For restoring a terminal, not for
