@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// The copy-and-paste handle for a managed process or test. It is what the "Copy ID

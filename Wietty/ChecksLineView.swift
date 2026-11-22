@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 struct ChecksLineView: View {
     let summary: ChecksSummary

@@ -1,4 +1,5 @@
 import Testing
+import WiettyCore
 @testable import Wietty
 
 @Suite struct ProcessLogBufferTests {

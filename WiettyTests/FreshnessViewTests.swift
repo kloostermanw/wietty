@@ -1,6 +1,7 @@
-import Testing
 import Foundation
 import SwiftUI
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// The freshness detail popover renders its actionable results without a wiring

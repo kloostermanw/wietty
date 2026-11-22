@@ -1,6 +1,7 @@
-import Testing
 import Foundation
 import MCP
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// Drives the MCP server through `StatelessHTTPServerTransport.handleRequest`,

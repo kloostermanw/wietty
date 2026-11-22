@@ -579,7 +579,7 @@ package final class GhosttyService: TerminalService {
         return recorded.rows.joined(separator: "\n")
     }
 
-    func select(_ session: String?) {
+    package func select(_ session: String?) {
         guard selected != session else { return }
         // The outgoing terminal's screen is recorded before it leaves the view
         // hierarchy. It keeps running and keeps producing bytes, but nothing

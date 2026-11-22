@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WiettyCore
 @testable import Wietty
 
 @Suite @MainActor struct ProjectStoreURLTests {

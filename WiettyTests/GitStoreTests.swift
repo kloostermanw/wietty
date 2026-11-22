@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 final class FakeGitInfoProvider: GitInfoProviding, @unchecked Sendable {

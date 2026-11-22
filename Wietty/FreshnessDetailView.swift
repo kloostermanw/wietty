@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 /// The popover shown when the card's `!` marker is clicked: the freshness checks
 /// that are asking for action, each with its instruction and, when the command
