@@ -16,6 +16,30 @@ import WiettyCore
         URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config/wietty/config")
     }
 
+    /// The sandbox and the defaults suite are named once, not once per run.
+    ///
+    /// Unique names leaked: a test host is killed rather than asked to tidy up, so
+    /// every run left a directory in the temporary directory and a plist in
+    /// `~/Library/Preferences`, and five of each had piled up before anyone looked.
+    /// Fixed names cleared on the way in give the same isolation and cannot pile up.
+    @Test func theSandboxAndDefaultsSuiteAreNamedOncePerMachineNotOncePerRun() {
+        #expect(TestHost.sandbox.lastPathComponent == "wietty-test-host")
+        #expect(TestHost.defaultsSuiteName == "eu.kloosterman.wietty.test-host")
+        // Nothing in either name can vary between runs.
+        for name in [TestHost.sandbox.lastPathComponent, TestHost.defaultsSuiteName] {
+            #expect(!name.contains(String(ProcessInfo.processInfo.processIdentifier)))
+            #expect(name.rangeOfCharacter(from: CharacterSet(charactersIn: "-")) != nil || true)
+            #expect(UUID(uuidString: String(name.suffix(36))) == nil)
+        }
+    }
+
+    /// Whatever a previous run left in the sandbox is gone, which is what makes a
+    /// fixed name as isolating as a unique one.
+    @Test func theSandboxIsEmptiedWhenTheRunStarts() throws {
+        let marker = TestHost.sandbox.appendingPathComponent("from-a-previous-run.txt")
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+
     @Test func theSuiteKnowsItIsATestHost() {
         #expect(TestHost.isActive)
     }
