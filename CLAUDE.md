@@ -16,12 +16,14 @@ in `wietty-shared`, so a protocol change must not be applied twice.
 Which side of the remote protocol lives where decides which repo a bug belongs in:
 
 - **Served side, only here.** `RemoteServer`, `WorkspaceSerializer`, `RemoteAccessToken`, and the
-  terminal itself: `GhosttyService`, `TerminalRelay`, `RawPTY`, `PaneStreamHub`,
-  `GhosttySurfaceHost` and the bundled `wietty-pty` helper. All of those are in the
-  `WiettyCore` target except `GhosttySurfaceHost`, which stays in the app because it is the
-  one type that touches an `NSView`. A rendering or streaming fault
-  reaches every client (browser, this app's own pane, and the iPad), so reproduce it here before
-  suspecting a client.
+  terminal itself: `GhosttyService`, `TerminalRelay`, `RawPTY`, `PaneStreamHub`, the server's own
+  screen model (`TerminalScreenModel`, `GhosttyVtTerminal`), `GhosttySurfaceHost` and the bundled
+  `wietty-pty` helper. All of those are in the `WiettyCore` target except `GhosttySurfaceHost`,
+  which stays in the app because it is the one type that touches an `NSView`. A rendering or
+  streaming fault reaches every client of the stream (the browser, the iPad, and another Mac's
+  remote pane), so reproduce it here before suspecting a client. This app's own pane is not one of
+  them until phase 3 of issue #84: it shows the libghostty surface, so a fault seen only there is
+  the surface's and one seen only by a client is the model's or the stream's.
 
 - **Controlling side, in `wietty-shared`.** `RemoteWorkspaceStore`, `RemoteWorkspacesController`,
   `RemoteTerminalConnection`, `RemoteSnapshotDecoder`, `RemoteConnection`, `SecretStore`. This app
