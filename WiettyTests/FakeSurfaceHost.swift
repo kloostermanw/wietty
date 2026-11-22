@@ -67,8 +67,16 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// snapshot no longer has is out of range for anything that paints it, and
     /// the real host cannot produce that state: it derives the cursor from the
     /// rows it returns.
+    /// How many times each id's screen has been read.
+    ///
+    /// The count, not just the last `maxLines`, because when a screen is captured is
+    /// itself behaviour: the service records the outgoing terminal's screen before it
+    /// leaves the pane, which is its last chance while libghostty can still read it.
+    private(set) var snapshotCalls: [String: Int] = [:]
+
     func snapshot(id: String, maxLines: Int) -> ScreenSnapshot? {
         requestedMaxLines[id] = maxLines
+        snapshotCalls[id, default: 0] += 1
         guard let full = snapshots[id] else { return nil }
         guard full.rows.count > maxLines else { return full }
         let dropped = full.rows.count - maxLines
