@@ -166,9 +166,11 @@ package final class GhosttyService: TerminalService {
     private let onProgramStatus: @Sendable (String, ProgramStatusScanner.Event) -> Void
     private let onTerminated: @MainActor (String) -> Void
     /// Builds the screen model of a terminal that is being opened, at the grid it
-    /// is opened with. Injected so a test can hand the service a model it can
-    /// inspect; the default is the real one.
-    private let makeScreenModel: @MainActor (TerminalSize) throws -> any TerminalScreenModel
+    /// is opened with and with grapheme clustering as the host says its surfaces
+    /// have it. Injected so a test can hand the service a model it can inspect; the
+    /// default is the real one.
+    private let makeScreenModel: @MainActor (TerminalSize, _ graphemeClustering: Bool) throws
+        -> any TerminalScreenModel
     private var terminals: [String: Terminal] = [:]
 
     /// The terminal the frontend says is on screen, as it last told us.
@@ -246,8 +248,9 @@ package final class GhosttyService: TerminalService {
          onStreamEnded: @escaping @Sendable (String) -> Void = { _ in },
          onProgramStatus: @escaping @Sendable (String, ProgramStatusScanner.Event) -> Void = { _, _ in },
          onDisplayRequest: @escaping @MainActor (String?) -> Void = { _ in },
-         makeScreenModel: @escaping @MainActor (TerminalSize) throws -> any TerminalScreenModel
-             = { try GhosttyVtScreenModel(size: $0) },
+         makeScreenModel: @escaping @MainActor (TerminalSize, _ graphemeClustering: Bool) throws
+             -> any TerminalScreenModel
+             = { try GhosttyVtScreenModel(size: $0, graphemeClustering: $1) },
          onTerminated: @escaping @MainActor (String) -> Void) {
         self.host = host
         self.helperPath = helperPath
@@ -390,7 +393,12 @@ package final class GhosttyService: TerminalService {
         // Held by the relay's closure below and registered only once the terminal
         // is, so each way out of this method that throws releases it with the
         // relay and nothing has to remember to.
-        let model = try makeScreenModel(Self.initialSize)
+        //
+        // Grapheme clustering is asked of the host here, once, because this is the
+        // moment the surface is created from the same configuration. A terminal
+        // that is already open keeps what it started with, as its surface's
+        // default modes do.
+        let model = try makeScreenModel(Self.initialSize, host.graphemeClustering)
         let pty = try RawPTY.spawn(command: command, directory: folder, environment: [:],
                                    size: Self.initialSize, shell: shell)
         let onOutput = self.onOutput

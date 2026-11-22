@@ -24,6 +24,10 @@
 # used: it resolves every package from scratch, and that fails whenever a
 # dependency's tag has moved since Package.resolved recorded it.
 #
+# Set WIETTY_COEXISTENCE_GRAPHEME=legacy to run it with grapheme clustering turned
+# off in the surface's configuration, which is what a user with
+# "grapheme-width-method = legacy" in their Ghostty config has.
+#
 # Usage: scripts/coexistence-check.sh
 
 set -euo pipefail
@@ -44,7 +48,8 @@ echo "Building with the address sanitizer and running the check. Full log: ${LOG
 
 # TEST_RUNNER_ is how xcodebuild passes a variable through to the test host.
 set +e
-TEST_RUNNER_WIETTY_COEXISTENCE_CHECK=1 xcodebuild \
+TEST_RUNNER_WIETTY_COEXISTENCE_CHECK=1 \
+TEST_RUNNER_WIETTY_COEXISTENCE_GRAPHEME="${WIETTY_COEXISTENCE_GRAPHEME:-}" xcodebuild \
   -scheme Wietty \
   -destination 'platform=macOS' \
   -enableAddressSanitizer YES \

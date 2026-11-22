@@ -22,6 +22,12 @@ import WiettyCore
 /// turns the address sanitizer on. Without the variable the suite is reported as
 /// skipped.
 ///
+/// With `WIETTY_COEXISTENCE_GRAPHEME=legacy` as well, the surface is built from a
+/// configuration that sets `grapheme-width-method = legacy`, and the vt terminal is
+/// built the way `GhosttyService` builds a model: with whatever the host resolved.
+/// That is the run that shows the two still agree on emoji for a user who chose
+/// that setting. `scripts/coexistence-check.sh` passes the variable through.
+///
 /// It builds a `GhosttySurfaceHost` of its own beside the one the hosting app built
 /// at launch. The host's callbacks reach "the current host" through a static, so
 /// the app's own host stops being ticked once this one exists. Nothing else runs in
@@ -62,7 +68,19 @@ import WiettyCore
         let scriptURL = directory.appendingPathComponent("run.sh")
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
 
+        // The overlay is the sandbox's under a test host, and the host built below
+        // loads it after the user's own config, so this decides the setting
+        // whatever that config says.
+        let overlay = GhosttyOverrideFile.defaultURL
+        if CoexistenceCheck.legacyGraphemes {
+            try FileManager.default.createDirectory(at: overlay.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try "grapheme-width-method = legacy\n".write(to: overlay, atomically: true, encoding: .utf8)
+        }
+        defer { if CoexistenceCheck.legacyGraphemes { try? FileManager.default.removeItem(at: overlay) } }
+
         let host = try GhosttySurfaceHost()
+        if CoexistenceCheck.legacyGraphemes { #expect(host.graphemeClustering == false) }
         let id = "coexistence"
         try host.createSurface(id: id, command: "/bin/sh \(scriptURL.path)", directory: directory, title: nil)
         defer { host.destroySurface(id: id) }
@@ -82,7 +100,9 @@ import WiettyCore
         defer { window.close() }
 
         let size = try await settledSize(of: id, in: host)
-        let terminal = try GhosttyVtTerminal(size: size, scrollbackLines: 10_000)
+        let terminal = try GhosttyVtTerminal(size: size,
+                                             scrollbackLines: 10_000,
+                                             graphemeClustering: host.graphemeClustering)
 
         var totalBytes = 0
         var cellsCompared = 0
@@ -126,6 +146,7 @@ import WiettyCore
         print("""
         COEXISTENCE: \(kinds.count) segments, \(totalBytes) bytes, grid \(size.cols)x\(size.rows), \
         \(cellsCompared) cells compared, address sanitizer \(Self.addressSanitizerIsOn ? "ON" : "OFF"), \
+        grapheme clustering \(host.graphemeClustering ? "ON" : "OFF"), \
         libghostty \(GhosttySurfaceHost.libraryVersion())
         """)
     }
@@ -204,6 +225,12 @@ import WiettyCore
 enum CoexistenceCheck {
     static var isRequested: Bool {
         ProcessInfo.processInfo.environment["WIETTY_COEXISTENCE_CHECK"] == "1"
+    }
+
+    /// Whether the run is the one with grapheme clustering turned off in the
+    /// surface's configuration.
+    static var legacyGraphemes: Bool {
+        ProcessInfo.processInfo.environment["WIETTY_COEXISTENCE_GRAPHEME"] == "legacy"
     }
 }
 
