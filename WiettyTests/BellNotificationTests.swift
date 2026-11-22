@@ -651,7 +651,7 @@ import WiettyShared
         let ref = store.projects[0].terminals[0]
 
         var rung: [(String, UUID)] = []
-        store.onBell = { project, ref in rung.append((project.name, ref.id)) }
+        store.events.onBell { project, ref in rung.append((project.name, ref.id)) }
 
         store.handle(.bell(sessionId: "sess-A"))
         #expect(rung.count == 1)
@@ -669,7 +669,7 @@ import WiettyShared
         await store.openClaude(for: store.projects[0])
 
         var count = 0
-        store.onBell = { _, _ in count += 1 }
+        store.events.onBell { _, _ in count += 1 }
         store.handle(.bell(sessionId: "sess-A"))
         store.handle(.bell(sessionId: "sess-A"))
         store.handle(.bell(sessionId: "sess-A"))
@@ -688,7 +688,7 @@ import WiettyShared
         let ref = store.projects[0].terminals[0]
 
         var count = 0
-        store.onBell = { _, _ in count += 1 }
+        store.events.onBell { _, _ in count += 1 }
         store.handle(.bell(sessionId: "sess-A"))
         await store.activate(ref, in: store.projects[0])
         store.handle(.bell(sessionId: "sess-A"))
@@ -703,7 +703,7 @@ import WiettyShared
         await store.openClaude(for: store.projects[0])
 
         var count = 0
-        store.onBell = { _, _ in count += 1 }
+        store.events.onBell { _, _ in count += 1 }
         store.handle(.bell(sessionId: "someone-elses-session"))
         #expect(count == 0)
     }
@@ -720,7 +720,7 @@ import WiettyShared
         let ref = store.projects[0].terminals[0]
 
         var posted: [(String, UUID, String, String)] = []
-        store.onNotification = { project, ref, title, body in
+        store.events.onNotification { project, ref, title, body in
             posted.append((project.name, ref.id, title, body))
         }
 
@@ -747,7 +747,7 @@ import WiettyShared
         await store.openClaude(for: store.projects[0])
 
         var bodies: [String] = []
-        store.onNotification = { _, _, _, body in bodies.append(body) }
+        store.events.onNotification { _, _, _, body in bodies.append(body) }
         store.handle(.notification(sessionId: "sess-A", title: "", body: "Waiting for input"))
         store.handle(.notification(sessionId: "sess-A", title: "", body: "Build failed"))
         #expect(bodies == ["Waiting for input", "Build failed"])
@@ -763,7 +763,7 @@ import WiettyShared
         await store.openClaude(for: store.projects[0])
 
         var bells = 0
-        store.onBell = { _, _ in bells += 1 }
+        store.events.onBell { _, _ in bells += 1 }
         store.handle(.notification(sessionId: "sess-A", title: "", body: "Waiting for input"))
         store.handle(.bell(sessionId: "sess-A"))
         #expect(bells == 0)
@@ -777,7 +777,7 @@ import WiettyShared
         await store.openClaude(for: store.projects[0])
 
         var count = 0
-        store.onNotification = { _, _, _, _ in count += 1 }
+        store.events.onNotification { _, _, _, _ in count += 1 }
         store.handle(.notification(sessionId: "someone-elses-session", title: "", body: "hi"))
         #expect(count == 0)
         #expect(store.attention.isEmpty)
@@ -796,7 +796,7 @@ import WiettyShared
         let ref = store.projects[0].terminals[0]
 
         var cleared: [Set<UUID>] = []
-        store.onAttentionCleared = { cleared.append($0) }
+        store.events.onAttentionCleared { cleared.append($0) }
 
         store.handle(.bell(sessionId: "sess-A"))
         #expect(cleared.isEmpty)
@@ -816,7 +816,7 @@ import WiettyShared
 
         store.handle(.bell(sessionId: "sess-A"))
         var cleared: [Set<UUID>] = []
-        store.onAttentionCleared = { cleared.append($0) }
+        store.events.onAttentionCleared { cleared.append($0) }
         await store.closeTerminal(ref, in: store.projects[0])
         #expect(cleared == [[ref.id]])
     }

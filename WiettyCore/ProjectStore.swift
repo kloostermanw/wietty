@@ -52,28 +52,16 @@ package final class ProjectStore: SettingsPairSource {
             // (activating, closing, restarting, renaming, removing a row), and a hook
             // on each would be a hook forgotten on the next one.
             let cleared = oldValue.subtracting(attention)
-            if !cleared.isEmpty { onAttentionCleared?(cleared) }
+            if !cleared.isEmpty { events.emit(.attentionCleared(cleared)) }
         }
     }
-    /// Called when a bell arrives for a tracked row, and only when it turns the
-    /// row's attention flag on rather than on every bell. A program ringing in a
-    /// loop is then one event, and visiting the row re-arms it.
-    package var onBell: ((Project, TerminalRef) -> Void)?
-    /// Called for every desktop notification a process asks for on a tracked row,
-    /// including the second one on a row that is already flagged.
+    /// What the store did that the frontend has to react to: bells, notifications,
+    /// program status and attention being cleared.
     ///
-    /// Deliberately not the once-per-flag rule `onBell` uses. That rule exists
-    /// because a shell rings the bell for ambiguous tab completion, so a bell is
-    /// ambiguous by nature and a run of them says nothing new. An `OSC 9` is a
-    /// program choosing to send words, and an agent that says "waiting for input"
-    /// and then "build failed" has said two things; suppressing the second because
-    /// the row had not been visited would lose the one that matters. Nothing stacks
-    /// as a result: the identifier is per terminal, so the newer banner replaces the
-    /// older one.
-    package var onNotification: ((Project, TerminalRef, _ title: String, _ body: String) -> Void)?
-    /// Called with the row ids whose attention flag has just been cleared, so a
-    /// notification about a bell that has been dealt with can be taken back.
-    package var onAttentionCleared: ((Set<UUID>) -> Void)?
+    /// One channel rather than the four optional closures this replaced. Delivery is
+    /// synchronous and the events are values, which is what makes the four rules
+    /// above survive a move into another process. See `StoreEventSink`.
+    package let events = StoreEventSink()
     package private(set) var jobNames: [UUID: String] = [:]
 
     /// Live agent-reported tab titles, keyed by terminal id. Display-only and
@@ -108,11 +96,6 @@ package final class ProjectStore: SettingsPairSource {
     /// effects a person notices to be rate limited. The row itself is never held
     /// back: only the banner.
     package static let programStatusBannerInterval: Duration = .seconds(2)
-    /// Called when a row's program status starts waiting on the user, finishes, or
-    /// fails, under `.programStatus` only, with the record the row now shows. The
-    /// row's attention flag is raised the same way a notification raises it, so
-    /// visiting the row withdraws the banner through the one path every flag uses.
-    package var onProgramStatus: ((Project, TerminalRef, ProgramStatusRecord) -> Void)?
     /// Read for the banner rate limit. Injected so a test can move time by hand.
     private let now: @MainActor () -> ContinuousClock.Instant
 
@@ -1068,7 +1051,7 @@ package final class ProjectStore: SettingsPairSource {
             // Center, and re-posting would replace it with an identical copy for
             // every beep an ambiguous tab completion makes.
             if attention.insert(projects[p].terminals[t].id).inserted {
-                onBell?(projects[p], projects[p].terminals[t])
+                events.emit(.bell(project: projects[p], ref: projects[p].terminals[t]))
             }
         case .notification(let sessionId, let title, let body):
             guard let (p, t) = indexOfSession(sessionId) else { return }
@@ -1082,7 +1065,8 @@ package final class ProjectStore: SettingsPairSource {
             // reported is every notification rather than only the transition; see
             // `onNotification` for why the two rules differ.
             attention.insert(projects[p].terminals[t].id)
-            onNotification?(projects[p], projects[p].terminals[t], title, body)
+            events.emit(.notification(project: projects[p], ref: projects[p].terminals[t],
+                                      title: title, body: body))
         case .job(let sessionId, let jobName):
             guard let (p, t) = indexOfSession(sessionId) else { return }
             // Change-guarded: the poll emits an event for every terminal on every
@@ -1160,7 +1144,7 @@ package final class ProjectStore: SettingsPairSource {
         let now = now()
         if let last = lastProgramStatusBanner[ref.id], now - last < Self.programStatusBannerInterval { return }
         lastProgramStatusBanner[ref.id] = now
-        onProgramStatus?(projects[p], ref, after)
+        events.emit(.programStatus(project: projects[p], ref: ref, record: after))
     }
 
     /// The user has looked at this row, so a finished or failed program's result

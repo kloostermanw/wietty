@@ -843,7 +843,7 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         await store.openClaude(for: store.projects[0])
         let ref = store.projects[0].terminals[0]
         var cleared: [Set<UUID>] = []
-        store.onAttentionCleared = { cleared.append($0) }
+        store.events.onAttentionCleared { cleared.append($0) }
 
         store.handle(.bell(sessionId: "sess-A"))
         #expect(store.attention.contains(ref.id))

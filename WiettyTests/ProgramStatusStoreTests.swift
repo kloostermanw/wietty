@@ -44,8 +44,8 @@ import WiettyCore
         await store.openClaude(for: store.projects[0])
         store.notificationSource = source
         let posted = Posted()
-        store.onProgramStatus = { _, _, record in posted.statuses.append(record) }
-        store.onNotification = { _, _, _, body in posted.notifications.append(body) }
+        store.events.onProgramStatus { _, _, record in posted.statuses.append(record) }
+        store.events.onNotification { _, _, _, body in posted.notifications.append(body) }
         return Fixture(store: store, clock: clock, posted: posted)
     }
 
