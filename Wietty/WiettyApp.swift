@@ -16,7 +16,7 @@ struct WiettyApp: App {
     /// is the app's business and phase 5 makes it outlive any window.
     /// Which local terminal the pane shows. Owned here rather than by `ContentView`
     /// for the reason `router` is. See `TerminalSelection`.
-    @State private var selection = TerminalSelection()
+    @State private var selection: TerminalSelection
     @State private var runtime = ServerRuntime()
     @State private var updates = UpdateService()
     @StateObject private var remoteConnections: RemoteConnectionsStore
@@ -28,7 +28,7 @@ struct WiettyApp: App {
     /// holds the tap until `ContentView` is ready for it.
     @State private var bells = BellNotifier(sink: SystemNotificationSink())
     /// What the window's pane is showing over its terminal. See `PaneRouter`.
-    @State private var router = PaneRouter()
+    @State private var router: PaneRouter
     /// The prompt templates the settings page edits and the popup lists. Built here
     /// rather than in `ContentView` for the same reason `router` is: ⌘P and the app
     /// menu item are declared in the scene's `commands`, which cannot reach a view's
@@ -54,6 +54,14 @@ struct WiettyApp: App {
         _store = State(wrappedValue: projects)
         // Shares the store's writer, so both halves of the settings still land in one
         // file in one order, and reads the groups from it to resolve the selection.
+        let paneSelection = TerminalSelection()
+        let paneRouter = PaneRouter()
+        _selection = State(wrappedValue: paneSelection)
+        _router = State(wrappedValue: paneRouter)
+        // Before any scene exists, so nothing a request is raised for can be dropped
+        // for want of somewhere to send it. See `TerminalSelectionWiring`.
+        TerminalSelectionWiring.connect(selection: paneSelection, terminals: stack,
+                                        store: projects, router: paneRouter)
         _preferences = State(wrappedValue: UIPreferences(
             launch: projects.launch,
             writer: projects.settingsWriter,

@@ -132,31 +132,9 @@ struct ContentView: View {
             // session id is dead. Cleared before the monitor starts, so no event
             // can arrive for an id that is about to be wiped.
             store.clearDeadSessions()
-            // Everything that can move the pane now arrives as a request: the
-            // service raises one when a terminal is opened or the displayed one is
-            // closed, and the store raises one when a row is activated, from a click,
-            // from `select_process` or from an iPad. They are honoured here, in the
-            // turn they arrive, so the pane moves exactly when it used to.
-            selection.onChanged = { [weak service = terminals.ghostty.ghosttyService] previous, current in
-                // The outgoing terminal's screen, recorded while libghostty can still
-                // read it. See `GhosttyService.displayedSessionChanged`.
-                service?.displayedSessionChanged(from: previous, to: current)
-                // A local terminal coming into view takes the pane back from whatever
-                // was covering it, which is what makes opening or focusing one show it
-                // even while a remote session, a log or settings is on screen. Closing
-                // one local terminal while another remains also takes the pane, and
-                // this cannot tell that apart from a click.
-                //
-                // This is not the whole of it: `show` returns early when the session is
-                // already the displayed one, so re-activating the terminal the pane was
-                // already showing arrives nowhere. `activate` clears the override itself
-                // for that reason.
-                router.localSelectionChanged(to: current)
-            }
-            terminals.ghostty.displayRequests.handler = { session in selection.show(session) }
-            store.events.subscribe { event in
-                if case let .showTerminal(sessionId) = event { selection.show(sessionId) }
-            }
+            // The selection is already wired, by `TerminalSelectionWiring` while the
+            // app built its object graph. Doing it here would drop any request raised
+            // before the first view appeared.
             if terminals.ghostty.ghosttyService != nil {
                 // Typing into the pane answers whatever bell the terminal on screen
                 // rang: its attention flag comes down on the first keystroke, so a
