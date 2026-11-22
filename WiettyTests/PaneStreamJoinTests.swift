@@ -274,3 +274,41 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
         #expect(fed.bytes("gt:2") == Array("other".utf8))
     }
 }
+
+/// The same join, end to end: a real shell printing into a real pty, through the
+/// relay, the service and the hub as `GhosttyStack` wires them.
+@MainActor
+@Suite struct PaneStreamJoinEndToEndTests {
+    @Test func aViewerAttachingToARunningCommandSeesEveryLineExactlyOnce() async throws {
+        let lines = 12_000
+        var attachedWhileRunning = 0
+        for round in 0..<6 {
+            let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+            defer { stack.ghosttyService?.closeAll() }
+            let handle = try await stack.service.open(
+                folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
+                command: "i=0; while [ $i -lt \(lines) ]; do i=$((i+1)); echo $i; done", badge: nil)
+            // A different point in the run each round, the first before the shell
+            // has printed anything.
+            try await Task.sleep(for: .milliseconds(round * 25))
+            let log = ViewerLog()
+            stack.hub.attach(session: handle.sessionId) { log.add($0) }
+            let deadline = ContinuousClock.now + .seconds(20)
+            while !log.messages.contains(.ended), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            try #require(log.messages.contains(.ended), "round \(round): the command never ended")
+            // Attached after it had already exited: answered `ended` and nothing
+            // else, which is the census doing its job and says nothing here.
+            guard log.messages != [.ended] else { continue }
+            attachedWhileRunning += 1
+
+            let shown = try replay(log.messages, scrollbackLines: 20_000)
+            if let fault = faultInNumberedLines(shown, endingAt: lines) {
+                Issue.record("round \(round): \(fault)")
+                return
+            }
+        }
+        #expect(attachedWhileRunning > 0)
+    }
+}

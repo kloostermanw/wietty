@@ -123,18 +123,6 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         timer = source
     }
 
-    /// Builds the paint sent to a viewer on attach: clear, home, the visible
-    /// rows, then the cursor. A session sitting idle produces no output, so a
-    /// viewer that only subscribed would face a blank screen until something
-    /// happened to change it.
-    package static func paintMessages(rows: [String], cursorX: Int, cursorY: Int,
-                              cols: Int, rows rowCount: Int) -> [RemoteMessage] {
-        var vt = "\u{1B}[2J\u{1B}[H"
-        vt += rows.joined(separator: "\r\n")
-        vt += "\u{1B}[\(cursorY + 1);\(cursorX + 1)H"
-        return [.resize(cols: cols, rows: rowCount), .data(vt)]
-    }
-
     /// Ends every viewer of one session. Called when that session's terminal has
     /// stopped producing bytes for good: its child exited, or the row was closed.
     ///

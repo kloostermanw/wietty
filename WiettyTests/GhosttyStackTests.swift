@@ -261,30 +261,38 @@ private final class Flag: @unchecked Sendable {
         #expect(printed)
     }
 
-    /// A viewer attaching to a live terminal is handed the recorded screen before
-    /// any live byte, or it faces a blank one until something happens to change it.
+    /// A viewer attaching to a live terminal is handed its screen before any live
+    /// byte, or it faces a blank one until something happens to change it.
     ///
-    /// The geometry is asserted, not just the text. `paintMessages` takes a cursor
-    /// column, a cursor row, a width and a height in that order, all four of them
-    /// `Int`, so a pair swapped there compiles, renders plausibly, and puts every
-    /// remote cursor in the wrong place.
-    @Test func aViewerAttachingToALiveTerminalIsPaintedTheRecordedScreen() async throws {
+    /// The screen is the one the core's own model holds, so it is coloured and
+    /// the cursor is where the terminal has it, neither of which the frame this
+    /// replaced could say. The grid comes first, because a viewer learns its size
+    /// from this and from nothing else. Read back through a terminal rather than
+    /// matched as bytes: where things end up is the contract.
+    @Test func aViewerAttachingToALiveTerminalIsPaintedTheScreenTheModelHolds() async throws {
         let host = FakeSurfaceHost()
         let stack = GhosttyStack(host: host, helperPath: "/usr/bin/true")
         defer { stack.ghosttyService?.closeAll() }
-        let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                                  existingWindowId: nil,
-                                                  command: "sleep 5", badge: nil)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["alpha", "beta"], cols: 80,
-                                                          cursorX: 3, cursorY: 1)
-        // A resize is one of the two moments the service records the shared
-        // snapshot, and the only one a test can trigger from outside.
-        host.emitResize(handle.sessionId, TerminalSize(cols: 80, rows: 2))
+        let handle = try await stack.service.open(
+            folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
+            command: #"printf '\033[31malpha\033[0m\r\nbeta-%s' $((3+4)); sleep 5"#, badge: nil)
+        let model = try #require(stack.ghosttyService?.screenModel(for: handle.sessionId))
+        try await waitUntil { model.text(maxLines: 10).contains("beta-7") }
+        host.emitResize(handle.sessionId, TerminalSize(cols: 80, rows: 10))
+        stack.hub.waitForPendingDeliveries()
+
         let log = MessageLog()
         stack.hub.attach(session: handle.sessionId) { log.add($0) }
-        #expect(log.messages.first == .resize(cols: 80, rows: 2))
-        let painted = try #require(log.messages.dropFirst().first)
-        #expect(painted == .data("\u{1B}[2J\u{1B}[Halpha\r\nbeta\u{1B}[2;4H"))
+        #expect(log.messages.first == .resize(cols: 80, rows: 10))
+        guard case let .data(vt) = try #require(log.messages.dropFirst().first) else {
+            Issue.record("expected the painted screen")
+            return
+        }
+        #expect(vt.contains("\u{1B}[38;5;1malpha"))
+        let viewer = try GhosttyVtTerminal(size: TerminalSize(cols: 80, rows: 10), scrollbackLines: 0)
+        viewer.write(Array(vt.utf8))
+        #expect(viewer.viewportLines() == ["alpha", "beta-7"])
+        #expect(viewer.cursor == (x: 6, y: 1))
     }
 
     /// An already attached viewer is told when the grid moves.
@@ -298,11 +306,14 @@ private final class Flag: @unchecked Sendable {
         let host = FakeSurfaceHost()
         let stack = GhosttyStack(host: host, helperPath: "/usr/bin/true")
         defer { stack.ghosttyService?.closeAll() }
-        let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                                  existingWindowId: nil,
-                                                  command: "sleep 5", badge: nil)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["before"], cols: 80)
-        host.emitResize(handle.sessionId, TerminalSize(cols: 80, rows: 1))
+        // Ninety columns of output: two rows on a grid of eighty, one on a hundred.
+        let handle = try await stack.service.open(
+            folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
+            command: #"printf '%090d' $((40+2)); sleep 5"#, badge: nil)
+        let line = String(repeating: "0", count: 88) + "42"
+        let model = try #require(stack.ghosttyService?.screenModel(for: handle.sessionId))
+        host.emitResize(handle.sessionId, TerminalSize(cols: 80, rows: 5))
+        try await waitUntil { model.text(maxLines: 10).contains("042") }
         // Drained before the viewer exists, or this test races itself: that first
         // report queues a repaint on the hub's delivery queue, and if it lands after
         // the attach below it delivers this screen to the new viewer and everything
@@ -313,24 +324,21 @@ private final class Flag: @unchecked Sendable {
         stack.hub.attach(session: handle.sessionId) { log.add($0) }
         let afterAttach = log.messages.count
 
-        // The reflowed screen, and then the grid that produced it. A grid's worth of
-        // rows, as the real host's viewport read always returns.
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: (1...30).map { "row \($0)" },
-                                                          cols: 100)
         host.emitResize(handle.sessionId, TerminalSize(cols: 100, rows: 30))
         stack.hub.waitForPendingDeliveries()
 
         let sent = Array(log.messages.dropFirst(afterAttach))
         #expect(sent.first == .resize(cols: 100, rows: 30))
-        // The repaint carries the screen recorded AFTER the reflow, not the one from
-        // before it: the service records and only then reports, and a hook wired the
-        // other way round would paint "before" over a reflowed terminal.
+        // The repaint carries the screen as it is AFTER the reflow: the service
+        // resizes the model and only then reports, and a hook wired the other way
+        // round would paint the wrapped line over a terminal that has unwrapped it.
         guard case let .data(vt) = try #require(sent.dropFirst().first) else {
             Issue.record("expected the reflowed screen")
             return
         }
-        #expect(vt.contains("row 30"))
-        #expect(!vt.contains("before"))
+        let viewer = try GhosttyVtTerminal(size: TerminalSize(cols: 100, rows: 30), scrollbackLines: 0)
+        viewer.write(Array(vt.utf8))
+        #expect(viewer.viewportLines() == [line])
     }
 
     /// A keystroke into the pane's surface reaches whatever the app wired `onInput`

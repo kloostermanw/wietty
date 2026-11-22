@@ -165,22 +165,16 @@ package final class GhosttyStack {
         // torn down while its relay was still draining, and those bytes have
         // nobody left to read them.
         hub.onIngest = { session, bytes in shared.model(for: session)?.write(bytes) }
-        // The initial screen for a viewer attaching to a live terminal. Monochrome
-        // with an approximated cursor by necessity: `ScreenSnapshot` documents why.
+        // The screen a viewer is sent on attach and again when the grid moves:
+        // the model's own paint frame, with colours, modes and the real cursor,
+        // behind the grid it was taken at. Asked for by the hub under the same
+        // session lock the line above is called under, which is what makes it
+        // exact: the frame holds every byte the hub has accepted and none it has
+        // not.
         //
-        // An absent snapshot returns nothing, which the hub treats as a capture
-        // that failed rather than as an empty screen: the viewer keeps whatever it
-        // had and the live byte stream brings it current. That is the honest
-        // answer, because the alternative is painting a blank screen over a
-        // terminal that has content.
-        hub.onPaint = { session in
-            guard let snapshot = shared.snapshot(for: session) else { return [] }
-            return PaneStreamHub.paintMessages(rows: snapshot.rows,
-                                               cursorX: snapshot.cursorX,
-                                               cursorY: snapshot.cursorY,
-                                               cols: snapshot.cols,
-                                               rows: snapshot.rows.count)
-        }
+        // A session with no model returns nothing, which the hub treats as a
+        // paint that could not be built rather than as an empty screen.
+        hub.onPaint = { session in shared.model(for: session)?.paintMessages() ?? [] }
         // A remote viewer's keystrokes take the same path as a local one's: into
         // the pty master, where the ordering guarantee lives. They go through the
         // stream rather than straight into a `Task` for the reason its own comment
