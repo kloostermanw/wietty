@@ -48,7 +48,8 @@ how far an MCP read of a terminal's output can reach. It costs memory: about 1 K
 per line once a terminal has filled it, so the default of 10,000 lines is about 10 MiB
 per terminal and the maximum of 100,000 about 100 MiB. A value outside 1,000 to
 100,000 is brought to the nearer end when the file is read, and one that is not a
-number reads as the default. A change applies to terminals opened afterwards. Like the
+number reads as the default. A change applies to terminals opened afterwards. The file
+is the only place to set it, there is no control for it in the settings panel. Like the
 ports, the line is written at its default too, so a file from before the setting
 existed reads as 10,000 and gains this one line, under `mcp-port`, the next time
 anything is saved. See terminal.md, "The server's own terminal".
