@@ -15,9 +15,11 @@ import WiettyShared
     private func settings(_ agents: [AgentDefinition]) -> SettingsView {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         let connections = RemoteConnectionsStore(defaults: defaults)
-        let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
+        let fixture = SettingsFixture(defaults: defaults)
+        let store = fixture.store
         store.agents = agents
-        return SettingsView(store: store, remoteConnections: connections,
+        return SettingsView(store: store, preferences: fixture.preferences,
+                            remoteConnections: connections,
                             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
                             bells: BellNotifier(sink: FakeNotificationSink()),
                             desktopNotifications: .fake(),

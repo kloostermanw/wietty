@@ -11,6 +11,23 @@ package protocol SettingsPairSource: AnyObject {
     var settingsPairs: [(key: String, value: String)] { get }
 }
 
+/// What the config file held at launch, and whether that launch migrated from the
+/// old `UserDefaults` keys.
+///
+/// `ProjectStore` reads the file first and, on a migrating launch, removes those old
+/// keys once it has seeded the file. A second settings source reading afterwards
+/// would find both the lines and the defaults gone, so the store captures this during
+/// its own init and hands it over instead.
+package struct SettingsLaunch {
+    package let values: [String: String]
+    package let migrating: Bool
+
+    package init(values: [String: String], migrating: Bool) {
+        self.values = values
+        self.migrating = migrating
+    }
+}
+
 /// The one writer of `~/.config/wietty/config`.
 ///
 /// There is one because the file must not move. `WiettyConfigFile.write` drops
@@ -51,6 +68,25 @@ package final class SettingsWriter {
         sources.append(source)
     }
 
+    /// Puts the collected pairs into the file's declared order.
+    ///
+    /// Stable, so entries sharing a prefix keep the order their source emitted them
+    /// in, which is what makes `agent.0` come before `agent.1` and a workspace's rows
+    /// stay with it. See `SettingsKeys.fileOrder` for why the order is declared
+    /// rather than left to whichever source happens to be registered first.
+    static func ordered(_ pairs: [(key: String, value: String)]) -> [(key: String, value: String)] {
+        func rank(_ key: String) -> Int {
+            for (i, entry) in SettingsKeys.fileOrder.enumerated() {
+                if entry.hasSuffix(".") ? key.hasPrefix(entry) : key == entry { return i }
+            }
+            return SettingsKeys.fileOrder.count
+        }
+        return pairs.enumerated()
+            .sorted { ($0.element.key == $1.element.key) ? $0.offset < $1.offset
+                      : (rank($0.element.key), $0.offset) < (rank($1.element.key), $1.offset) }
+            .map(\.element)
+    }
+
     /// Rewrites the managed part of the file from every source.
     ///
     /// Returns whether the write happened, which the first launch migration uses to
@@ -58,7 +94,7 @@ package final class SettingsWriter {
     @discardableResult
     package func write() -> Bool {
         guard isPersistable else { return false }
-        let pairs = sources.flatMap(\.settingsPairs)
+        let pairs = Self.ordered(sources.flatMap(\.settingsPairs))
         do {
             try file.write(pairs, managedKeys: SettingsKeys.scalars,
                            managedPrefixes: SettingsKeys.prefixes)

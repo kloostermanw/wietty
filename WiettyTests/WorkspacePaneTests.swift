@@ -124,8 +124,10 @@ import WiettyShared
     @Test func thePaneRendersTheWorkspacePage() {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         let connections = RemoteConnectionsStore(defaults: defaults)
+        let fixture = SettingsFixture(defaults: defaults)
         let pane = RightTerminalView(
-            store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
+            store: fixture.store,
+            preferences: fixture.preferences,
             terminals: TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true"),
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),

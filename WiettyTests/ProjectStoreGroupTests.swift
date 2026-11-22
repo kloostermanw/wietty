@@ -23,12 +23,18 @@ import WiettyCore
         ProjectStore(defaults: defaults, service: FakeTerminalService())
     }
 
+    /// The active group now belongs to `UIPreferences`, which resolves it against the
+    /// groups the store holds, so these build the pair the app builds.
+    private func fixture(_ defaults: UserDefaults) -> SettingsFixture {
+        SettingsFixture(defaults: defaults)
+    }
+
     /// A fresh install has no groups and no active group: the sidebar shows every
     /// workspace until the user makes a group and picks it.
     @Test func aFreshStoreHasNoGroupsAndNoSelection() {
-        let store = store(makeDefaults())
-        #expect(store.groups.isEmpty)
-        #expect(store.selectedGroupId == nil)
+        let fixture = fixture(makeDefaults())
+        #expect(fixture.store.groups.isEmpty)
+        #expect(fixture.preferences.selectedGroupId == nil)
     }
 
     @Test func anAddedGroupSurvivesARelaunch() {
@@ -115,22 +121,25 @@ import WiettyCore
         #expect(store(defaults).groups.map(\.name) == ["Private"])
     }
 
+    /// Removing the active group puts the sidebar back to "All". The store no longer
+    /// clears the selection by hand: it belongs to `UIPreferences`, which resolves it
+    /// against the groups that exist, so an id whose group is gone already reads nil.
     @Test func removingTheActiveGroupClearsTheSelection() {
-        let store = store(makeDefaults())
-        store.addGroup(WorkspaceGroup(name: "Work"))
-        let id = store.groups[0].id
-        store.selectedGroupId = id
-        store.removeGroup(id: id)
-        #expect(store.selectedGroupId == nil)
+        let fixture = fixture(makeDefaults())
+        fixture.store.addGroup(WorkspaceGroup(name: "Work"))
+        let id = fixture.store.groups[0].id
+        fixture.preferences.selectedGroupId = id
+        fixture.store.removeGroup(id: id)
+        #expect(fixture.preferences.selectedGroupId == nil)
     }
 
     @Test func theActiveGroupSurvivesARelaunch() {
         let defaults = makeDefaults()
-        let first = store(defaults)
-        first.addGroup(WorkspaceGroup(name: "Work"))
-        let id = first.groups[0].id
-        first.selectedGroupId = id
-        #expect(store(defaults).selectedGroupId == id)
+        let first = fixture(defaults)
+        first.store.addGroup(WorkspaceGroup(name: "Work"))
+        let id = first.store.groups[0].id
+        first.preferences.selectedGroupId = id
+        #expect(fixture(defaults).preferences.selectedGroupId == id)
     }
 
     /// A stored selection that no group answers to (a hand-edited file, or a group
@@ -138,8 +147,8 @@ import WiettyCore
     /// workspace away against a group that is gone.
     @Test func aSelectionForAMissingGroupFallsBackToAll() {
         let defaults = makeDefaults()
-        let first = store(defaults)
-        first.selectedGroupId = UUID()  // no group has this id
-        #expect(store(defaults).selectedGroupId == nil)
+        let first = fixture(defaults)
+        first.preferences.selectedGroupId = UUID()  // no group has this id
+        #expect(fixture(defaults).preferences.selectedGroupId == nil)
     }
 }

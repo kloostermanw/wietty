@@ -13,6 +13,7 @@ import WiettyShared
 /// the seam, and it holds nothing itself.
 struct RightTerminalView: View {
     let store: ProjectStore
+    let preferences: UIPreferences
     let terminals: TerminalStack
     /// For resolving a selected remote session to the connection that serves it.
     /// Observed rather than read once: removing a connection has to take its
@@ -59,7 +60,8 @@ struct RightTerminalView: View {
             // The same floor the other branches carry. The window's minimum size is
             // built from it, so a panel that asked for its own size would change how
             // small the window can get depending on what is on screen.
-            SettingsView(store: store, remoteConnections: remoteConnections,
+            SettingsView(store: store, preferences: preferences,
+                         remoteConnections: remoteConnections,
                          remoteWorkspaces: remoteWorkspaces, bells: bells,
                          desktopNotifications: desktopNotifications,
                          ghosttyColors: ghosttyColors,

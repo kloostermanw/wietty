@@ -5,6 +5,9 @@ import WiettyShared
 
 struct ContentView: View {
     let store: ProjectStore
+    /// This Mac's own view of the settings: sidebar width and colours, the active
+    /// group, and the notification sound. See `UIPreferences`.
+    let preferences: UIPreferences
     let terminals: TerminalStack
     @ObservedObject var remoteConnections: RemoteConnectionsStore
     @ObservedObject var remoteWorkspaces: RemoteWorkspacesController
@@ -43,7 +46,7 @@ struct ContentView: View {
     /// The sidebar's live width while the divider is being dragged, and nil until
     /// one has been.
     ///
-    /// Separate from `store.sidebarWidth`, which is the persisted value: a drag
+    /// Separate from `preferences.sidebarWidth`, which is the persisted value: a drag
     /// moves this on every frame and writes the store once, on release, so one drag
     /// is one `UserDefaults` write rather than hundreds. Nil rather than seeded,
     /// because a `@State` initial value cannot read `store` and seeding it from
@@ -77,7 +80,7 @@ struct ContentView: View {
                 SidebarDivider(width: liveSidebarWidth,
                                dragStart: $dragStartWidth,
                                totalWidth: geometry.size.width,
-                               onCommit: { store.sidebarWidth = $0 })
+                               onCommit: { preferences.sidebarWidth = $0 })
                 // The bar belongs to the right column, not to the window: only the
                 // divider is to its left, so the sidebar keeps the full height.
                 VStack(spacing: 0) {
@@ -85,7 +88,7 @@ struct ContentView: View {
                                selection: paneSelection,
                                onOpenSettings: { router.toggleSettings() })
                     Divider()
-                    RightTerminalView(store: store, terminals: terminals,
+                    RightTerminalView(store: store, preferences: preferences, terminals: terminals,
                                       remoteConnections: remoteConnections,
                                       remoteWorkspaces: remoteWorkspaces,
                                       bells: bells,
@@ -306,7 +309,7 @@ struct ContentView: View {
     /// the first frame after a launch the right width.
     private var liveSidebarWidth: Binding<Double> {
         Binding(
-            get: { sidebarWidth ?? store.sidebarWidth },
+            get: { sidebarWidth ?? preferences.sidebarWidth },
             set: { sidebarWidth = $0 }
         )
     }
@@ -370,9 +373,9 @@ struct ContentView: View {
         // row under it (`EnvironmentValues.sidebarColors`). The background fills the
         // sidebar when a colour is set and is `Color.clear` otherwise, so an untouched
         // install keeps the system material.
-        .foregroundStyle(store.sidebarColors.foreground ?? Color.primary)
-        .background(store.sidebarColors.background ?? Color.clear)
-        .environment(\.sidebarColors, store.sidebarColors)
+        .foregroundStyle(preferences.sidebarColors.foreground ?? Color.primary)
+        .background(preferences.sidebarColors.background ?? Color.clear)
+        .environment(\.sidebarColors, preferences.sidebarColors)
         .disabled(isBusy)
         .overlay {
             if isBusy {
@@ -413,7 +416,7 @@ struct ContentView: View {
     /// actually drawn. Filtering hides rows without removing anything, so a hidden
     /// workspace's terminal keeps running and the pane is left undisturbed.
     private var visibleProjects: [Project] {
-        WorkspaceGroupMenu.visible(store.projects, selected: store.selectedGroupId)
+        WorkspaceGroupMenu.visible(store.projects, selected: preferences.selectedGroupId)
     }
 
     @ViewBuilder
@@ -764,7 +767,7 @@ struct ContentView: View {
                 terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
             let notification = BellNotification.local(workspace: project.name,
                                                       label: ref.displayName, refId: ref.id,
-                                                      sound: store.bellSound)
+                                                      sound: preferences.bellSound)
             Task { await bells.post(notification) }
         }
         // A notification the process asked for by name, with its own words. The same
@@ -777,7 +780,7 @@ struct ContentView: View {
                 terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
             let notification = BellNotification.sent(workspace: project.name, label: ref.displayName,
                                                      refId: ref.id, title: title, body: body,
-                                                     sound: store.bellSound)
+                                                     sound: preferences.bellSound)
             Task { await bells.post(notification) }
         }
         // A program's status becoming something to come back for (`OSC 7501`), under
@@ -790,7 +793,7 @@ struct ContentView: View {
             let notification = BellNotification.programStatus(workspace: project.name,
                                                               label: ref.displayName,
                                                               refId: ref.id, record: record,
-                                                              sound: store.bellSound)
+                                                              sound: preferences.bellSound)
             Task { await bells.post(notification) }
         }
         // Visiting a row takes its notification back, so Notification Center does not
@@ -819,7 +822,7 @@ struct ContentView: View {
                                                          on: connection)) else { continue }
             let notification = BellNotification.remote(connection: name, workspace: ringer.workspace,
                                                        label: ringer.label, session: session,
-                                                       sound: store.bellSound)
+                                                       sound: preferences.bellSound)
             Task { await bells.post(notification) }
         }
         bells.withdraw(diff.cleared.map {

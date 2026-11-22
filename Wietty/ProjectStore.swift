@@ -173,7 +173,12 @@ final class ProjectStore: SettingsPairSource {
     private let configFile: WiettyConfigFile
     /// Every settings write goes through this, including `UIPreferences`' own, so the
     /// file keeps the single order it had when one object wrote all of it.
-    private let settingsWriter: SettingsWriter
+    let settingsWriter: SettingsWriter
+
+    /// What the config file held at launch, for the other settings source to load
+    /// from. See where it is built in `init` for why it is captured rather than read
+    /// a second time.
+    let launch: SettingsLaunch
     private let service: TerminalService
     private let gitProvider: GitInfoProviding
     private let freshProvider: FreshnessChecking
@@ -250,15 +255,6 @@ final class ProjectStore: SettingsPairSource {
         }
     }
 
-    /// The sound every notification a terminal posts plays. Persisted, and applied
-    /// to the next notification rather than needing a restart.
-    var bellSound: BellSound {
-        didSet {
-            guard bellSound != oldValue else { return }
-            persistSettings()
-        }
-    }
-
     /// Which sequence a program's banners come from. Persisted, and applied to the
     /// next event rather than needing a restart.
     var notificationSource: NotificationSource {
@@ -310,43 +306,6 @@ final class ProjectStore: SettingsPairSource {
         }
     }
 
-    /// How wide the sidebar is, on the substrate where the main window is a
-    /// sidebar plus a terminal pane. Persisted, so the divider stays where the
-    /// user put it across relaunches.
-    ///
-    /// Clamped to the sidebar's own floor on the way in and out, because nothing
-    /// guarantees a stored value came from this build or from a window this size.
-    /// The upper bound is not applied here: it depends on the window's current
-    /// width, which the store has no business knowing, so `ContentView` applies
-    /// `SidebarWidth.clamped(desired:totalWidth:)` at layout time.
-    ///
-    /// Written on drag end rather than during the drag. The live width lives in
-    /// `ContentView`'s own state while the divider is moving, so one drag is one
-    /// write here instead of one per frame.
-    var sidebarWidth: Double {
-        didSet {
-            let floored = max(sidebarWidth, SidebarWidth.minimum)
-            if floored != sidebarWidth { sidebarWidth = floored; return }
-            guard sidebarWidth != oldValue else { return }
-            persistSettings()
-        }
-    }
-
-    /// The sidebar's own colours, each optional (nil leaves the default). Persisted
-    /// as `color-*` scalar keys; the terminal's colours are separate and live in
-    /// `ghostty.cfg` (`GhosttyColorSettings`) because only libghostty can apply them.
-    var sidebarColors: SidebarColors {
-        didSet {
-            guard sidebarColors != oldValue else { return }
-            persistSettings()
-        }
-    }
-
-    /// The agents a workspace's context menu offers, in menu order. A preference
-    /// like the ports and the bell sound: persisted, and edited in the Agents tab.
-    ///
-    /// Seeded with Claude on a fresh install and never reseeded after that, so
-    /// deleting the last entry sticks. See `loadAgents`.
     var agents: [AgentDefinition] {
         didSet {
             guard agents != oldValue else { return }
@@ -390,16 +349,6 @@ final class ProjectStore: SettingsPairSource {
         }
     }
 
-    /// The group whose workspaces the sidebar is showing, or nil for "All". Persisted
-    /// so the choice survives a relaunch; resolved against `groups` on load so an id
-    /// no group answers to reads as "All".
-    var selectedGroupId: UUID? {
-        didSet {
-            guard selectedGroupId != oldValue else { return }
-            persistSettings()
-        }
-    }
-
     /// Appends a group to the end of the list.
     func addGroup(_ group: WorkspaceGroup) {
         groups.append(group)
@@ -426,7 +375,9 @@ final class ProjectStore: SettingsPairSource {
         for index in projects.indices where projects[index].groupId == id {
             projects[index].groupId = nil
         }
-        if selectedGroupId == id { selectedGroupId = nil }
+        // The active selection is not cleared here any more. It belongs to
+        // `UIPreferences`, which resolves it against the groups that exist, so a
+        // selection naming this group already reads as "All" the moment it is gone.
         save()
     }
 
@@ -579,26 +530,34 @@ final class ProjectStore: SettingsPairSource {
         // or not; migrate from `UserDefaults` only when there is genuinely no file.
         let migrating = !fileExisted && readError == nil
 
+        // What `UIPreferences` needs to load its own four keys. Captured here rather
+        // than read again there, because a migrating launch removes the old
+        // `UserDefaults` keys once this init has seeded the file, so a later read
+        // would find both the file lines and the defaults gone. On that path the two
+        // keys that did migrate are folded in under their config names, so the other
+        // source loads from one shape either way.
+        var launchValues = cfg
+        if migrating {
+            if let sound = defaults.string(forKey: bellSoundKey) {
+                launchValues[SettingsKeys.bellSound] = sound
+            }
+            let storedWidth = defaults.double(forKey: sidebarWidthKey)
+            if storedWidth != 0 { launchValues[SettingsKeys.sidebarWidth] = String(storedWidth) }
+        }
+        self.launch = SettingsLaunch(values: launchValues, migrating: migrating)
+
         if !migrating {
             self.showWorkspaceBadge = cfg[SettingsKeys.showWorkspaceBadge] == "true"
-            self.bellSound = BellSound(stored: cfg[SettingsKeys.bellSound] ?? "")
             self.notificationSource = NotificationSource(stored: cfg[SettingsKeys.notificationSource] ?? "")
             self.checkIntervals = Self.intervals(from: cfg)
             self.remoteEnabled = cfg[SettingsKeys.remoteEnabled] == "true"
             self.mcpPort = Self.port(cfg[SettingsKeys.mcpPort], default: MCPServerHost.defaultPort)
             self.remotePort = Self.port(cfg[SettingsKeys.remotePort], default: RemoteServer.defaultPort)
-            self.sidebarWidth = Self.width(cfg[SettingsKeys.sidebarWidth])
-            self.sidebarColors = SidebarColors(from: cfg)
             self.agents = Self.agents(from: cfg)
             self.approvedCommands = Self.approvals(from: cfg)
-            let loadedGroups = Self.groups(from: cfg)
-            self.groups = loadedGroups
-            self.selectedGroupId = Self.selectedGroup(from: cfg, groups: loadedGroups)
+            self.groups = Self.groups(from: cfg)
         } else {
             self.showWorkspaceBadge = defaults.bool(forKey: badgeKey)
-            // No stored value reads as "", which `BellSound` maps to the system
-            // default: the sound this app played before there was a setting.
-            self.bellSound = BellSound(stored: defaults.string(forKey: bellSoundKey) ?? "")
             // New with the file: no build wrote it to `UserDefaults`.
             self.notificationSource = .desktopNotifications
             if let arr = defaults.array(forKey: intervalsKey) as? [Int], arr.count == 3 {
@@ -611,15 +570,6 @@ final class ProjectStore: SettingsPairSource {
             self.mcpPort = storedMCPPort == 0 ? MCPServerHost.defaultPort : Self.clampPort(storedMCPPort)
             let storedRemotePort = defaults.integer(forKey: remotePortKey)
             self.remotePort = storedRemotePort == 0 ? RemoteServer.defaultPort : Self.clampPort(storedRemotePort)
-            // `double(forKey:)` answers 0 for an absent key, which is also an
-            // impossible width, so the two cases collapse into the same fallback.
-            let storedSidebarWidth = defaults.double(forKey: sidebarWidthKey)
-            self.sidebarWidth = storedSidebarWidth == 0
-                ? SidebarWidth.default
-                : max(storedSidebarWidth, SidebarWidth.minimum)
-            // Colours are new with the file: no build wrote them to `UserDefaults`,
-            // so a migrating install starts with none and keeps the defaults.
-            self.sidebarColors = SidebarColors()
             self.agents = Self.loadAgents(defaults, key: agentsKey)
             let storedApprovals = defaults.dictionary(forKey: approvedCommandsKey) as? [String: [String]] ?? [:]
             self.approvedCommands = storedApprovals.reduce(into: [UUID: Set<String>]()) {
@@ -627,9 +577,8 @@ final class ProjectStore: SettingsPairSource {
                 $0[id] = Set($1.value)
             }
             // Groups arrive with the config file: no build wrote them to `UserDefaults`,
-            // so a migrating install starts with none and no active group.
+            // so a migrating install starts with none.
             self.groups = []
-            self.selectedGroupId = nil
         }
 
         // Registered before anything can write. The store is the first source, so its
@@ -716,16 +665,6 @@ final class ProjectStore: SettingsPairSource {
             if group.isValid { result.append(group) }
         }
         return result
-    }
-
-    /// The stored active group, dropped to nil unless a group in `groups` still
-    /// answers to it. A hand-edited file, or a group an older build removed, must not
-    /// leave the sidebar filtering against an id nothing matches.
-    private static func selectedGroup(from cfg: [String: String],
-                                      groups: [WorkspaceGroup]) -> UUID? {
-        guard let stored = cfg[SettingsKeys.selectedGroup].flatMap({ UUID(uuidString: $0) }),
-              groups.contains(where: { $0.id == stored }) else { return nil }
-        return stored
     }
 
     /// The `approved.<uuid>.N` entries, grouped back by workspace id. The key after
@@ -2460,17 +2399,14 @@ final class ProjectStore: SettingsPairSource {
     var settingsPairs: [(key: String, value: String)] {
         var pairs: [(key: String, value: String)] = [
             (SettingsKeys.showWorkspaceBadge, showWorkspaceBadge ? "true" : "false"),
-            (SettingsKeys.bellSound, bellSound.stored),
             (SettingsKeys.notificationSource, notificationSource.stored),
             (SettingsKeys.checkIntervalFast, String(checkIntervals.fast)),
             (SettingsKeys.checkIntervalNormal, String(checkIntervals.normal)),
             (SettingsKeys.checkIntervalSlow, String(checkIntervals.slow)),
-            (SettingsKeys.sidebarWidth, String(sidebarWidth)),
             (SettingsKeys.remoteEnabled, remoteEnabled ? "true" : "false"),
             (SettingsKeys.remotePort, String(remotePort)),
             (SettingsKeys.mcpPort, String(mcpPort)),
         ]
-        pairs.append(contentsOf: sidebarColors.pairs)
         for (i, agent) in agents.enumerated() {
             pairs.append(("\(SettingsKeys.agentPrefix)\(i).name", agent.name))
             pairs.append(("\(SettingsKeys.agentPrefix)\(i).command", agent.command))
@@ -2479,9 +2415,6 @@ final class ProjectStore: SettingsPairSource {
         for (i, group) in groups.enumerated() {
             pairs.append(("\(SettingsKeys.groupPrefix)\(i).id", group.id.uuidString))
             pairs.append(("\(SettingsKeys.groupPrefix)\(i).name", group.name))
-        }
-        if let selectedGroupId {
-            pairs.append((SettingsKeys.selectedGroup, selectedGroupId.uuidString))
         }
         // Sorted so the file is stable: an unordered set would reshuffle the lines on
         // every write and read as a change to anyone diffing the file.

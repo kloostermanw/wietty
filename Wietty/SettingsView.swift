@@ -4,6 +4,8 @@ import WiettyShared
 
 struct SettingsView: View {
     @Bindable var store: ProjectStore
+    /// This Mac's own view of the settings. See `UIPreferences`.
+    @Bindable var preferences: UIPreferences
     @ObservedObject var remoteConnections: RemoteConnectionsStore
     @ObservedObject var remoteWorkspaces: RemoteWorkspacesController
     /// The app's own notifier, not one built here: the permission the Notifications
@@ -52,6 +54,7 @@ struct SettingsView: View {
     ///   at a time and a render test that could not choose would cover one fifth of
     ///   the panel while looking like it covered all of it.
     init(store: ProjectStore,
+         preferences: UIPreferences,
          remoteConnections: RemoteConnectionsStore,
          remoteWorkspaces: RemoteWorkspacesController,
          bells: BellNotifier,
@@ -61,6 +64,7 @@ struct SettingsView: View {
          onRestartMCPServer: @escaping () -> Void = {},
          tab: SettingsTab = .default) {
         _store = Bindable(wrappedValue: store)
+        _preferences = Bindable(wrappedValue: preferences)
         _remoteConnections = ObservedObject(wrappedValue: remoteConnections)
         _remoteWorkspaces = ObservedObject(wrappedValue: remoteWorkspaces)
         self.bells = bells
@@ -112,7 +116,7 @@ struct SettingsView: View {
             // about it.
             .task { ghosttyColors.refresh() }
         case .notifications:
-            form { NotificationSettings(store: store, bells: bells,
+            form { NotificationSettings(store: store, preferences: preferences, bells: bells,
                                         desktopNotifications: desktopNotifications) }
         case .agents:
             form { agentsSection }
@@ -332,21 +336,21 @@ struct SettingsView: View {
     @ViewBuilder private var colorsSection: some View {
         Section("Colors") {
             ColorSettingRow("Background", default: Self.defaultBackground,
-                            color: $store.sidebarColors.background)
+                            color: $preferences.sidebarColors.background)
             ColorSettingRow("Foreground", default: Self.defaultForeground,
-                            color: $store.sidebarColors.foreground)
+                            color: $preferences.sidebarColors.foreground)
             ColorSettingRow("Active workspace background", default: Self.defaultActiveBackground,
-                            color: $store.sidebarColors.activeWorkspaceBackground)
+                            color: $preferences.sidebarColors.activeWorkspaceBackground)
             ColorSettingRow("Active workspace foreground", default: Self.defaultForeground,
-                            color: $store.sidebarColors.activeWorkspaceForeground)
+                            color: $preferences.sidebarColors.activeWorkspaceForeground)
             ColorSettingRow("Active terminal row background", default: Self.defaultActiveRowBackground,
-                            color: $store.sidebarColors.activeTerminalRowBackground)
+                            color: $preferences.sidebarColors.activeTerminalRowBackground)
             ColorSettingRow("Active terminal row foreground", default: Self.defaultForeground,
-                            color: $store.sidebarColors.activeTerminalRowForeground)
+                            color: $preferences.sidebarColors.activeTerminalRowForeground)
             ColorSettingRow("Issue/PR pill background", default: Self.defaultPillBackground,
-                            color: $store.sidebarColors.pillBackground)
+                            color: $preferences.sidebarColors.pillBackground)
             ColorSettingRow("Issue/PR pill foreground", default: Self.defaultPillForeground,
-                            color: $store.sidebarColors.pillForeground)
+                            color: $preferences.sidebarColors.pillForeground)
             Text("Colours for Wietty's own sidebar. A colour left unset keeps the system default; the reset button beside a colour clears it back to that.")
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -506,6 +510,7 @@ struct SettingsView: View {
 /// is a preference, so neither belongs on the store.
 struct NotificationSettings: View {
     @Bindable var store: ProjectStore
+    @Bindable var preferences: UIPreferences
     let bells: BellNotifier
     /// The `desktop-notifications` gate. Drawn on this tab because it is where
     /// somebody looks when notifications are not arriving, and being turned off in
@@ -534,12 +539,13 @@ struct NotificationSettings: View {
     ///     `task` below answers; only the tests pass anything else, because these
     ///     decide five of the branches drawn here and a render test that could not
     ///     set them would cover one.
-    init(store: ProjectStore, bells: BellNotifier,
+    init(store: ProjectStore, preferences: UIPreferences, bells: BellNotifier,
          desktopNotifications: DesktopNotificationSetting,
          permission: NotificationPermission? = nil,
          testResult: BellNotifier.TestResult? = nil,
          requestFailure: String? = nil) {
         _store = Bindable(wrappedValue: store)
+        _preferences = Bindable(wrappedValue: preferences)
         self.bells = bells
         self.desktopNotifications = desktopNotifications
         _permission = State(initialValue: permission)
@@ -624,7 +630,7 @@ struct NotificationSettings: View {
             HStack {
                 Button("Send test notification") {
                     Task {
-                        testResult = await bells.sendTest(sound: store.bellSound)
+                        testResult = await bells.sendTest(sound: preferences.bellSound)
                         // The test is also the one moment permission is decided, if
                         // it had not been asked for yet.
                         permission = await bells.permission()
@@ -647,13 +653,13 @@ struct NotificationSettings: View {
 
         Section("Bell sound") {
             HStack {
-                Picker("Sound", selection: $store.bellSound) {
+                Picker("Sound", selection: $preferences.bellSound) {
                     ForEach(soundChoices) { sound in
                         Text(sound.title).tag(sound)
                     }
                 }
-                Button("Test") { soundPreviewFailed = !store.bellSound.play() }
-                    .disabled(store.bellSound == .silent)
+                Button("Test") { soundPreviewFailed = !preferences.bellSound.play() }
+                    .disabled(preferences.bellSound == .silent)
             }
             if soundPreviewFailed {
                 Label("That sound could not be loaded. macOS may no longer install it.",
@@ -665,7 +671,7 @@ struct NotificationSettings: View {
             }
         }
         // A new selection has not failed yet, so the warning about the old one goes.
-        .onChange(of: store.bellSound) { soundPreviewFailed = false }
+        .onChange(of: preferences.bellSound) { soundPreviewFailed = false }
         // Read on the way in rather than once per app launch: permission can be
         // granted or revoked in System Settings while Wietty runs, and this tab is
         // the one place that would then be wrong about it.
@@ -684,7 +690,7 @@ struct NotificationSettings: View {
     /// is no longer there.
     private var soundChoices: [BellSound] {
         let offered = BellSound.offered
-        return offered.contains(store.bellSound) ? offered : offered + [store.bellSound]
+        return offered.contains(preferences.bellSound) ? offered : offered + [preferences.bellSound]
     }
 
     private var permissionTitle: String {
