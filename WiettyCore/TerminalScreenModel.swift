@@ -36,7 +36,9 @@ package protocol TerminalScreenModel: AnyObject, Sendable {
     /// the type system stops that, which is why it is said here.
     func snapshot() -> Data
 
-    /// Plain text, most recent lines last, capped.
+    /// Plain text, most recent lines last, capped at `maxLines` lines. A line the
+    /// terminal wrapped is one line, and the blank rows below the last line with
+    /// text are not lines. Reaches as far into the scrollback as it has to.
     func text(maxLines: Int) -> String
 
     /// The grid, as the model holds it.

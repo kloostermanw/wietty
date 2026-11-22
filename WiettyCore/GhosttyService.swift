@@ -644,28 +644,26 @@ package final class GhosttyService: TerminalService {
         shared.model(for: sessionId)
     }
 
+    /// What a terminal has printed, as plain text: the last `maxLines` lines, most
+    /// recent last, a wrapped line joined into one and the blank rows below the
+    /// last line left off.
+    ///
+    /// Answered by the terminal's own screen model, so it does not matter whether
+    /// the terminal is the one on screen, or whether a window exists at all. It
+    /// used to be read off the surface, which only answers while it is displayed,
+    /// so a read of any other terminal, which is nearly every read an agent
+    /// makes, fell back to one recorded viewport however many lines were asked
+    /// for. The model holds the scrollback and reaches as far into it as the
+    /// caller asks.
+    ///
+    /// An exited terminal still answers, because it keeps its model until its row
+    /// is closed or reopened: the last screen a command left is exactly what is
+    /// wanted when something died.
     package func readOutput(sessionId: String, maxLines: Int) async throws -> String {
         guard terminals[sessionId] != nil else {
             throw TerminalError.failed("No terminal named \(sessionId).")
         }
-        // The caller's `maxLines` is honoured here, unlike in `recordSnapshot`.
-        // Reaching scrollback is the whole point of this method: it answers an MCP
-        // read of what a terminal has printed, which is rarely only the last
-        // screenful, and it runs once per request rather than once per notch of a
-        // window drag.
-        //
-        // The live read first, because only it can reach scrollback, and it answers
-        // in full for the one pane the window is showing. But libghostty's
-        // `read_text` returns nothing for a surface that is not on screen, and an MCP
-        // read is almost always of a session that is not the displayed pane. So an
-        // empty live read falls back to the screen recorded from the terminal's own
-        // output within `snapshotDebounce`, which is the viewport rather than the
-        // scrollback but is what the terminal actually printed rather than "".
-        if let live = host.snapshot(id: sessionId, maxLines: maxLines), !live.rows.isEmpty {
-            return live.rows.joined(separator: "\n")
-        }
-        guard let recorded = shared.snapshot(for: sessionId) else { return "" }
-        return recorded.rows.joined(separator: "\n")
+        return shared.model(for: sessionId)?.text(maxLines: maxLines) ?? ""
     }
 
     /// The frontend has put a different terminal on screen.
