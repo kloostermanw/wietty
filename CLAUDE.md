@@ -17,7 +17,9 @@ Which side of the remote protocol lives where decides which repo a bug belongs i
 
 - **Served side, only here.** `RemoteServer`, `WorkspaceSerializer`, `RemoteAccessToken`, and the
   terminal itself: `GhosttyService`, `TerminalRelay`, `RawPTY`, `PaneStreamHub`,
-  `GhosttySurfaceHost` and the bundled `wietty-pty` helper. A rendering or streaming fault
+  `GhosttySurfaceHost` and the bundled `wietty-pty` helper. All of those are in the
+  `WiettyCore` target except `GhosttySurfaceHost`, which stays in the app because it is the
+  one type that touches an `NSView`. A rendering or streaming fault
   reaches every client (browser, this app's own pane, and the iPad), so reproduce it here before
   suspecting a client.
 
@@ -32,6 +34,20 @@ Ghostty.app. `TerminalStack` builds it at launch and there is nothing to choose.
 `docs/terminal.md`.
 
 `docs/remote-access.md` is the protocol reference for all three repos.
+
+## Two targets
+The app is split in two, and the split is enforced by the compiler rather than by convention.
+
+- **`WiettyCore/`** is everything Wietty does that needs no window: the store, the terminal byte
+  path, the supervisors, the MCP and LAN servers. It imports neither SwiftUI nor AppKit, and must
+  not start. That is the point: phase 5 of issue #84 makes it a separate process, and the boundary
+  is being held years before the process is cut.
+- **`Wietty/`** is the frontend: every view, `WiettyApp`, `GhosttySurfaceHost`, `UIPreferences`,
+  `ServerRuntime`, `TerminalSelection`.
+
+Members the app or the tests need are `package`, never `public`. The three targets share a
+`SWIFT_PACKAGE_NAME`, so `package` reaches all of them and nothing outside sees a line of it. A
+`public` added here is almost always a mistake: check the diff for one.
 
 ## Setup
 This project uses [XcodeGen](https://github.com/yonaskolb/XcodeGen). `project.yml` is the source of
@@ -63,6 +79,11 @@ xcodebuild -scheme Wietty -destination 'platform=macOS' -resolvePackageDependenc
 ```
 
 The download itself takes a few seconds once the keychain is out of the way.
+
+Running the test suite is safe for your own settings. `WiettyTests` is hosted by the app, so a run
+launches Wietty, and its defaults used to resolve to the real `~/.config/wietty/`. Under a test host
+they resolve into a sandbox instead (see `TestHost`), so a run no longer rewrites your config,
+`ghostty.cfg` or prompt templates, and no longer strips the session ids of your live terminals.
 
 Build and test from the command line:
 

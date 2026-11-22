@@ -95,10 +95,30 @@ the file is what Wietty opens.
 ## Reading, writing, and migration
 
 The file is read once at launch and is the source of truth from then on. In-app
-Settings changes are written straight back to it (`ProjectStore.persistSettings`
-rewrites every managed key from the app's current state on each change). External
-edits you make by hand take effect on the next launch; Wietty does not watch the file
-the way it watches `ghostty.cfg` and a workspace `wietty.json`.
+Settings changes are written straight back to it: `SettingsWriter` rewrites every
+managed key on each change, asking each registered `SettingsPairSource` for its lines.
+External edits you make by hand take effect on the next launch; Wietty does not watch
+the file the way it watches `ghostty.cfg` and a workspace `wietty.json`.
+
+There are two sources. `ProjectStore` owns the workspaces and everything the server
+side needs, and `UIPreferences` owns the four that are this Mac's view of the data
+rather than part of it: the sidebar width and colours, the active group, and the
+notification sound. The rule that sorted them is whether the server's own behaviour
+depends on the setting with no frontend attached, which is checkable today by asking
+whether anything inside `ProjectStore` reads it to decide something.
+
+One writer rather than two, because the file must not move.
+`WiettyConfigFile.write` drops every managed line and appends what it is handed, so
+two writers with disjoint keys would still shuffle their blocks against each other on
+every write. The order the lines appear in is declared in `SettingsKeys.fileOrder`
+rather than left to whichever source registered first, because the four that moved are
+interleaved with the store's rather than grouped at either end.
+
+A source also declares the scalar keys it owns. A managed scalar that no registered
+source owns keeps the value the file already had, while one its owner deliberately
+left out is still dropped, which is how clearing a colour removes its line. Without
+that rule a write made before a source had registered deleted that source's settings,
+which is not hypothetical: it happened during the work in issue #84.
 
 On the first launch after settings moved here, the file does not exist yet.
 `ProjectStore` then reads the old `UserDefaults` values, writes them to the file, and
@@ -123,3 +143,17 @@ Two things to keep in mind when editing directly:
   `workspace.N.*`, and a workspace's `terminal.N.*`) are read in order and stop at the
   first missing index. Deleting `agent.1` while keeping `agent.2` drops `agent.2` on
   the next read, so renumber after removing an entry.
+
+## The test suite never touches this file
+
+`WiettyTests` is hosted by the app, so running the suite launches Wietty, which builds
+a store with default arguments. Those defaults used to resolve to the real
+`~/.config/wietty/config`, so every run rewrote the developer's own settings and
+stripped the session ids of their live terminals.
+
+Under a test host the three paths in this directory and the legacy `UserDefaults`
+domain resolve into a sandbox instead. See `TestHost`: `isActive` is the one detection,
+shared with the guard that stops `PTYProcessLauncher` spawning real processes, and both
+the sandbox directory and the defaults suite have fixed names that are emptied as a run
+starts rather than unique names that would pile up, because a test host is routinely
+killed rather than allowed to exit.
