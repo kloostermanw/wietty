@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WiettyCore
 
 /// Tracks what the sidebar has collapsed: each section (Local and every remote
 /// connection) and each remote workspace card. Backed by an `@Observable`
@@ -18,7 +19,7 @@ final class SectionCollapseState {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let key = "wietty.sidebar.collapsed"
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = TestHost.defaults) {
         self.defaults = defaults
         self.map = defaults.dictionary(forKey: key) as? [String: Bool] ?? [:]
     }

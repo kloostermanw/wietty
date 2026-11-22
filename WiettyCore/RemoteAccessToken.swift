@@ -6,7 +6,7 @@ package struct RemoteAccessToken {
     private let defaults: UserDefaults
     private let key = "wietty.remote.token"
 
-    package init(defaults: UserDefaults = .standard) {
+    package init(defaults: UserDefaults = TestHost.defaults) {
         self.defaults = defaults
     }
 

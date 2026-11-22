@@ -16,8 +16,14 @@ package struct WiettyConfigFile {
     package let url: URL
 
     /// `~/.config/wietty/config`, beside `ghostty.cfg`.
+    ///
+    /// Under a test host this is a file in that run's own sandbox instead. The suite
+    /// runs inside the real app, which builds a store with default arguments, so
+    /// without this the developer's own settings are what the tests read and rewrite.
+    /// See `TestHost`.
     package static var defaultURL: URL {
-        URL(fileURLWithPath: NSHomeDirectory())
+        guard !TestHost.isActive else { return TestHost.sandbox.appendingPathComponent("config") }
+        return URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".config/wietty/config")
     }
 

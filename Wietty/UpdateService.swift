@@ -32,7 +32,7 @@ final class UpdateService {
 
     init(
         checker: ReleaseChecking = GitHubReleaseService(),
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = TestHost.defaults,
         currentVersion: AppVersion = .current,
         throttle: TimeInterval = 2 * 60 * 60,
         now: @escaping () -> Date = Date.init
