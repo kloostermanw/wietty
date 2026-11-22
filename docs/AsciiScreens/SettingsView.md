@@ -5,8 +5,8 @@ so the intended structure stays readable without running the app.
 
 The view is a segmented tab control above a grouped `Form`, and the tab decides
 what the form holds. Six tabs (`SettingsTab`), in this order: "General" (the
-badge toggle, the groups editor, the three interval steppers, and the two colour
-sections),
+badge toggle, the scrollback stepper, the groups editor, the three interval
+steppers, and the two colour sections),
 "Notifications" (the permission
 state, a test notification, and the sound), "Agents" (the agents a workspace's
 menu can start), "Prompts" (the prompt templates the ⌘P popup lists),
@@ -92,6 +92,15 @@ menu spell the feature out in full.
 │    libghostty exposes no way to set a surface's    │
 │    title.                                          │
 │                                                    │
+│  Terminal history                                 │
+│    Scrollback             10,000 lines   [－][＋]   │
+│    Lines of history Wietty keeps for each          │
+│    terminal, which is what an MCP read of its      │
+│    output can reach. A full terminal costs about   │
+│    1 KiB per line, so 10,000 lines is about 10     │
+│    MiB each. Applies to terminals opened after a   │
+│    change.                                         │
+│                                                    │
 │  Groups                                     Add   │
 │    Work                                (✎) (🗑)   │
 │    Private                             (✎) (🗑)   │
@@ -139,6 +148,16 @@ menu spell the feature out in full.
 │    reset button clears one back to that.          │
 └──────────────────────────────────────────────────┘
 ```
+
+The "Terminal history" section (`SettingsView.scrollbackSection`) is one stepper,
+bound to `store.scrollbackLines` and stepping 1,000 lines at a time between
+`TerminalScrollback.range`'s 1,000 and 100,000, with the value drawn as the interval
+steppers draw theirs. It sits directly under the badge toggle because those two are
+the tab's terminal settings and share a rule: each applies to terminals opened
+afterwards, and a terminal that is already open keeps the history it started with.
+The caption carries the memory cost because that is the whole trade: the setting is
+persisted as `scrollback-lines` (see settings-storage.md) and described in
+terminal.md, "The server's own terminal".
 
 The Groups section (`SettingsView.groupsSection`) is a `ListSettingsSection`: the
 title with an Add button on the right, then one row per `store.groups` (`GroupRow`):
