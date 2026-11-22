@@ -44,12 +44,12 @@ Three objects that are created together and die together, plus one process outsi
 
 | Part | File | What it is |
 | --- | --- | --- |
-| The pty | `Wietty/RawPTY.swift` | The master fd, the child's process group, and one raw byte stream off the master. |
-| The tee | `Wietty/TerminalRelay.swift` | A unix socket listener that copies bytes between the pty and the surface, and hands every read to the stream hub as well. |
+| The pty | `WiettyCore/RawPTY.swift` | The master fd, the child's process group, and one raw byte stream off the master. |
+| The tee | `WiettyCore/TerminalRelay.swift` | A unix socket listener that copies bytes between the pty and the surface, and hands every read to the stream hub as well. |
 | The surface | `Wietty/GhosttySurfaceHost.swift` | The one `ghostty_app_t`, one `ghostty_surface_t` per terminal, and the `NSView` each renders into. |
 | The helper | `wietty-pty/main.swift` | A separate executable in the app bundle, run as the surface's command. It connects to the relay's socket and copies bytes. |
 
-`GhosttyService` (`Wietty/GhosttyService.swift`) keeps the three in step and is the only type that
+`GhosttyService` (`WiettyCore/GhosttyService.swift`) keeps the three in step and is the only type that
 knows a terminal is not a single object. It mints the session id itself, as `gt:<uuid>`, because there
 is nothing to ask for one: the PTY belongs to the app.
 
