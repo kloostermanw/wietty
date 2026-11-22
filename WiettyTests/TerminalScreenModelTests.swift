@@ -145,12 +145,12 @@ private final class Finished: @unchecked Sendable {
     /// lifted to it: more lines than the constant are written, and far more than
     /// the single page a line limit set alone would keep are still there.
     @Test func theDefaultScrollbackIsTheNamedLimit() throws {
-        #expect(TerminalScrollback.lines == 10_000)
+        #expect(TerminalScrollback.defaultLines == 10_000)
         let model = try model(cols: 40, rows: 10)
         for line in 1...12_000 { write("line \(line)\r\n", to: model) }
         let lines = model.text(maxLines: 20_000).components(separatedBy: "\n")
         #expect(lines.count > 8_000)
-        #expect(lines.count <= TerminalScrollback.lines + 10)
+        #expect(lines.count <= TerminalScrollback.defaultLines + 10)
         #expect(lines.last == "line 12000")
     }
 

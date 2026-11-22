@@ -345,8 +345,26 @@ megabytes a second, a paint frame formats one viewport). One call is not: **a ch
 reflows the whole scrollback under that lock**, and on a full scrollback that is slow enough to hold
 the terminal's own output behind each notch of a window drag. It is a known cost and not yet solved.
 
-History is 10,000 lines per terminal (`TerminalScrollback.lines`), roughly 1 KiB per retained row at
-120 columns, so about 10 MiB for a terminal that has filled it.
+**History is a setting**, `scrollback-lines` in `~/.config/wietty/config` and "Terminal history" in
+Settings › General (`ProjectStore.scrollbackLines`, `TerminalScrollback`). The default is 10,000 lines
+per terminal and the range is 1,000 to 100,000; a value outside it, typed into the file by hand, is
+brought to the nearer end. The number is a memory decision. A retained row costs roughly 1 KiB at 120
+columns whatever is written on it, and the cost is only paid once the rows exist. Measured on ten
+models at 120 by 40, each filled past its limit with plain lines: 10.2 MiB per terminal at 10,000
+lines, 1.2 MiB at 1,000 and 99 MiB at 100,000. Thirty full terminals at the default are about 300
+MiB. The library prunes a page at a time, so a full scrollback holds a little under its limit.
+
+**The limit is read when a terminal opens.** `GhosttyService.open` asks for it once, on the main
+actor, and builds the model with it, so a change applies to terminals opened afterwards and one that
+is already open keeps what it started with. Neither the relay's queue nor the hub's ever reads the
+setting. The service is built before the store that holds it, so `GhosttyStack.followScrollbackSetting(of:)`
+is what points one at the other. The floor is there because below about a thousand lines an MCP read
+starts coming back shorter than an agent asked for, to save under a megabyte per terminal; the ceiling
+is where a typo in the file stops being able to take the machine with it.
+
+This is the server's history and not the pane's. The surface keeps its own, sized by Ghostty's
+`scrollback-limit` in the user's Ghostty configuration, and that is what the Mac's pane scrolls
+through. The setting here decides how far `readOutput` can reach.
 
 The two libraries share several hundred symbols. `scripts/coexistence-check.sh` is the run that shows
 they agree in one process, under the address sanitizer, with a real surface; `CLAUDE.md` describes it.
@@ -449,7 +467,8 @@ the last line with text are not lines.
 while it is on screen, and in a one window app that is one terminal: every other read, which is nearly
 every read an agent makes, used to fall back to a single recorded viewport however many lines were
 asked for. The model holds the scrollback for every terminal, displayed or not, running or exited, and
-reaches as far into it as the caller asks, up to the 10,000 lines it keeps.
+reaches as far into it as the caller asks, up to the lines it keeps (the `scrollback-lines` setting,
+10,000 by default).
 
 The read formats only the rows it needs. It starts from the active screen plus one row per line asked
 for, and widens while wrapped lines leave it short, so a small read stays cheap on a deep scrollback.

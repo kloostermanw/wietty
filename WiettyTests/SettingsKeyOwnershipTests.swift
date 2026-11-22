@@ -58,6 +58,7 @@ import WiettyCore
         fixture.store.remoteEnabled = true
         fixture.store.remotePort = 9100
         fixture.store.mcpPort = 4100
+        fixture.store.scrollbackLines = 25_000
         fixture.preferences.bellSound = .named("Ping")
         fixture.preferences.sidebarWidth = 350
         fixture.preferences.sidebarColors = SidebarColors(

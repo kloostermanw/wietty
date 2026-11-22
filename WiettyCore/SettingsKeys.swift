@@ -18,6 +18,8 @@ package enum SettingsKeys {
     package static let remoteEnabled = "remote-enabled"
     package static let remotePort = "remote-port"
     package static let mcpPort = "mcp-port"
+    /// Lines of history each terminal's screen model keeps, `TerminalScrollback`.
+    package static let scrollbackLines = "scrollback-lines"
     /// The active group's id, or absent for "All". Resolved against the group list on
     /// load: an id no group answers to reads as "All" rather than hiding everything.
     package static let selectedGroup = "selected-group"
@@ -44,7 +46,7 @@ package enum SettingsKeys {
     package static let scalars: Set<String> = [
         showWorkspaceBadge, bellSound, notificationSource, checkIntervalFast, checkIntervalNormal,
         checkIntervalSlow, sidebarWidth, remoteEnabled, remotePort, mcpPort,
-        selectedGroup,
+        scrollbackLines, selectedGroup,
         colorBackground, colorForeground,
         colorActiveWorkspaceBackground, colorActiveWorkspaceForeground,
         colorActiveTerminalRowBackground, colorActiveTerminalRowForeground,
@@ -67,6 +69,10 @@ package enum SettingsKeys {
         showWorkspaceBadge, bellSound, notificationSource,
         checkIntervalFast, checkIntervalNormal, checkIntervalSlow,
         sidebarWidth, remoteEnabled, remotePort, mcpPort,
+        // After the two ports: with them it is the block the server side reads, and
+        // behind them so a file written before it existed gains one line below
+        // lines it already had rather than having them move.
+        scrollbackLines,
         colorBackground, colorForeground,
         colorActiveWorkspaceBackground, colorActiveWorkspaceForeground,
         colorActiveTerminalRowBackground, colorActiveTerminalRowForeground,

@@ -88,12 +88,30 @@ package enum TerminalPaint {
 /// How much history a terminal's model keeps.
 ///
 /// One place, because the number is a memory decision: a retained row costs
-/// roughly 1 KiB at 120 columns, so this is about 10 MiB for a terminal that has
-/// filled its scrollback, and thirty such terminals are about 300 MiB.
+/// roughly 1 KiB at 120 columns, so the default is about 10 MiB for a terminal
+/// that has filled its scrollback, and thirty such terminals are about 300 MiB.
+///
+/// The number in force is a setting, `ProjectStore.scrollbackLines`. It is read
+/// when a terminal opens: a model is built with its limit and keeps it.
 package enum TerminalScrollback {
-    /// Lines of history per terminal. The library prunes a page at a time, so a
-    /// full scrollback holds somewhat fewer rows than this, never more.
-    package static let lines = 10_000
+    /// Lines of history per terminal when nothing says otherwise. The library
+    /// prunes a page at a time, so a full scrollback holds somewhat fewer rows
+    /// than its limit, never more.
+    package static let defaultLines = 10_000
+
+    /// What the setting may be.
+    ///
+    /// The floor is 1,000 lines, about 1 MiB: below it a read of a terminal's
+    /// output starts coming back shorter than an agent asked for, to save less
+    /// memory than one terminal's surface already costs. The ceiling is 100,000
+    /// lines, about 100 MiB for one full terminal, which is where a typo in a
+    /// hand edited config stops being able to take the machine with it.
+    package static let range = 1_000...100_000
+
+    /// `lines` brought into `range`.
+    package static func clamped(_ lines: Int) -> Int {
+        min(max(lines, range.lowerBound), range.upperBound)
+    }
 }
 
 /// A `TerminalScreenModel` backed by libghostty-vt.
@@ -117,7 +135,7 @@ package final class GhosttyVtScreenModel: TerminalScreenModel, @unchecked Sendab
     /// - Parameter graphemeClustering: what the surface this model mirrors resolved
     ///   for it, `TerminalSurfaceHosting.graphemeClustering`.
     package init(size: TerminalSize,
-                 scrollbackLines: Int = TerminalScrollback.lines,
+                 scrollbackLines: Int = TerminalScrollback.defaultLines,
                  graphemeClustering: Bool = true) throws {
         terminal = try GhosttyVtTerminal(size: size,
                                          scrollbackLines: scrollbackLines,

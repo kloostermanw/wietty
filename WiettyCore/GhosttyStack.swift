@@ -248,6 +248,22 @@ package final class GhosttyStack {
 
     package let displayRequests: DisplayRequests
 
+    /// Makes every terminal opened from now on keep as much history as `store` says.
+    ///
+    /// Called by whoever builds the store, because the stack is built first: the
+    /// store is handed this stack's service. Here rather than in the app so the
+    /// knowledge of which setting feeds which part of the terminal stays in the
+    /// core, where it will still be when there is no frontend to do the wiring.
+    ///
+    /// Weakly, and answering the default once the store is gone, so the service
+    /// does not keep a store alive. On a stack that could not be built there is no
+    /// service and nothing to tell.
+    package func followScrollbackSetting(of store: ProjectStore) {
+        ghosttyService?.scrollbackLines = { [weak store] in
+            store?.scrollbackLines ?? TerminalScrollback.defaultLines
+        }
+    }
+
     package var onInput: (@MainActor (String) -> Void)? {
         get { host.onInput }
         set { host.onInput = newValue }

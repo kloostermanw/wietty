@@ -64,6 +64,7 @@ import WiettyCore
         store.remoteEnabled = true
         store.remotePort = 9100
         store.mcpPort = 4100
+        store.scrollbackLines = 25_000
         preferences.sidebarColors = SidebarColors(background: ColorHex.color(from: "#102030"),
                                             foreground: ColorHex.color(from: "#a0b0c0"))
         store.agents = [AgentDefinition(name: "Claude", command: "claude", defaultArguments: "--verbose"),
@@ -88,6 +89,7 @@ import WiettyCore
         remote-enabled = true
         remote-port = 9100
         mcp-port = 4100
+        scrollback-lines = 25000
         color-background = #102030
         color-foreground = #a0b0c0
         agent.0.name = Claude
