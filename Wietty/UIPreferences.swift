@@ -111,6 +111,8 @@ final class UIPreferences: SettingsPairSource {
         return max(width, SidebarWidth.minimum)
     }
 
+    var ownedKeys: Set<String> { UIPreferencesKeys.all }
+
     /// This source's lines. The resolved selection rather than the stored one, so a
     /// removed group's id leaves the file on the next write exactly as it did when the
     /// store cleared it by hand.
