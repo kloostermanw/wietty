@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// The `~/.config/wietty/prompt_templates/` directory: one markdown file per prompt
 /// template. The file counterpart to `WiettyConfigFile`, but a directory of files
@@ -14,7 +15,12 @@ struct PromptTemplateFile {
 
     /// `~/.config/wietty/prompt_templates`, beside `config` and `ghostty.cfg`.
     static var defaultURL: URL {
-        URL(fileURLWithPath: NSHomeDirectory())
+        // Under a test host, the run's own sandbox: the suite runs inside the real
+        // app, which builds a `PromptTemplateStore` over this directory. See `TestHost`.
+        guard !TestHost.isActive else {
+            return TestHost.sandbox.appendingPathComponent("prompt_templates")
+        }
+        return URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".config/wietty/prompt_templates")
     }
 

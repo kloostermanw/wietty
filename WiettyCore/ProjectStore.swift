@@ -467,7 +467,7 @@ package final class ProjectStore: SettingsPairSource {
     /// another test left behind. A stored id is unique per suite and stable for as
     /// long as that suite exists.
     private static func defaultConfig(for defaults: UserDefaults) -> WiettyConfigFile {
-        guard defaults !== UserDefaults.standard else { return WiettyConfigFile() }
+        guard defaults !== TestHost.defaults else { return WiettyConfigFile() }
         let markerKey = "wietty.isolatedConfigDir"
         let id = defaults.string(forKey: markerKey) ?? {
             let fresh = UUID().uuidString
@@ -479,7 +479,7 @@ package final class ProjectStore: SettingsPairSource {
     }
 
     package init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = TestHost.defaults,
         config: WiettyConfigFile? = nil,
         service: TerminalService,
         jobEvents: @escaping @MainActor () -> [MonitorEvent] = { [] },

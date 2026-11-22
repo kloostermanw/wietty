@@ -31,14 +31,7 @@ package struct PTYProcessLauncher: ProcessLaunching {
     /// The signals are read together because the suite is Swift Testing rather than
     /// XCTest: `XCTestConfigurationFilePath` is set by `xcodebuild test`, and the
     /// loaded-class check still holds when a bundle is run some other way.
-    package static var isRunningInTestHost: Bool {
-        let env = ProcessInfo.processInfo.environment
-        return env["XCTestConfigurationFilePath"] != nil
-            || env["XCTestBundlePath"] != nil
-            || env["XCTestSessionIdentifier"] != nil
-            || NSClassFromString("XCTestCase") != nil
-            || NSClassFromString("XCTest") != nil
-    }
+    package static var isRunningInTestHost: Bool { TestHost.isActive }
 
     package func launch(
         command: String,

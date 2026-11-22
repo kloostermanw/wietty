@@ -1,4 +1,5 @@
 import Foundation
+import WiettyCore
 
 /// Wietty's own Ghostty configuration, at `~/.config/wietty/ghostty.cfg`.
 ///
@@ -23,7 +24,10 @@ struct GhosttyOverrideFile {
     /// rather than inside it: that directory is Ghostty's, and a file Wietty writes
     /// there would be read by Ghostty.app too.
     static var defaultURL: URL {
-        URL(fileURLWithPath: NSHomeDirectory())
+        // Under a test host, the run's own sandbox: the suite runs inside the real
+        // app, which builds the colour settings over this path. See `TestHost`.
+        guard !TestHost.isActive else { return TestHost.sandbox.appendingPathComponent("ghostty.cfg") }
+        return URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".config/wietty/ghostty.cfg")
     }
 
