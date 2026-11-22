@@ -92,7 +92,9 @@ meaningful, since the surface displays them: 64 for usage, 69 for a socket nobod
 2. `TerminalRelay` hands the chunk to `onOutput` first and unconditionally. There `GhosttyService`
    feeds it to that terminal's `ProgramStatusTap`, which answers an `OSC 7501` support query on the
    spot (see "Program status" below), and then to `PaneStreamHub.write`, so a remote viewer's bytes
-   never wait behind the local surface.
+   never wait behind the local surface. Inside that call the hub also writes the chunk into the
+   terminal's screen model (see "The server's own terminal" below), in the same step that accepts
+   it for delivery.
 3. The same chunk is written to the helper's socket, and the helper copies it to its stdout, which is
    the pty libghostty renders.
 
@@ -238,16 +240,15 @@ like the closed row it is:
   false because the master was closed, so the store had nothing to act on either.
 - **`send` throws.** The master is closed, so the bytes went nowhere and nothing said so. An MCP
   `send_input` and a remote keystroke both looked delivered.
-- **`readOutput` keeps working**, which is the point of keeping the surface at all.
+- **`readOutput` keeps working.** The terminal's screen model outlives the child exactly as the
+  surface does, so the last screen and the scrollback above it stay readable.
 
 The pane is the one place that does not show the kept surface. A selected session that has ended gets
 the stopped screen with a Restart button instead (`GhosttyPaneState.stopped`, issue #70); see
-`docs/AsciiScreens/ContentView.md`. Taking the surface off screen is why `reap` records its screen
-first: libghostty reads an off-screen surface as empty, and the refresh that output normally drives
-skips exited terminals, so without that recording `readOutput` would answer "" for the terminal the
-user was just looking at.
+`docs/AsciiScreens/ContentView.md`. Taking the surface off screen costs a reader nothing: `readOutput`
+answers from the model, which does not care what is displayed.
 
-The reopen is what frees the surface, through `TerminalService.discard`. It is a protocol method with a
+The reopen is what frees the surface and the model, through `TerminalService.discard`. It is a protocol method with a
 default that does nothing, and `ProjectStore.activate` calls it on the old id before opening the
 replacement.
 It deliberately does not happen in `focus`: `focus` is also the MCP select, and a query must not
@@ -317,125 +318,151 @@ surface. `GhosttyServiceTests` does show that a child asking the question reads 
 **`Pst` in the bundled terminfo** advertises support too, as the protocol suggests. It is a hint only:
 the query is authoritative, and over ssh or inside a multiplexer the entry may be missing.
 
+## The server's own terminal
+
+Every terminal has a second emulator beside the surface: a `TerminalScreenModel`, which is
+libghostty-vt parsing the same bytes with no window, no renderer and no child. The surface can only
+say what is on a terminal's screen while that terminal is displayed, in plain text and with no cursor.
+The model answers for any terminal at any time, with colours, modes, the cursor and the scrollback.
+Two things read it: the paint a remote viewer is sent, and `readOutput`.
+
+`GhosttyService.open` builds one model per terminal, at the grid the pty is spawned with and with
+grapheme clustering as the surface has it, and registers it in `SharedTerminalState` before the relay
+starts reading. It is resized on the same report that resizes the pty, so its grid is the surface's:
+the surface stays the sizing authority and the model is told, never asked. It is released when the row
+is closed or reopened, together with the surface. An exited terminal keeps both.
+
+**The model never answers the program.** A terminal replies to queries (device attributes, a cursor
+position report) by writing to the pty, and the surface already does. A second answerer is a wrong
+answer the moment the two disagree about any state, so the model is built with no reply callback and
+no other callback either: the bell, the title and notifications are reported by the surface through
+`GhosttyMonitor`, and a second report would ring every bell twice.
+
+**One lock per model**, held for the whole of each call, because libghostty-vt is not reentrant and
+its callers are on three queues: the relay's for a write, the hub's delivery queue for a paint, and
+the main actor for a resize or a text read. What is called often is cheap (a parse runs at hundreds of
+megabytes a second, a paint frame formats one viewport). One call is not: **a change of column count
+reflows the whole scrollback under that lock**, and on a full scrollback that is slow enough to hold
+the terminal's own output behind each notch of a window drag. It is a known cost and not yet solved.
+
+History is 10,000 lines per terminal (`TerminalScrollback.lines`), roughly 1 KiB per retained row at
+120 columns, so about 10 MiB for a terminal that has filled it.
+
+The two libraries share several hundred symbols. `scripts/coexistence-check.sh` is the run that shows
+they agree in one process, under the address sanitizer, with a real surface; `CLAUDE.md` describes it.
+
 ## Serving a remote viewer
 
 The producer is `TerminalRelay` writing into `PaneStreamHub.write`, so the bytes on the wire are the
-child's own. `docs/remote-access.md` is the protocol reference. Two things are worth stating here.
+child's own. `docs/remote-access.md` is the protocol reference. The things worth stating here follow.
 
-**The first paint is monochrome and its cursor is approximate.** `ghostty_surface_read_text` is the
-only read back libghostty offers and `ghostty_text_s` carries no attributes, so a snapshot is plain
-text and nothing in it can be coloured. The C API has no cursor getter of any kind, so `ScreenSnapshot`
-places the cursor at the end of the last non-empty row, which is right for a shell at a prompt and
-wrong for a full screen program. Both costs last exactly one frame: every byte after the paint is the
-terminal's own and is exact. The first paint is the weaker half, since
-`capture-pane -e` carries attributes and `display-message` answers the real cursor position.
+**The first paint is exact and coloured.** It is the model's paint frame: the visible viewport with
+each cell's colours and attributes, the modes a program set, the scrolling region, the tab stops and
+the real cursor position, sent behind a `resize` carrying the grid it was taken at. The wire shape is
+what it always was, a `resize` and a `data`, so a client needs no change to show it. Three things are
+deliberately not in it:
 
-**The paint is built from the last recorded snapshot, not from the instant of attach.** The hub asks
-for it on its own delivery queue and cannot hop to the main actor, where the surface can be read: the
-census gates the attach and has to be answered before the viewer is registered, and the paint has to be
-ordered against the flush carrying the bytes produced while it ran. `SharedTerminalState` is the
-lock-guarded registry that makes both questions answerable off the main actor.
+- The palette. The formatter can restore all 256 entries with `OSC 4`, but what it would write is the
+  model's own table, which nothing configures: the library's default colours, not the theme the
+  surface draws with and not the theme of the viewer. Sent, it would replace the viewer's colours with
+  a third set. Left out, a viewer draws indexed colours with its own theme, as it does for the stream.
+- The scrollback. A viewer gets the viewport and builds its own history from the stream after it.
+- The screen underneath an alternate screen. A viewer attaching while a full screen program runs sees
+  that program, and an empty primary screen once it exits, until the shell prints again.
 
-That makes staleness a number, and the number is `GhosttyService.snapshotDebounce`, **300 ms**. It is
-driven by output, because output is the only thing that changes a screen: a chunk arriving on the
-relay's queue marks the session dirty and schedules one refresh per window, so a terminal printing a
-megabyte costs one read rather than one per chunk. A resize and a selection change record immediately,
-since those are the moments a screen changes shape. The job poll is a backstop only, refreshing every
-live terminal once per tick, which covers an idle terminal whose screen changed for some reason other
-than its own output.
+The frame is prefixed with a soft reset, an erase and a home (`TerminalPaint.reset`). The frame itself
+erases nothing, and a repaint lands on a viewer that already shows something. It is not a hard reset,
+which would also throw away the scrollback a viewer has built up, on every notch of a window drag.
 
-Two earlier versions of this got it wrong, and both are worth recording, because both look correct
-until a viewer attaches to an idle terminal. Recording only on resize and selection meant a terminal opened and then attached to from a browser had had neither since
-its surface was created, so the viewer was painted the empty screen from that moment: measured against
-a running instance, the paint was `ESC[2J ESC[H` and a row count of zero. Bounding it on the job poll
-instead was better and still wrong, because that poll's interval is 15 seconds while a workspace is
-expanded and 300 when everything is collapsed, so a viewer could be shown a five minute old screen and
-only then start receiving live bytes, with everything in between missing. Neither figure is the answer
-to "how stale can a first paint be"; 300 ms is, and it is a property of this type rather than of an
-unrelated setting.
+**The paint and the stream meet at one byte.** An exact paint only helps if the stream picks up at
+the very byte the paint stops at. One chunk early and a build log shows lines twice; one chunk late and
+lines are missing. So the hub is the single place that knows the offset, and it holds one lock per
+session to keep it:
+
+- `write` appends a chunk to the session's buffer and writes it into the model (`onIngest`) under
+  that lock, as one step. Whenever the lock is free, what the model has parsed and what the hub has
+  accepted for delivery are the same bytes.
+- `attach` takes the lock and does three things before releasing it: it takes what is buffered, asks
+  for the paint (`onPaint`), and registers the viewer. The bytes taken go to the viewers that were
+  already there and not to the new one, whose paint already shows them. Everything accepted afterwards
+  goes to all of them.
+- A repaint after a resize makes the same join: what was accepted before the paint is delivered ahead
+  of it, and everything after follows it.
+
+The lock is per session because a parse runs under it, and one terminal printing a build log must not
+hold up the bytes of the terminal next to it. Delivery is a separate matter and has one serial queue
+for the whole hub: the flush timer, an attach, a repaint and an ending each take bytes and then hand
+them to viewers, and two of those running at once could take in one order and deliver in the other.
+`attach` therefore runs on that queue synchronously, which is also what puts a viewer's paint ahead
+of its first stream bytes.
+
+Two things keep the join honest at its edges. The UTF-8 chunker belongs to the session and is never
+reset while the session lives, so a character split across the moment of an attach reaches the new
+viewer whole: the model has not drawn it, so the paint does not hold it, and the chunker delivers all
+of its bytes together. An escape sequence split across that moment is not protected in the same way:
+the model has consumed its first half, and the viewer receives the second half as text. It takes an
+attach landing between two reads that cut a sequence, and the next redraw corrects it.
+
+`PaneStreamJoinTests` races a writer against an attach and against repaints, plays everything the
+viewer was sent into a terminal of its own, and asserts every numbered line is there exactly once.
 
 **A viewer is also told when the grid moves**, which takes wiring here rather than coming for free. A
 viewer learns its size in the paint it receives on attach and from nothing else on the socket, so a
 window resize would otherwise leave every already attached viewer rendering reflowed bytes against the
-old grid until it reattached. The report comes from the
-surface, so `GhosttyService`'s resize handler carries it into `PaneStreamHub.noteSize`, which is the
-same code path. Two details are load bearing. The hub deduplicates on
-the last size it saw, because libghostty reports a grid on events that need not have moved it (a font
-metric change, a re-parent) without the grid having moved. And the
-service records its snapshot *before* it reports the size, because the report is what makes the hub
-repaint: reported first, that repaint would read the screen as it was before the reflow and then be
-contradicted by the bytes the reflow produced.
+old grid until it reattached. The report comes from the surface, so `GhosttyService`'s resize handler
+carries it into `PaneStreamHub.noteSize`. Two details are load bearing. The hub deduplicates on the
+last size it saw, because libghostty reports a grid on events that need not have moved it (a font
+metric change, a re-parent). And the service resizes the model *before* it reports the size, because
+the report is what makes the hub repaint and the repaint is taken from the model: reported first, it
+would paint the screen as it was before the reflow and then be contradicted by the bytes the reflow
+produced.
 
-The direction of that hook matters as much as its order. It runs on the main actor and hands the size to
-a lock-guarded hub; nothing on a hub queue reaches back into the main-actor-isolated service, which is
-the same rule the census and the paint follow through `SharedTerminalState`.
+The direction of these hooks matters as much as their order. The resize report runs on the main actor
+and hands the size to a lock guarded hub. The census, the model feed and the paint are asked by the hub
+from the relay's queue and from its own, and answer from `SharedTerminalState` and the model, both
+lock guarded. Nothing on a hub queue reaches back into the main actor isolated service.
 
 **A viewer is told when the terminal ends**, and that also takes wiring here. The census answers an
 attach that has not happened yet; a browser or an iPad already watching a session has nothing else to
-learn from, and there is no `%window-close` to arrive either, because the terminal is a PTY in this
-process. So `GhosttyService` reports a stream that is over through its own hook, which
-`GhosttyStack` wires to `PaneStreamHub.endViewers(ofSession:)`, the method the hub exposes
-from `%window-close` and from a session the server no longer holds. Both ways a terminal ends are
-reported: the child exiting, and the row being closed. Without it a viewer went silent forever, which is
+learn from, because the terminal is a PTY in this process. So `GhosttyService` reports a stream that
+is over through its own hook, which `GhosttyStack` wires to `PaneStreamHub.endViewers(ofSession:)`.
+Both ways a terminal ends are reported: the child exiting, and the row being closed. The bytes still
+buffered are delivered ahead of the ending. Without the hook a viewer went silent forever, which is
 indistinguishable from an idle terminal and is exactly the state the census exists to prevent for a
 viewer arriving later.
 
-The snapshot the hub paints from is not monotonic and the hub does not assume it is. A host that
-answers nil, which it does for a surface with no grid yet, overwrites a good screen with nothing, and
-the hub reads an empty paint as a capture that failed rather than as an empty screen: the viewer keeps
-whatever it had and the live bytes bring it current. Keeping the older screen there would mean painting
-a state the terminal has since left.
-
-The recorded screen that `readOutput` answers from is held to a stricter rule, because it has no live
-bytes behind it to bring a viewer current: `recordSnapshot` never replaces a recorded non-empty screen
-with the blank a surface reads the instant it leaves the screen (see "Reading a terminal's output"). A
-live screen always has at least its prompt row, so an empty read is the off-screen case rather than a
-cleared screen. Clearing a recorded screen is left to `close` and `discard` (via `tearDown`) and to
-`closeAll`, which record nil directly. `reap` deliberately keeps the screen so a terminal stays readable
-after its child exits.
+An empty paint means a paint that could not be built, never an empty screen: a session whose model is
+gone returns nothing, the hub logs it, and on a repaint the viewer is sent the bare `resize`.
 
 ## Reading a terminal's output
 
-`GhosttyService.readOutput` answers an MCP read of what a terminal has printed, and **scrollback is
-reachable.** This was recorded as a limitation for a while and it is not one.
+`GhosttyService.readOutput` answers an MCP read of what a terminal has printed, from the terminal's
+screen model: `TerminalScreenModel.text(maxLines:)`. It returns the last `maxLines` lines, most recent
+last. A line the terminal wrapped comes back as one line, which is how the surface reported its text
+and what a reader counting lines means by one. Trailing spaces are removed, and the blank rows below
+the last line with text are not lines.
 
-`ghostty_surface_read_text` takes a selection, and each of a selection's points carries a coordinate
-mode as well as coordinates. **The coordinate mode decides the span, not the point tag.**
+**It does not matter what is displayed.** This is the reason the read moved. The surface only answers
+while it is on screen, and in a one window app that is one terminal: every other read, which is nearly
+every read an agent makes, used to fall back to a single recorded viewport however many lines were
+asked for. The model holds the scrollback for every terminal, displayed or not, running or exited, and
+reaches as far into it as the caller asks, up to the 10,000 lines it keeps.
+
+The read formats only the rows it needs. It starts from the active screen plus one row per line asked
+for, and widens while wrapped lines leave it short, so a small read stays cheap on a deep scrollback.
+A window that does not start at the top of the history can start in the middle of a wrapped line; that
+first partial entry is dropped and never returned.
+
+**The surface can still be read, by one caller.** `GhosttySurfaceHost.readText` wraps
+`ghostty_surface_read_text` and is not part of `TerminalSurfaceHosting`. It exists for the coexistence
+check, which has to ask the surface itself what it drew in order to compare it with the model. Two
+facts about it are worth keeping. The coordinate mode decides the span, not the point tag:
 `GHOSTTY_POINT_COORD_EXACT` addresses a row, while `TOP_LEFT` and `BOTTOM_RIGHT` mean "the extreme of
-this space" and ignore x and y. So a `GHOSTTY_POINT_SCREEN` selection from `TOP_LEFT` to
-`BOTTOM_RIGHT` is the whole screen, scrollback included, and no height getter is needed to ask for it.
-`EXACT` cannot substitute: measured against a 50,000 line scrollback in a 28 row grid, `SCREEN` with
-an `EXACT` y as far as 9999 returned 28 rows, so it clamps to the grid and cannot address history at
-all.
-
-**The cost is what shapes the rest.** On that same scrollback, on the main actor, the viewport read
-measures 0.14 ms and the whole screen read 29 ms, plus roughly 5 ms to decode and split it. So
-`GhosttySurfaceHost.snapshot` picks the viewport read whenever the caller asks for no more rows than
-the grid holds, the boundary included, and `GhosttyService.recordSnapshot` always asks for exactly the
-grid's own row count rather than a fixed larger number. `readOutput` honours the caller's `maxLines`
-instead, because reaching history is the whole point of that call and it runs once per request rather
-than once per notch of a window drag.
-
-**A read of a surface that is not on screen falls back to the recorded screen.** `read_text` answers
-nothing for a surface that is not the displayed pane, and in a one window, one terminal app that is
-every MCP read except the one session the window happens to be showing, so a live read alone returned
-an empty string for exactly the reads `get_process_output` exists to serve. So `readOutput` tries the
-live surface first, the only path that reaches scrollback, and when it comes back empty it answers from
-the screen `recordSnapshot` last recorded from the terminal's own output within `snapshotDebounce`. The
-fallback is the viewport rather than the scrollback, since the recorded screen is the grid's own height,
-but it is what the terminal printed rather than nothing. It works only because recording is kept honest
-for it: an off-screen surface reads blank, and `recordSnapshot` refuses to record that blank over a
-screen it already has, so output arriving the instant a pane leaves the screen cannot erase what the
-next read falls back to.
-
-**The boundary is the case that runs, so it has its own function**,
-`GhosttySurfaceHost.readsScrollback(maxLines:gridRows:)`, and a test at 27, 28 and 29 rows against a 28
-row grid. It was `>=` once, which sent `recordSnapshot` (a resize away, and every 300 ms while output
-flows) down the whole screen path: roughly 34 ms of main actor time per live terminal per refresh
-instead of 0.14 ms, so eight terminals with deep scrollback stalled the app for about a quarter of a
-second every 300 ms while anything printed. Nothing failed and nothing logged, and the whole suite
-passed, because `FakeSurfaceHost` answers both spans the same way. Only a comment claiming the saving
-gave it away.
+this space", so a `GHOSTTY_POINT_SCREEN` selection between those two is the whole screen with its
+scrollback, and `EXACT` clamps to the grid and cannot address history at all. And the two reads cost
+very differently: measured on a 50,000 line scrollback, the viewport read is 0.14 ms and the whole
+screen read 29 ms plus 5 ms to decode, which is why a read of exactly the grid's own height takes the
+cheap path (`GhosttySurfaceHost.readsScrollback(maxLines:gridRows:)`, with a test at the boundary).
 
 ## Spawning the shell
 
@@ -587,8 +614,13 @@ a socket that then stays silent forever.
   terminal is torn down explicitly on `NSApplication.willTerminateNotification`, synchronously, since
   an object still alive at exit gets no `deinit` and the relay's socket file would otherwise sit in the
   temp directory until the stale sweep reached it.
-- **A remote viewer's first paint is monochrome, its cursor is approximate, and it is up to 300 ms
-  stale.** Causes above, under "Serving a remote viewer".
+- **A remote viewer's first paint carries the viewport and nothing above or beneath it.** No
+  scrollback, no palette, and not the screen under an alternate screen. An escape sequence cut in two by
+  the moment of an attach shows as stray characters until the next redraw. Causes above, under
+  "Serving a remote viewer".
+- **A column change reflows the whole scrollback under the model's lock**, which can hold a terminal's
+  output behind each notch of a window drag once its scrollback is full. See "The server's own
+  terminal".
 - **The stream carries whatever `RawPTY.terminalType` resolved**, which is `xterm-ghostty` in the
   ordinary case: the app compiles that terminfo entry into its own bundle and points the child at it
   with `TERMINFO_DIRS` (`BundledTerminfo`, and "Spawning the shell" above), so no other terminal has to
@@ -613,9 +645,9 @@ a socket that then stays silent forever.
   false so libghostty knows nothing was shown. On this substrate the surface's command is the helper,
   which ends because the terminal ended rather than the other way round, and the action also fires
   when the app tears a terminal down itself, so it says nothing about whether the shell exited.
-- **The surface is kept after the child exits**, on purpose, so that last screen stays readable through
-  `readOutput` and the MCP server, even though the pane shows the stopped screen over it. What they get
-  is the screen `reap` recorded, the viewport at the moment the terminal ended, not the scrollback.
+- **The surface is kept after the child exits**, and so is the terminal's screen model, which is what
+  keeps that last screen and its scrollback readable through `readOutput` and the MCP server while the
+  pane shows the stopped screen.
   `close`, `discard` and `closeAll` are the only things that destroy a surface, which is to say: closing
   the row, reopening it, or quitting. See "What happens to a terminal that stopped".
 - **Dropping files onto the pane inserts their paths.** `GhosttySurfaceView` registers for `.fileURL`
@@ -671,9 +703,10 @@ Three things about that package are worth knowing before changing anything here:
 **When a Ghostty release breaks the build**, the change belongs in `GhosttySurfaceHost.swift` and the
 pin in `project.yml` moves as one commit. Check the header of the version you are moving to for the
 facts this substrate rests on before assuming they still hold: that a surface is created with an
-`NSView` and cannot exist without one, that `ghostty_surface_read_text` is the only read back and
-carries no attributes, that there is no cursor getter and no title setter, and that the `exec` backend
-offers no byte feed. `GhosttySurfaceHost.libraryVersion()` logs the linked library's own version at
+`NSView` and cannot exist without one, that there is no title setter, and that the `exec` backend
+offers no byte feed. What the surface can be asked about its own screen no longer matters to the app,
+which reads the screen model instead; only the coexistence check still calls
+`ghostty_surface_read_text`. `GhosttySurfaceHost.libraryVersion()` logs the linked library's own version at
 startup; because the pin is exact, a mismatch between that and `project.yml` means a stale resolved
 package rather than a version range.
 

@@ -76,8 +76,10 @@ The path from the browser back to the terminal, in order:
   `PaneStreamHub.attach`; phase 3 of issue #84 is what puts the local pane on this
   route too. Bytes are split on UTF-8 boundaries,
   so a multibyte character straddling two flushes is not cut in half. A viewer that
-  attaches is painted first, from a `ScreenSnapshot` read off the surface, because
-  a session sitting idle emits no output and would otherwise show a blank screen.
+  attaches is painted first, from the terminal's screen model, because a session
+  sitting idle emits no output and would otherwise show a blank screen. The hub
+  also feeds that model, in the same step that accepts a chunk for delivery, which
+  is what lets the paint and the stream after it meet at exactly one byte.
   When a terminal's child exits, every viewer of it receives an end signal and the
   client shows the session has ended. A viewer arriving after that already happened
   gets the same end signal on attach, because the session is checked against a live
@@ -98,9 +100,11 @@ The producer is `TerminalRelay`, which owns the read
 source on the pty Wietty spawned and writes every chunk into
 `PaneStreamHub.write` before it writes it to the surface. **The bytes on the
 wire are the child's own**, so a rendering fault is fixed once for the browser,
-the iPad, and the app itself. Remote keystrokes take the same path a local one takes,
-into the pty master, so both orders are the pty's. Three differences are worth
-knowing on the client side:
+the iPad, and the pane of another Mac showing this session. The serving Mac's own
+pane is not a client of this route: it shows the libghostty surface, and only
+phase 3 of issue #84 puts it on the stream. Remote keystrokes take the same path
+a local one takes, into the pty master, so both orders are the pty's. Four things
+are worth knowing on the client side:
 
 - **`TERM` is `xterm-ghostty` when that terminfo entry is installed, and
   `xterm-256color` otherwise** (`RawPTY.terminalType`, resolved once per launch
@@ -109,15 +113,25 @@ knowing on the client side:
   drawing for `xterm-ghostty` can emit sequences a client does not implement:
   xterm.js in the browser page and SwiftTerm in the iPadOS client each render
   what they support and ignore the rest. Nothing translates between them.
-- **The paint on attach is monochrome and its cursor is approximate.**
-  `ghostty_surface_read_text` is the only read back libghostty offers and it
-  carries no attributes, and the C API has no cursor getter at all, so the
-  cursor is placed at the end of the last non-empty row. Both costs last one
-  frame: every byte after the paint is exact.
-- **The paint comes from the last recorded screen rather than the instant of
-  attach**, bounded at 300 ms (`GhosttyService.snapshotDebounce`) and driven by
-  the terminal's own output, with the app-wide job poll as a backstop. See
-  `docs/terminal.md` for why the hub cannot read the surface itself.
+- **The paint on attach is coloured and exact.** It is the screen model's paint
+  frame for the visible viewport: every cell with its colours and attributes,
+  the modes a program has set, the scrolling region, the tab stops, and the
+  cursor where the terminal has it. It arrives as it always did, a `resize`
+  with the grid followed by one `data` message, so the protocol is unchanged
+  and an older client renders it without knowing anything moved; there are
+  simply SGR sequences and a cursor position inside the payload now. The
+  payload begins with a soft reset, an erase and a home, because the same
+  frame is sent again after a resize, to a client that already shows something.
+  It does not carry scrollback, the palette, or the screen underneath an
+  alternate screen. A client keeps its own theme for indexed colours and
+  builds its own history from the stream.
+- **The paint is taken at the instant of attach and the stream continues from
+  that byte.** The server takes what it has buffered, takes the paint, and
+  registers the viewer as one step that no output can interleave with, so a
+  viewer attaching while a build log scrolls sees no line twice and misses
+  none. A multibyte character cut by that instant arrives whole. An escape
+  sequence cut by it does not, and shows as stray characters until the next
+  redraw. See `docs/terminal.md` for the mechanism.
 - **The end signal has one source.** The terminal is a PTY in this process, so
   `GhosttyService` reports its end and `PaneStreamHub.endViewers(ofSession:)`
   delivers the `ended` message. Both ways a terminal ends reach it: the child
