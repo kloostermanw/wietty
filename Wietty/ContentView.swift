@@ -5,6 +5,9 @@ import WiettyShared
 
 struct ContentView: View {
     let store: ProjectStore
+    /// The MCP and LAN servers, owned by the app rather than this view. See
+    /// `ServerRuntime`.
+    let runtime: ServerRuntime
     /// This Mac's own view of the settings: sidebar width and colours, the active
     /// group, and the notification sound. See `UIPreferences`.
     let preferences: UIPreferences
@@ -22,10 +25,8 @@ struct ContentView: View {
     /// Whether the prompt-template popup is up. Owned by the app for the same reason.
     let promptTemplatePresentation: PromptTemplatePresentation
     @Environment(\.openWindow) private var openWindow
-    @State private var mcpHost: MCPServerHost?
     /// The app's own memory for the status bar, sampled for the window's life.
     @State private var memory = AppMemoryMonitor()
-    @State private var remoteServer: RemoteServer?
     @State private var isBusy = false
     @State private var renameTarget: (project: Project, ref: TerminalRef)?
     @State private var renameText = ""
@@ -97,7 +98,7 @@ struct ContentView: View {
                                       promptTemplates: promptTemplates,
                                       selection: paneSelection,
                                       onRestartTerminal: { restartTerminal(sessionId: $0) },
-                                      onRestartMCPServer: { restartMCPServer() })
+                                      onRestartMCPServer: { runtime.restartMCP() })
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -106,7 +107,7 @@ struct ContentView: View {
         // belongs to the app, not to whatever the pane shows.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             StatusBarContainer(store: store, memory: memory,
-                               onRestartMCPServer: { restartMCPServer() })
+                               onRestartMCPServer: { runtime.restartMCP() })
         }
         // Up under the hidden title bar, so the sidebar's buttons and the pane's bar
         // are the row the traffic lights sit in rather than a second row below an
@@ -163,16 +164,7 @@ struct ContentView: View {
             }
             startBellNotifications()
             terminals.monitor.start { event in store.handle(event) }
-            if mcpHost == nil {
-                // One host for the window's life. A port change or a Restart restarts
-                // this one rather than building another, so only one server ever
-                // reports into `store.mcpStatus`.
-                let host = MCPServerHost(router: MCPToolRouter(store: store, port: store.mcpPort), port: store.mcpPort,
-                                         onStatusChange: { status in store.mcpStatus = status })
-                mcpHost = host
-                await host.start()
-            }
-            await syncRemoteServer()
+            await runtime.start(store: store, terminals: terminals)
             remoteWorkspaces.sync()
         }
         // A connection removed while its terminal is on screen takes the terminal
@@ -191,9 +183,11 @@ struct ContentView: View {
         .onChange(of: store.projects.map(\.id)) { _, ids in
             router.workspacesChanged(to: ids)
         }
-        .onChange(of: store.remoteEnabled) { Task { await syncRemoteServer() } }
-        .onChange(of: store.remotePort) { Task { await syncRemoteServer(forceRestart: true) } }
-        .onChange(of: store.mcpPort) { Task { await mcpHost?.restart(port: store.mcpPort) } }
+        .onChange(of: store.remoteEnabled) { Task { await runtime.syncRemote(store: store, terminals: terminals) } }
+        .onChange(of: store.remotePort) {
+            Task { await runtime.syncRemote(store: store, terminals: terminals, forceRestart: true) }
+        }
+        .onChange(of: store.mcpPort) { Task { await runtime.setMCPPort(store.mcpPort) } }
         .alert("Rename terminal", isPresented: renameIsPresented) {
             TextField("Name", text: $renameText)
             Button("Cancel", role: .cancel) { renameTarget = nil }
@@ -529,40 +523,7 @@ struct ContentView: View {
         }
     }
 
-    /// Starts or stops `RemoteServer` to match `store.remoteEnabled`. When the
-    /// port changes, `forceRestart` tears down the running server first so it
-    /// rebinds on the new port.
-    private func syncRemoteServer(forceRestart: Bool = false) async {
-        if store.remoteEnabled {
-            if forceRestart, remoteServer != nil {
-                remoteServer?.stop()
-                remoteServer = nil
-            }
-            if remoteServer == nil {
-                store.remoteStartupError = nil
-                let server = RemoteServer(store: store, streamer: terminals.streamer,
-                                          token: store.remoteToken, port: store.remotePort,
-                                          onStartupError: { message in store.remoteStartupError = message })
-                remoteServer = server
-                await server.start()
-            }
-        } else {
-            remoteServer?.stop()
-            remoteServer = nil
-            // The hub is deliberately left running. It is shared with the pane's
-            // own viewer and its `stop()` cancels the flush timer for good, so
-            // stopping it here would leave every later local viewer silent.
-            // Tearing the server down closes its sockets anyway, and each socket
-            // detaches its own viewer on the way out.
-            store.remoteStartupError = nil
-        }
-    }
 
-    /// Restarts the MCP server on the port it already has. The status bar's and the
-    /// Settings tab's Restart.
-    private func restartMCPServer() {
-        Task { await mcpHost?.restart() }
-    }
 
     private func addProject() {
         let panel = NSOpenPanel()

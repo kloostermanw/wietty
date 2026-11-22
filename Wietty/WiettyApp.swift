@@ -11,6 +11,10 @@ struct WiettyApp: App {
     /// Owned here, beside the store, because the Group submenu in `commands` reads
     /// the active group and cannot reach a view's `@State`.
     @State private var preferences: UIPreferences
+    /// The MCP and LAN servers, and the teardown that closes every terminal when
+    /// the app quits. Owned here rather than by `ContentView`, because what runs
+    /// is the app's business and phase 5 makes it outlive any window.
+    @State private var runtime = ServerRuntime()
     @State private var updates = UpdateService()
     @StateObject private var remoteConnections: RemoteConnectionsStore
     @StateObject private var remoteWorkspaces: RemoteWorkspacesController
@@ -58,7 +62,7 @@ struct WiettyApp: App {
 
     var body: some Scene {
         Window("Wietty", id: Self.mainWindowID) {
-            ContentView(store: store, preferences: preferences, terminals: terminals,
+            ContentView(store: store, runtime: runtime, preferences: preferences, terminals: terminals,
                         remoteConnections: remoteConnections, remoteWorkspaces: remoteWorkspaces,
                         bells: bells, router: router, promptTemplates: promptTemplates,
                         promptTemplatePresentation: promptTemplatePresentation)
