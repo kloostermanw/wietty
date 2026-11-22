@@ -294,91 +294,6 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         #expect(host.destroyed == [handle.sessionId])
     }
 
-    /// Output is what brings the paint up to date, within `snapshotDebounce`.
-    ///
-    /// The bound matters more than the mechanism. Recording only on a resize and a
-    /// selection change left a viewer attaching to a freshly opened terminal painted
-    /// an empty grid; recording on the monitor poll instead left it painted a screen
-    /// up to five minutes old, because that poll runs at 15 seconds with a workspace
-    /// expanded and 300 with every one collapsed. Neither is visible in a test that
-    /// only calls `refreshSnapshots` by hand, which is why this one goes through real
-    /// terminal output.
-    @Test func outputRefreshesTheSnapshotWithoutWaitingForThePoll() async throws {
-        let host = FakeSurfaceHost()
-        let service = service(host)
-        defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: nil, badge: nil)
-        // Scripted after the open, so the record `select` already did cannot be what
-        // satisfies this: at that point the host had no screen to give.
-        #expect(service.shared.snapshot(for: handle.sessionId) == nil)
-        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["fresh"], cols: 80)
-        // The shell echoes this, which is output arriving on the relay's queue.
-        try await service.send(sessionId: handle.sessionId, text: "echo marker\n")
-        try await waitUntil { service.shared.snapshot(for: handle.sessionId)?.rows == ["fresh"] }
-        // The grid's own height, not a larger number: this runs while output flows.
-        #expect(host.requestedMaxLines[handle.sessionId] == 24)
-    }
-
-    /// A closed terminal is not recorded against, however late its last bytes land.
-    /// A snapshot left behind would paint a dead screen for an id the app may mint
-    /// again, which is the reason `close` clears it.
-    @Test func outputArrivingAfterACloseRecordsNothing() async throws {
-        let host = FakeSurfaceHost()
-        let service = service(host)
-        defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: nil, badge: nil)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["too late"], cols: 80)
-        // Marked as though a chunk arrived, then closed before the refresh runs.
-        service.noteOutput(handle.sessionId)
-        try await service.close(sessionId: handle.sessionId)
-        try await Task.sleep(for: .milliseconds(600))
-        #expect(service.shared.snapshot(for: handle.sessionId) == nil)
-    }
-
-    /// The paint a remote viewer attaches to has to be current, and a resize and a
-    /// selection change are not enough to make it so: a terminal opened and then
-    /// attached to from a browser has had neither since its shell printed anything,
-    /// so without this the viewer's first frame is the empty screen from the instant
-    /// the surface was created. Measured against a running instance before the fix:
-    /// the paint was a clear-screen and a row count of zero.
-    @Test func refreshingSnapshotsRerecordsEveryLiveTerminal() async throws {
-        let host = FakeSurfaceHost()
-        let service = service(host)
-        defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 30", badge: nil)
-        // The screen the shell printed after the surface was created, which nothing
-        // has recorded yet.
-        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["a prompt"], cols: 80)
-        service.refreshSnapshots()
-        #expect(service.shared.snapshot(for: handle.sessionId)?.rows == ["a prompt"])
-        // The grid's own height, not a larger fixed number: this runs on every poll
-        // and reaching scrollback costs 34 ms against 0.14 ms for the viewport.
-        #expect(host.requestedMaxLines[handle.sessionId] == 24)
-    }
-
-    /// An exited terminal is skipped, so whatever was recorded while it was alive is
-    /// left exactly as it was. Its screen cannot change again, and a viewer attaching
-    /// to it is answered `ended` by the census rather than painted at all, so a
-    /// refresh here would be work whose result nothing can read.
-    @Test func refreshingSnapshotsSkipsAnExitedTerminal() async throws {
-        let host = FakeSurfaceHost()
-        let service = service(host)
-        defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "exit 0", badge: nil)
-        try await waitUntil { service.liveSessions.isEmpty }
-        // Scripted only after the exit, so picking it up is proof the terminal was
-        // read rather than skipped.
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["never recorded"], cols: 80)
-        service.refreshSnapshots()
-        #expect(service.shared.snapshot(for: handle.sessionId) == nil)
-    }
-
     /// libghostty asking for a surface to be closed means the terminal has ended,
     /// and is answered exactly as an exit noticed on the relay is: the pty goes, the
     /// census stops counting it, the caller is told, and the surface stays so the
@@ -474,14 +389,13 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
                                             existingWindowId: nil, command: "exit 0", badge: nil)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["died here"], cols: 80)
         try await waitUntil { service.liveSessions.isEmpty }
 
         await service.discard(sessionId: handle.sessionId)
         #expect(host.destroyed == [handle.sessionId])
-        // And the id is gone from the registry entirely, so an attach to it is
-        // answered `ended` rather than painted from a dead screen.
-        #expect(service.shared.snapshot(for: handle.sessionId) == nil)
+        // And the id is gone from the registry entirely, its screen model with
+        // it, so nothing is left to paint or to read from a dead terminal.
+        #expect(service.screenModel(for: handle.sessionId) == nil)
         await #expect(throws: (any Error).self) {
             _ = try await service.readOutput(sessionId: handle.sessionId, maxLines: 10)
         }
@@ -600,30 +514,6 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         }
     }
 
-    /// A resize records the shared snapshot at the surface's own row count, never
-    /// at a fixed larger number.
-    ///
-    /// The number asked for is the contract, not just the rows that come back:
-    /// `read_text` reaching into scrollback measures roughly 34 ms on the main
-    /// actor against 0.14 ms for the viewport, and this runs on every notch of a
-    /// window drag. A grid of 24 is neither the substrate's initial 34 nor any
-    /// plausible constant, so a regression to one shows up here.
-    @Test func aResizeRecordsTheSnapshotAtTheGridsOwnHeight() async throws {
-        let host = FakeSurfaceHost()
-        let service = service(host)
-        defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 5", badge: nil)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: (1...40).map { "row \($0)" },
-                                                          cols: 90)
-        host.emitResize(handle.sessionId, TerminalSize(cols: 90, rows: 24))
-        #expect(host.requestedMaxLines[handle.sessionId] == 24)
-        // And the result is what the hub will paint from.
-        let recorded = try #require(service.shared.snapshot(for: handle.sessionId))
-        #expect(recorded.rows.count == 24)
-        #expect(recorded.rows.last == "row 40")
-    }
-
     @Test func closingRemovesTheTerminalAndItsSurface() async throws {
         let host = FakeSurfaceHost()
         let service = service(host)
@@ -690,30 +580,6 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         }
         let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 200)
         #expect(text.components(separatedBy: "\n") == (101...300).map { "row-\($0)" })
-    }
-
-    /// Recording a screen never replaces a real one with a blank. A surface reads
-    /// empty the moment it leaves the screen, and output arriving right then would
-    /// otherwise record that blank over what the terminal printed, which is exactly
-    /// what `readOutput` then falls back to. Only `close`/`discard` (via `tearDown`)
-    /// and `closeAll` clear a recorded screen; `reap` keeps it so a terminal stays
-    /// readable after its child exits.
-    @Test func recordingDoesNotReplaceARecordedScreenWithABlankOne() async throws {
-        let host = FakeSurfaceHost()
-        let service = service(host)
-        defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 5", badge: nil)
-        host.sizes[handle.sessionId] = TerminalSize(cols: 80, rows: 24)
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["real output"], cols: 80)
-        service.refreshSnapshots()
-        try #require(service.shared.snapshot(for: handle.sessionId)?.rows == ["real output"])
-
-        // Off-screen now: the live read is a blank screen, not nil.
-        host.snapshots[handle.sessionId] = ScreenSnapshot(rows: [], cols: 80)
-        service.refreshSnapshots()
-
-        #expect(service.shared.snapshot(for: handle.sessionId)?.rows == ["real output"])
     }
 
     /// The surface's grid is the sizing authority: a resize reported by

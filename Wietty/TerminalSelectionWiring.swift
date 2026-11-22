@@ -26,8 +26,8 @@ enum TerminalSelectionWiring {
                         store: ProjectStore,
                         router: PaneRouter) {
         selection.onChanged = { [weak service = terminals.ghostty.ghosttyService] previous, current in
-            // The outgoing terminal's screen, recorded while libghostty can still read
-            // it. See `GhosttyService.displayedSessionChanged`.
+            // So the service knows what is on screen when a terminal is closed. See
+            // `GhosttyService.displayedSessionChanged`.
             service?.displayedSessionChanged(from: previous, to: current)
             // A local terminal coming into view takes the pane back from whatever was
             // covering it, which is what makes opening or focusing one show it even

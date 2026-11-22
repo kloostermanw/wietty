@@ -181,8 +181,8 @@ import WiettyCore
         let deadline = Date().addingTimeInterval(120)
         while Date() < deadline {
             try await Task.sleep(for: .milliseconds(50))
-            guard let snapshot = host.snapshot(id: id, maxLines: grid.rows) else { continue }
-            let rows = Self.normalised(snapshot.rows)
+            guard let read = host.readText(id: id, maxLines: grid.rows) else { continue }
+            let rows = Self.normalised(read)
             if rows.contains(where: { $0.contains(marker) }), rows == previous { return rows }
             previous = rows
         }
