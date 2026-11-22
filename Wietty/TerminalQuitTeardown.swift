@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import WiettyCore
 
 /// Tears every terminal down when the app quits, because nothing else will.
 ///

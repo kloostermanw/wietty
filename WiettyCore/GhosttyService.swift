@@ -1,6 +1,5 @@
 import Foundation
 import OSLog
-import WiettyCore
 
 /// The parts of the terminal registry `PaneStreamHub` reads, behind a lock rather
 /// than the main actor.
@@ -16,25 +15,25 @@ import WiettyCore
 /// than the instant of attach. `GhosttyService` records on every resize and every
 /// selection change, which is when the screen a viewer would want has changed
 /// shape; between those, the live byte stream is what keeps a viewer current.
-final class SharedTerminalState: @unchecked Sendable {
+package final class SharedTerminalState: @unchecked Sendable {
     private let lock = NSLock()
     private var live: Set<String> = []
     private var snapshots: [String: ScreenSnapshot] = [:]
 
-    var liveSessions: Set<String> {
+    package var liveSessions: Set<String> {
         lock.lock(); defer { lock.unlock() }
         return live
     }
 
-    func note(live sessions: Set<String>) {
+    package func note(live sessions: Set<String>) {
         lock.lock(); live = sessions; lock.unlock()
     }
 
-    func record(_ snapshot: ScreenSnapshot?, for session: String) {
+    package func record(_ snapshot: ScreenSnapshot?, for session: String) {
         lock.lock(); snapshots[session] = snapshot; lock.unlock()
     }
 
-    func snapshot(for session: String) -> ScreenSnapshot? {
+    package func snapshot(for session: String) -> ScreenSnapshot? {
         lock.lock(); defer { lock.unlock() }
         return snapshots[session]
     }
@@ -47,7 +46,7 @@ final class SharedTerminalState: @unchecked Sendable {
 /// own queue, where every byte of terminal output arrives, and read on the main
 /// actor where the surface can be asked for a screen. Hopping to the main actor per
 /// chunk of output is exactly what the byte path exists to avoid.
-final class SnapshotBacklog: @unchecked Sendable {
+package final class SnapshotBacklog: @unchecked Sendable {
     private let lock = NSLock()
     private var dirty: Set<String> = []
     private var scheduled = false
@@ -55,7 +54,7 @@ final class SnapshotBacklog: @unchecked Sendable {
     /// Marks a session dirty, and answers whether the caller now owns scheduling
     /// the refresh. True exactly once per window, so a terminal printing a
     /// megabyte schedules one refresh rather than one per chunk.
-    func note(_ session: String) -> Bool {
+    package func note(_ session: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
         dirty.insert(session)
         guard !scheduled else { return false }
@@ -65,7 +64,7 @@ final class SnapshotBacklog: @unchecked Sendable {
 
     /// Takes the dirty set and reopens the window, in one step: a session marked
     /// after this returns belongs to the next refresh rather than being dropped.
-    func drain() -> Set<String> {
+    package func drain() -> Set<String> {
         lock.lock(); defer { lock.unlock() }
         let sessions = dirty
         dirty = []
@@ -89,7 +88,7 @@ final class SnapshotBacklog: @unchecked Sendable {
 /// lock protected. That split is deliberate. Hopping every chunk of terminal
 /// output to the main actor would put a shell's output behind the UI's work.
 @MainActor
-final class GhosttyService: TerminalService {
+package final class GhosttyService: TerminalService {
     private static let log = Logger(subsystem: "eu.kloosterman.wietty", category: "terminal-service")
 
     private struct Terminal {
@@ -145,21 +144,21 @@ final class GhosttyService: TerminalService {
 
     /// The terminal the pane shows. Only one surface is in the window's view
     /// hierarchy at a time; the rest stay alive and keep reading.
-    private(set) var selected: String?
-    var onSelectionChanged: (@MainActor (String?) -> Void)?
+    package private(set) var selected: String?
+    package var onSelectionChanged: (@MainActor (String?) -> Void)?
 
     /// The registry as `PaneStreamHub` sees it, off the main actor.
     ///
     /// `nonisolated` rather than plain `let`, and it has to be: the hub reads this
     /// from its own delivery queue, so an access that needed a hop to the main
     /// actor would not compile there at all.
-    nonisolated let shared = SharedTerminalState()
+    package nonisolated let shared = SharedTerminalState()
 
     /// Terminals that have printed since their screen was recorded.
     ///
     /// `nonisolated` and lock guarded, and it has to be: it is marked from the
     /// relay's queue as output arrives.
-    nonisolated let backlog = SnapshotBacklog()
+    package nonisolated let backlog = SnapshotBacklog()
 
     /// How long a burst of output is allowed to run before the screen a remote
     /// viewer would be painted from is brought up to date.
@@ -172,7 +171,7 @@ final class GhosttyService: TerminalService {
     /// per terminal this is not measurable.
     /// `nonisolated` because the scheduling that reads it happens on the relay's
     /// queue, and an immutable interval needs no isolation to be read safely.
-    nonisolated static let snapshotDebounce: TimeInterval = 0.3
+    package nonisolated static let snapshotDebounce: TimeInterval = 0.3
 
     /// What every session id this app mints starts with.
     ///
@@ -183,21 +182,21 @@ final class GhosttyService: TerminalService {
     /// `nonisolated` because the store answers that question from its own
     /// `@MainActor` context and a test may ask from anywhere; an immutable string
     /// needs no isolation to be read.
-    nonisolated static let sessionPrefix = "gt:"
+    package nonisolated static let sessionPrefix = "gt:"
 
     /// The size a terminal starts at, before any surface has been laid out. A
     /// terminal has to be spawned with some grid, and a full screen program lays
     /// itself out from what it finds; the first `onResized` corrects it.
-    static let initialSize = TerminalSize(cols: 120, rows: 34)
+    package static let initialSize = TerminalSize(cols: 120, rows: 34)
 
     /// The terminals whose child is still running. A reaped one is deliberately
     /// absent: this is the census a remote viewer's attach is gated on, and an
     /// exited terminal must be answered `ended` rather than streamed.
-    var liveSessions: Set<String> {
+    package var liveSessions: Set<String> {
         Set(terminals.lazy.filter { !$0.value.exited }.map(\.key))
     }
 
-    init(host: any TerminalSurfaceHosting,
+    package init(host: any TerminalSurfaceHosting,
          helperPath: String,
          shell: String = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh",
          onOutput: @escaping @Sendable (String, [UInt8]) -> Void,
@@ -298,7 +297,7 @@ final class GhosttyService: TerminalService {
     ///
     /// `nonisolated`, because it is called from the relay's queue as the bytes
     /// arrive. Only the scheduling happens there; the read itself is main actor work.
-    nonisolated func noteOutput(_ session: String) {
+    package nonisolated func noteOutput(_ session: String) {
         guard backlog.note(session) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.snapshotDebounce) { [weak self] in
             MainActor.assumeIsolated { self?.refreshSnapshots(self?.backlog.drain() ?? []) }
@@ -311,7 +310,7 @@ final class GhosttyService: TerminalService {
     /// `noteOutput` is what bounds the staleness in practice; this covers an idle
     /// terminal whose screen was changed by something other than its own output,
     /// which is cheaper than reasoning about whether such a case exists.
-    func refreshSnapshots() {
+    package func refreshSnapshots() {
         refreshSnapshots(Set(terminals.keys))
     }
 
@@ -330,7 +329,7 @@ final class GhosttyService: TerminalService {
         }
     }
 
-    func open(folder: URL, existingWindowId: String?, command: String?,
+    package func open(folder: URL, existingWindowId: String?, command: String?,
               badge: String?) async throws -> TerminalHandle {
         let session = Self.sessionPrefix + UUID().uuidString.lowercased()
         let socketPath = try TerminalRelay.socketPath(for: session)
@@ -455,7 +454,7 @@ final class GhosttyService: TerminalService {
     /// had nothing to act on either. The other two substrates answer not-found here
     /// because their session really is gone; this one has to say so itself, because
     /// the entry survives on purpose.
-    func focus(sessionId: String) async throws -> FocusResult {
+    package func focus(sessionId: String) async throws -> FocusResult {
         guard let terminal = terminals[sessionId], !terminal.exited else {
             // Not found, and nothing known about a job. `jobKnown: false` matters:
             // `ProjectStore.activate` types `claude` into a Claude row whose agent
@@ -481,7 +480,7 @@ final class GhosttyService: TerminalService {
     /// An exited terminal throws rather than accepting the write. Its master is
     /// closed, so the bytes went nowhere and nothing said so: an MCP `send_input`
     /// and a remote keystroke both looked like they had been delivered.
-    func send(sessionId: String, text: String) async throws {
+    package func send(sessionId: String, text: String) async throws {
         guard let terminal = terminals[sessionId] else {
             throw TerminalError.failed("No terminal named \(sessionId).")
         }
@@ -491,7 +490,7 @@ final class GhosttyService: TerminalService {
         terminal.pty.write(Array(text.utf8))
     }
 
-    func close(sessionId: String) async throws {
+    package func close(sessionId: String) async throws {
         tearDown(sessionId)
     }
 
@@ -504,7 +503,7 @@ final class GhosttyService: TerminalService {
     /// stopping one the service has never heard of means a store row is pointing at a
     /// session this side has already torn down: a desync worth a log rather than a
     /// silent return, since every throwing API treats an unknown id as an error.
-    func stop(sessionId: String) async {
+    package func stop(sessionId: String) async {
         if terminals[sessionId] == nil {
             Self.log.error("stop: no terminal named \(sessionId, privacy: .public)")
             return
@@ -528,7 +527,7 @@ final class GhosttyService: TerminalService {
     /// A no-op for a live terminal, and that guard is load bearing rather than
     /// defensive: a caller that reached here with a running terminal would turn a
     /// click on a live row into a silent close.
-    func discard(sessionId: String) async {
+    package func discard(sessionId: String) async {
         guard terminals[sessionId]?.exited == true else { return }
         tearDown(sessionId)
     }
@@ -556,7 +555,7 @@ final class GhosttyService: TerminalService {
         if selected == sessionId { select(terminals.keys.first) }
     }
 
-    func readOutput(sessionId: String, maxLines: Int) async throws -> String {
+    package func readOutput(sessionId: String, maxLines: Int) async throws -> String {
         guard terminals[sessionId] != nil else {
             throw TerminalError.failed("No terminal named \(sessionId).")
         }
@@ -601,7 +600,7 @@ final class GhosttyService: TerminalService {
     /// An exited terminal is skipped rather than queried. Its master is closed, so
     /// the query would fail and contribute nothing anyway, but skipping it says
     /// why.
-    func jobEvents() -> [MonitorEvent] {
+    package func jobEvents() -> [MonitorEvent] {
         terminals.compactMap { session, terminal in
             guard !terminal.exited else { return nil }
             return terminal.pty.foregroundJobName().map { .job(sessionId: session, jobName: $0) }
@@ -610,7 +609,7 @@ final class GhosttyService: TerminalService {
 
     /// Tears every terminal down. Called on app teardown and by tests, so a
     /// leaked pty does not outlive the process that owns its socket file.
-    func closeAll() {
+    package func closeAll() {
         for (session, terminal) in terminals {
             terminal.relay.stop()
             terminal.pty.terminate()

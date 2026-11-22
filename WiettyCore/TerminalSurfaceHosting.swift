@@ -1,6 +1,4 @@
-import AppKit
 import Foundation
-import WiettyCore
 
 /// One terminal's visible screen, as plain text.
 ///
@@ -15,14 +13,14 @@ import WiettyCore
 /// is right for a shell sitting at a prompt and wrong for a full screen program.
 /// The next byte the terminal produces moves it to the truth, so the cost is one
 /// frame of a misplaced cursor on attach.
-struct ScreenSnapshot: Equatable, Sendable {
-    let rows: [String]
-    let cols: Int
-    let cursorX: Int
-    let cursorY: Int
+package struct ScreenSnapshot: Equatable, Sendable {
+    package let rows: [String]
+    package let cols: Int
+    package let cursorX: Int
+    package let cursorY: Int
 
     /// Builds a snapshot from rows, placing the cursor as described above.
-    init(rows: [String], cols: Int) {
+    package init(rows: [String], cols: Int) {
         self.rows = rows
         self.cols = cols
         let lastContent = rows.lastIndex { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -32,7 +30,7 @@ struct ScreenSnapshot: Equatable, Sendable {
         self.cursorX = lastContent.map { min(rows[$0].count, max(cols - 1, 0)) } ?? 0
     }
 
-    init(rows: [String], cols: Int, cursorX: Int, cursorY: Int) {
+    package init(rows: [String], cols: Int, cursorX: Int, cursorY: Int) {
         self.rows = rows
         self.cols = cols
         self.cursorX = cursorX
@@ -40,7 +38,7 @@ struct ScreenSnapshot: Equatable, Sendable {
     }
 }
 
-enum SurfaceHostError: Error, Equatable {
+package enum SurfaceHostError: Error, Equatable {
     case initFailed(String)
     case surfaceFailed
 }
@@ -65,7 +63,7 @@ enum SurfaceHostError: Error, Equatable {
 /// window. Keeping the two apart is what lets this protocol, and so `GhosttyService`
 /// and `GhosttyStack` with it, live in a target that never imports AppKit.
 @MainActor
-protocol TerminalSurfaceHosting: AnyObject {
+package protocol TerminalSurfaceHosting: AnyObject {
     /// Creates a surface running `command` in `directory`. `title` labels it,
     /// which is what the workspace badge setting sets.
     func createSurface(id: String, command: String, directory: URL, title: String?) throws
@@ -155,40 +153,28 @@ protocol TerminalSurfaceHosting: AnyObject {
 /// libghostty would not start travels separately, as the `hostFailure` that stack
 /// both reports and throws.
 @MainActor
-final class InertSurfaceHost: TerminalSurfaceHosting {
-    var onTitle: (@MainActor (String, String) -> Void)?
-    var onBell: (@MainActor (String) -> Void)?
-    var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
-    var onResized: (@MainActor (String, TerminalSize) -> Void)?
-    var onCloseRequested: (@MainActor (String) -> Void)?
-    var onInput: (@MainActor (String) -> Void)?
+package final class InertSurfaceHost: TerminalSurfaceHosting {
+    /// Spelled out because the implicit one is internal and `TerminalStack`, which
+    /// is the only thing that builds one, is in the app.
+    package init() {}
 
-    func createSurface(id: String, command: String, directory: URL, title: String?) throws {
+    package var onTitle: (@MainActor (String, String) -> Void)?
+    package var onBell: (@MainActor (String) -> Void)?
+    package var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
+    package var onResized: (@MainActor (String, TerminalSize) -> Void)?
+    package var onCloseRequested: (@MainActor (String) -> Void)?
+    package var onInput: (@MainActor (String) -> Void)?
+
+    package func createSurface(id: String, command: String, directory: URL, title: String?) throws {
         throw SurfaceHostError.surfaceFailed
     }
-    func destroySurface(id: String) {}
-    func size(id: String) -> TerminalSize? { nil }
-    func snapshot(id: String, maxLines: Int) -> ScreenSnapshot? { nil }
+    package func destroySurface(id: String) {}
+    package func size(id: String) -> TerminalSize? { nil }
+    package func snapshot(id: String, maxLines: Int) -> ScreenSnapshot? { nil }
     /// libghostty's own default, which is what a launch with no libghostty would
     /// have resolved to. Reporting the default rather than false keeps the Settings
     /// toggle from claiming notifications are turned off when the truth is that
     /// there is no terminal at all to turn them off for.
-    var desktopNotifications: (effective: Bool, userConfig: Bool) { (true, true) }
-    func reloadConfig() {}
-}
-
-/// Handing a session's surface view to the pane.
-///
-/// Split from `TerminalSurfaceHosting` because `NSView` is the only thing in that
-/// protocol that needs AppKit. A host conforms to both; only the app, which is the
-/// half with a window, ever asks for this one.
-@MainActor
-protocol TerminalSurfaceViewing: AnyObject {
-    /// The view this surface renders into, for the pane to show. Nil for an id
-    /// with no surface.
-    func view(id: String) -> NSView?
-}
-
-extension InertSurfaceHost: TerminalSurfaceViewing {
-    func view(id: String) -> NSView? { nil }
+    package var desktopNotifications: (effective: Bool, userConfig: Bool) { (true, true) }
+    package func reloadConfig() {}
 }

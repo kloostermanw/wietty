@@ -1,5 +1,4 @@
 import Foundation
-import WiettyCore
 
 /// Composition root for the terminal stack. Builds the pieces, wires the byte and
 /// event routing between them, and reports a stack that cannot work through
@@ -12,19 +11,19 @@ import WiettyCore
 /// The host is injected so tests can drive the whole stack with no framework and
 /// no Metal device. `WiettyApp` passes the real `GhosttySurfaceHost`.
 @MainActor
-final class GhosttyStack {
+package final class GhosttyStack {
     /// The one streaming path, shared with the app's own pane. That sharing is why
     /// stopping the LAN server must not stop the hub: `stop()` cancels the flush
     /// timer permanently, so tearing the server down would leave every later local
     /// viewer silent.
-    let hub = PaneStreamHub(startTimer: true)
-    let service: any TerminalService
-    let monitor: any SessionMonitoring
-    private(set) var setupError: String?
+    package let hub = PaneStreamHub(startTimer: true)
+    package let service: any TerminalService
+    package let monitor: any SessionMonitoring
+    package private(set) var setupError: String?
 
     /// The concrete service, for the pane, which needs the selection and the
     /// views, and for teardown. Nil when the stack could not be built.
-    private(set) var ghosttyService: GhosttyService?
+    package private(set) var ghosttyService: GhosttyService?
     private let ghosttyMonitor: GhosttyMonitor?
     /// Held so the pane can ask for a session's view. The pane must not reach the
     /// host directly: it is the seam onto an unstable API and only this stack owns
@@ -53,7 +52,7 @@ final class GhosttyStack {
     ///   both reaches `setupError` and is thrown by every terminal action.
     ///   Reporting one reason and throwing a different one sends the user to fix
     ///   the wrong thing.
-    init(host: any TerminalSurfaceHosting, helperPath: String?, hostFailure: TerminalError? = nil) {
+    package init(host: any TerminalSurfaceHosting, helperPath: String?, hostFailure: TerminalError? = nil) {
         self.host = host
         // Both ways this stack can be born broken reduce to one question, so there
         // is one guard below and no force unwrap: is there a usable helper on a
@@ -228,7 +227,7 @@ final class GhosttyStack {
     /// store, which drops a terminal's attention flag the moment the user types into
     /// the surface it shows. Free to claim: unlike the host's other callbacks, no
     /// part of this substrate reads input, so nothing here contends for it.
-    var onInput: (@MainActor (String) -> Void)? {
+    package var onInput: (@MainActor (String) -> Void)? {
         get { host.onInput }
         set { host.onInput = newValue }
     }
@@ -241,7 +240,7 @@ final class GhosttyStack {
     /// that paint on its own delivery queue and cannot wait for a hop, so something
     /// on the main actor has to keep it current. See
     /// `GhosttyService.refreshSnapshots`.
-    var pollJobs: @MainActor () -> [MonitorEvent] {
+    package var pollJobs: @MainActor () -> [MonitorEvent] {
         { [weak self] in
             guard let service = self?.ghosttyService else { return [] }
             service.refreshSnapshots()
@@ -256,7 +255,7 @@ final class GhosttyStack {
     /// lifetime of the crashed run whose leftovers this exists for. Nothing is lost
     /// by being late: `TerminalRelay` unlinks before it binds, so a stale file never
     /// blocks a terminal in the first place.
-    static let staleSocketAge: TimeInterval = 3600
+    package static let staleSocketAge: TimeInterval = 3600
 
     /// Removes socket files a crashed run left in the temp directory.
     ///
@@ -279,7 +278,7 @@ final class GhosttyStack {
     ///
     /// A file whose age cannot be read is left alone: an unlink decided on missing
     /// information is the one this must not make.
-    func clearStaleSockets() {
+    package func clearStaleSockets() {
         let directory = NSTemporaryDirectory()
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
             return
