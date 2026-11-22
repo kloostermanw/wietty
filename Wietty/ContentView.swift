@@ -8,6 +8,8 @@ struct ContentView: View {
     /// The MCP and LAN servers, owned by the app rather than this view. See
     /// `ServerRuntime`.
     let runtime: ServerRuntime
+    /// Which local terminal the pane shows. Owned by the app. See `TerminalSelection`.
+    let selection: TerminalSelection
     /// This Mac's own view of the settings: sidebar width and colours, the active
     /// group, and the notification sound. See `UIPreferences`.
     let preferences: UIPreferences
@@ -40,10 +42,6 @@ struct ContentView: View {
     @State private var agentArgumentsTarget: (project: Project, agent: AgentDefinition)?
     @State private var agentArgumentsText = ""
     @State private var sections = SectionCollapseState()
-    /// The local terminal the pane shows, mirrored from `GhosttyService` so a
-    /// selection it makes redraws the pane. Nil on the other two substrates, where
-    /// nothing reads it.
-    @State private var selectedTerminal: String?
     /// The sidebar's live width while the divider is being dragged, and nil until
     /// one has been.
     ///
@@ -134,28 +132,32 @@ struct ContentView: View {
             // session id is dead. Cleared before the monitor starts, so no event
             // can arrive for an id that is about to be wiped.
             store.clearDeadSessions()
-            // The pane reads SwiftUI state, and the selection lives in
-            // `GhosttyService`, which is where every path that changes it already
-            // is: opening a terminal, focusing a row, closing one. Mirrored rather
-            // than reached into, so a selection made from the MCP server or a
-            // remote client redraws the pane the same way a click does.
-            if let service = terminals.ghostty.ghosttyService {
-                selectedTerminal = service.selected
-                service.onSelectionChanged = { session in
-                    selectedTerminal = session
-                    // A local terminal coming into view takes the pane back from
-                    // whatever was covering it, which is what makes opening or
-                    // focusing one show it even while a remote session, a log or
-                    // settings is on screen. Closing one local terminal while another
-                    // remains also takes the pane, because the service selects that
-                    // other one and this cannot tell it apart from a click.
-                    //
-                    // This is not the whole of it: `select` returns early when the
-                    // session is already selected, so re-activating the terminal the
-                    // pane was already showing arrives nowhere. `activate` clears the
-                    // override itself for that reason.
-                    router.localSelectionChanged(to: session)
-                }
+            // Everything that can move the pane now arrives as a request: the
+            // service raises one when a terminal is opened or the displayed one is
+            // closed, and the store raises one when a row is activated, from a click,
+            // from `select_process` or from an iPad. They are honoured here, in the
+            // turn they arrive, so the pane moves exactly when it used to.
+            selection.onChanged = { [weak service = terminals.ghostty.ghosttyService] previous, current in
+                // The outgoing terminal's screen, recorded while libghostty can still
+                // read it. See `GhosttyService.displayedSessionChanged`.
+                service?.displayedSessionChanged(from: previous, to: current)
+                // A local terminal coming into view takes the pane back from whatever
+                // was covering it, which is what makes opening or focusing one show it
+                // even while a remote session, a log or settings is on screen. Closing
+                // one local terminal while another remains also takes the pane, and
+                // this cannot tell that apart from a click.
+                //
+                // This is not the whole of it: `show` returns early when the session is
+                // already the displayed one, so re-activating the terminal the pane was
+                // already showing arrives nowhere. `activate` clears the override itself
+                // for that reason.
+                router.localSelectionChanged(to: current)
+            }
+            terminals.ghostty.displayRequests.handler = { session in selection.show(session) }
+            store.events.subscribe { event in
+                if case let .showTerminal(sessionId) = event { selection.show(sessionId) }
+            }
+            if terminals.ghostty.ghosttyService != nil {
                 // Typing into the pane answers whatever bell the terminal on screen
                 // rang: its attention flag comes down on the first keystroke, so a
                 // notification that arrived while Wietty was in the background clears
@@ -295,7 +297,7 @@ struct ContentView: View {
     /// live apart: the local selection in `GhosttyService`, and whatever covers it in
     /// `PaneRouter`.
     private var paneSelection: PaneSelection {
-        .resolve(local: selectedTerminal, override: router.override)
+        .resolve(local: selection.current, override: router.override)
     }
 
     /// The width to lay out and to drag: whatever this window's drag left, or the
@@ -769,6 +771,10 @@ struct ContentView: View {
             // not keep bells that have already been dealt with.
             case let .attentionCleared(ids):
                 bells.withdraw(ids.map { .local(refId: $0) })
+
+            // Handled by the subscription in `task` that owns the pane, not here.
+            case .showTerminal:
+                break
             }
         }
         guard remoteBells == nil else { return }

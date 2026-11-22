@@ -142,10 +142,23 @@ package final class GhosttyService: TerminalService {
     private let onTerminated: @MainActor (String) -> Void
     private var terminals: [String: Terminal] = [:]
 
-    /// The terminal the pane shows. Only one surface is in the window's view
-    /// hierarchy at a time; the rest stay alive and keep reading.
-    package private(set) var selected: String?
-    package var onSelectionChanged: (@MainActor (String?) -> Void)?
+    /// The terminal the frontend says is on screen, as it last told us.
+    ///
+    /// Remembered rather than decided. The service used to own the selection and move
+    /// it, which meant an MCP tool call or a tap on an iPad moved the Mac's pane as a
+    /// side effect of asking a question. It still has to know which terminal is
+    /// displayed, because libghostty reads an off-screen surface as empty, so the one
+    /// leaving the pane has to have its screen recorded on the way out. Knowing is
+    /// not deciding: the frontend decides and calls `displayedSessionChanged`.
+    private var displayedSession: String?
+
+    /// The service would like a terminal shown, or the pane emptied.
+    ///
+    /// A request, not an instruction: a frontend may honour it, and with no frontend
+    /// attached there is nobody to, which is the whole point of phase 5. Raised when a
+    /// terminal is opened, when the displayed one is closed and another remains, and
+    /// when everything is torn down.
+    private let onDisplayRequest: @MainActor (String?) -> Void
 
     /// The registry as `PaneStreamHub` sees it, off the main actor.
     ///
@@ -203,6 +216,7 @@ package final class GhosttyService: TerminalService {
          onResized: @escaping @Sendable (String, TerminalSize) -> Void = { _, _ in },
          onStreamEnded: @escaping @Sendable (String) -> Void = { _ in },
          onProgramStatus: @escaping @Sendable (String, ProgramStatusScanner.Event) -> Void = { _, _ in },
+         onDisplayRequest: @escaping @MainActor (String?) -> Void = { _ in },
          onTerminated: @escaping @MainActor (String) -> Void) {
         self.host = host
         self.helperPath = helperPath
@@ -211,6 +225,7 @@ package final class GhosttyService: TerminalService {
         self.onResized = onResized
         self.onStreamEnded = onStreamEnded
         self.onProgramStatus = onProgramStatus
+        self.onDisplayRequest = onDisplayRequest
         self.onTerminated = onTerminated
         host.onResized = { [weak self] session, size in
             guard let self else { return }
@@ -392,7 +407,7 @@ package final class GhosttyService: TerminalService {
         })
         terminals[session] = Terminal(pty: pty, relay: relay)
         shared.note(live: liveSessions)
-        select(session)
+        onDisplayRequest(session)
 
         // `windowId` is echoed back rather than minted. Nothing here is a window,
         // and `ProjectStore.recordWorkspaceId` writes whatever comes back onto
@@ -454,7 +469,7 @@ package final class GhosttyService: TerminalService {
     /// had nothing to act on either. The other two substrates answer not-found here
     /// because their session really is gone; this one has to say so itself, because
     /// the entry survives on purpose.
-    package func focus(sessionId: String) async throws -> FocusResult {
+    package func probe(sessionId: String) async throws -> FocusResult {
         guard let terminal = terminals[sessionId], !terminal.exited else {
             // Not found, and nothing known about a job. `jobKnown: false` matters:
             // `ProjectStore.activate` types `claude` into a Claude row whose agent
@@ -462,7 +477,6 @@ package final class GhosttyService: TerminalService {
             // text into a live agent as a prompt.
             return FocusResult(found: false, jobName: nil, jobKnown: false)
         }
-        select(sessionId)
         let job = terminal.pty.foregroundJobName()
         return FocusResult(found: true, jobName: job, jobKnown: job != nil)
     }
@@ -552,7 +566,9 @@ package final class GhosttyService: TerminalService {
         // `ended`, but a viewer that attached while it was alive is still here.
         // Ending a second time reaches nobody, since the first ended them all.
         onStreamEnded(sessionId)
-        if selected == sessionId { select(terminals.keys.first) }
+        // Only when the one that went was the one on screen, which is the rule the
+        // selection had when it lived here.
+        if displayedSession == sessionId { onDisplayRequest(terminals.keys.first) }
     }
 
     package func readOutput(sessionId: String, maxLines: Int) async throws -> String {
@@ -579,16 +595,21 @@ package final class GhosttyService: TerminalService {
         return recorded.rows.joined(separator: "\n")
     }
 
-    package func select(_ session: String?) {
-        guard selected != session else { return }
-        // The outgoing terminal's screen is recorded before it leaves the view
-        // hierarchy. It keeps running and keeps producing bytes, but nothing
-        // refreshes its snapshot again until it comes back, so this is the last
-        // chance to capture what a viewer attaching to it would want to see.
-        if let outgoing = selected, terminals[outgoing] != nil { recordSnapshot(outgoing) }
-        selected = session
-        if let session, terminals[session] != nil { recordSnapshot(session) }
-        onSelectionChanged?(session)
+    /// The frontend has put a different terminal on screen.
+    ///
+    /// The body `select` had, minus the part that decided. The outgoing terminal's
+    /// screen is recorded before it leaves the view hierarchy: it keeps running and
+    /// keeps producing bytes, but nothing refreshes its snapshot again until it comes
+    /// back, so this is the last chance to capture what a viewer attaching to it would
+    /// want to see.
+    ///
+    /// Phase 2 empties this method. Once a `TerminalScreenModel` holds the screen,
+    /// what can be read stops depending on what is on screen.
+    package func displayedSessionChanged(from previous: String?, to current: String?) {
+        guard previous != current else { return }
+        if let previous, terminals[previous] != nil { recordSnapshot(previous) }
+        displayedSession = current
+        if let current, terminals[current] != nil { recordSnapshot(current) }
     }
 
     /// One event per live terminal whose foreground job is known.
@@ -621,6 +642,6 @@ package final class GhosttyService: TerminalService {
         }
         terminals = [:]
         shared.note(live: [])
-        select(nil)
+        onDisplayRequest(nil)
     }
 }

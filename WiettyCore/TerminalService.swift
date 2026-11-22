@@ -61,7 +61,13 @@ package protocol TerminalService: Sendable {
     ///   independent of any other name it carries. Nil leaves the
     ///   label untouched.
     func open(folder: URL, existingWindowId: String?, command: String?, badge: String?) async throws -> TerminalHandle
-    func focus(sessionId: String) async throws -> FocusResult
+    /// Answers whether a session is alive and what it is running.
+    ///
+    /// A question, not an instruction. It was called `focus` and showed the session in
+    /// the pane as it answered, so an MCP tool call or a tap on an iPad moved the
+    /// Mac's pane as a side effect of asking. Showing a terminal is a request the
+    /// frontend honours now; this only answers.
+    func probe(sessionId: String) async throws -> FocusResult
     func send(sessionId: String, text: String) async throws
     func close(sessionId: String) async throws
     /// Returns the recent rendered screen contents for a session, most recent

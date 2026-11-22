@@ -431,9 +431,12 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         #expect(log.ids == [handle.sessionId])
     }
 
-    /// `focus` on this substrate means "show this row in the pane". It also has to
-    /// answer the job question, because the sidebar acts on it.
-    @Test func focusSelectsTheRow() async throws {
+    /// `probe` answers whether a row is alive and what it is running, and the sidebar
+    /// acts on that answer. It deliberately does not move the pane: showing a terminal
+    /// is a request the frontend honours, so an agent asking this question no longer
+    /// moves somebody's window as a side effect. `PaneSelectionBehaviourTests` covers
+    /// what the pane does.
+    @Test func probeAnswersForTheRowWithoutMovingThePane() async throws {
         let host = FakeSurfaceHost()
         let service = service(host)
         defer { service.closeAll() }
@@ -441,10 +444,10 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
                                            existingWindowId: nil, command: "sleep 5", badge: nil)
         let second = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
                                              existingWindowId: nil, command: "sleep 5", badge: nil)
-        #expect(service.selected == second.sessionId)
-        let result = try await service.focus(sessionId: first.sessionId)
+        let result = try await service.probe(sessionId: first.sessionId)
         #expect(result.found)
-        #expect(service.selected == first.sessionId)
+        #expect(result.jobKnown)
+        _ = second
     }
 
     /// An exited terminal is answered exactly as an absent one, which is what lets a
@@ -468,7 +471,7 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         host.snapshots[handle.sessionId] = ScreenSnapshot(rows: ["died here"], cols: 80)
         try await waitUntil { service.liveSessions.isEmpty }
 
-        let result = try await service.focus(sessionId: handle.sessionId)
+        let result = try await service.probe(sessionId: handle.sessionId)
         #expect(result.found == false)
         #expect(result.jobKnown == false)
         #expect(host.destroyed.isEmpty)
@@ -532,7 +535,7 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
     @Test func focusingAnUnknownSessionIsNotFound() async throws {
         let service = service(FakeSurfaceHost())
         defer { service.closeAll() }
-        let result = try await service.focus(sessionId: "gt:nope")
+        let result = try await service.probe(sessionId: "gt:nope")
         #expect(result.found == false)
         #expect(result.jobKnown == false)
     }

@@ -53,6 +53,10 @@ package final class GhosttyStack {
     ///   Reporting one reason and throwing a different one sends the user to fix
     ///   the wrong thing.
     package init(host: any TerminalSurfaceHosting, helperPath: String?, hostFailure: TerminalError? = nil) {
+        // Built first and captured by value below: the service is handed its hook
+        // while this initializer runs, before `self` can be read.
+        let requests = DisplayRequests()
+        self.displayRequests = requests
         self.host = host
         // Both ways this stack can be born broken reduce to one question, so there
         // is one guard below and no force unwrap: is there a usable helper on a
@@ -139,6 +143,7 @@ package final class GhosttyStack {
             // deliberately does not participate in it: a composition root that had
             // to remember to reap would be a seam that breaks the first time
             // someone builds a service another way.
+            onDisplayRequest: { session in requests.call(session) },
             onTerminated: { session in monitor.emit([.terminated(sessionId: session)]) })
 
         // Both hooks read `shared`, never the service itself. The hub calls them
@@ -227,6 +232,20 @@ package final class GhosttyStack {
     /// store, which drops a terminal's attention flag the moment the user types into
     /// the surface it shows. Free to claim: unlike the host's other callbacks, no
     /// part of this substrate reads input, so nothing here contends for it.
+    /// Where the service's "please show this terminal" requests go.
+    ///
+    /// A box rather than a plain property because the service is handed its hook at
+    /// construction and the frontend that answers it is wired afterwards. Pointed at
+    /// `TerminalSelection` by the app; nil until then, and on a stack that could not
+    /// be built there is nothing to request.
+    package final class DisplayRequests {
+        package var handler: (@MainActor (String?) -> Void)?
+        package init() {}
+        @MainActor package func call(_ session: String?) { handler?(session) }
+    }
+
+    package let displayRequests: DisplayRequests
+
     package var onInput: (@MainActor (String) -> Void)? {
         get { host.onInput }
         set { host.onInput = newValue }
