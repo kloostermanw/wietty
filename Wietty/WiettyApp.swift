@@ -6,6 +6,10 @@ import WiettyShared
 struct WiettyApp: App {
     @State private var terminals: TerminalStack
     @State private var store: ProjectStore
+    /// The settings that are this Mac's view of the data rather than part of it.
+    /// Owned here, beside the store, because the Group submenu in `commands` reads
+    /// the active group and cannot reach a view's `@State`.
+    @State private var preferences: UIPreferences
     @State private var updates = UpdateService()
     @StateObject private var remoteConnections: RemoteConnectionsStore
     @StateObject private var remoteWorkspaces: RemoteWorkspacesController
@@ -37,8 +41,15 @@ struct WiettyApp: App {
         _terminals = State(wrappedValue: stack)
         // The job poll needs the live service, which only exists once the stack is
         // built, so the store is handed a closure rather than the service itself.
-        _store = State(wrappedValue: ProjectStore(service: stack.service,
-                                                  jobEvents: stack.ghostty.pollJobs))
+        let projects = ProjectStore(service: stack.service,
+                                    jobEvents: stack.ghostty.pollJobs)
+        _store = State(wrappedValue: projects)
+        // Shares the store's writer, so both halves of the settings still land in one
+        // file in one order, and reads the groups from it to resolve the selection.
+        _preferences = State(wrappedValue: UIPreferences(
+            launch: projects.launch,
+            writer: projects.settingsWriter,
+            knownGroupIds: { [weak projects] in Set(projects?.groups.map(\.id) ?? []) }))
         let connections = RemoteConnectionsStore()
         _remoteConnections = StateObject(wrappedValue: connections)
         _remoteWorkspaces = StateObject(wrappedValue: RemoteWorkspacesController(connections: connections))
@@ -46,7 +57,7 @@ struct WiettyApp: App {
 
     var body: some Scene {
         Window("Wietty", id: Self.mainWindowID) {
-            ContentView(store: store, terminals: terminals,
+            ContentView(store: store, preferences: preferences, terminals: terminals,
                         remoteConnections: remoteConnections, remoteWorkspaces: remoteWorkspaces,
                         bells: bells, router: router, promptTemplates: promptTemplates,
                         promptTemplatePresentation: promptTemplatePresentation)
@@ -74,7 +85,7 @@ struct WiettyApp: App {
             // like Group, so SwiftUI stacks the three same-anchor groups in this
             // order: the item lands between them, where the issue's menu shows it.
             PromptTemplatesCommand(presentation: promptTemplatePresentation)
-            GroupCommand(store: store)
+            GroupCommand(store: store, preferences: preferences)
         }
         // No `Settings` scene. There is one window, and settings is one of the things
         // its pane can show, so a second window would be the only part of the app that
@@ -149,6 +160,7 @@ struct PromptTemplatesCommand: Commands {
 /// observable store, so a group added in Settings appears here without a relaunch.
 struct GroupCommand: Commands {
     let store: ProjectStore
+    let preferences: UIPreferences
 
     var body: some Commands {
         // After the Settings item, where the issue's menu shows it. The submenu is
@@ -157,9 +169,9 @@ struct GroupCommand: Commands {
         CommandGroup(after: .appSettings) {
             Menu("Group") {
                 ForEach(WorkspaceGroupMenu.items(groups: store.groups,
-                                                 selected: store.selectedGroupId)) { item in
+                                                 selected: preferences.selectedGroupId)) { item in
                     Button {
-                        store.selectedGroupId = item.id
+                        preferences.selectedGroupId = item.id
                     } label: {
                         // The checkmark marks the active group. Driven by the tested
                         // `isSelected` rather than a second comparison here.

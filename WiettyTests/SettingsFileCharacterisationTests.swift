@@ -51,25 +51,26 @@ import WiettyCore
         }
 
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
-                                 config: config, service: FakeTerminalService())
+        let fixture = SettingsFixture(config: config)
+        let store = fixture.store
+        let preferences = fixture.preferences
 
         // One of each kind of setting the writer emits, so a block that moves is caught.
         store.showWorkspaceBadge = true
-        store.bellSound = .named("Ping")
+        preferences.bellSound = .named("Ping")
         store.notificationSource = .programStatus
         store.checkIntervals = CheckIntervals(fast: 20, normal: 90, slow: 400)
-        store.sidebarWidth = 350
+        preferences.sidebarWidth = 350
         store.remoteEnabled = true
         store.remotePort = 9100
         store.mcpPort = 4100
-        store.sidebarColors = SidebarColors(background: ColorHex.color(from: "#102030"),
+        preferences.sidebarColors = SidebarColors(background: ColorHex.color(from: "#102030"),
                                             foreground: ColorHex.color(from: "#a0b0c0"))
         store.agents = [AgentDefinition(name: "Claude", command: "claude", defaultArguments: "--verbose"),
                         AgentDefinition(name: "Codex", command: "codex", defaultArguments: "")]
         let research = WorkspaceGroup(name: "Research")
         store.groups = [research, WorkspaceGroup(name: "Shipping")]
-        store.selectedGroupId = research.id
+        preferences.selectedGroupId = research.id
         store.addProject(url: alpha)
         store.addProject(url: beta)
         store.assignGroup(store.projects[0], to: research.id)

@@ -24,7 +24,8 @@ import WiettyShared
     private func pane(_ selection: PaneSelection, defaults: UserDefaults) -> RightTerminalView {
         let connections = RemoteConnectionsStore(defaults: defaults)
         return RightTerminalView(
-            store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
+            store: SettingsFixture(defaults: defaults, service: FakeTerminalService()).store,
+            preferences: SettingsFixture(defaults: defaults, service: FakeTerminalService()).preferences,
             terminals: TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true"),
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
@@ -139,8 +140,10 @@ import WiettyShared
         for tab in SettingsTab.allCases {
             let defaults = UserDefaults(suiteName: UUID().uuidString)!
             let connections = RemoteConnectionsStore(defaults: defaults)
+            let fixture = SettingsFixture(defaults: defaults, service: FakeTerminalService())
             let view = SettingsView(
-                store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
+                store: fixture.store,
+                preferences: fixture.preferences,
                 remoteConnections: connections,
                 remoteWorkspaces: RemoteWorkspacesController(connections: connections),
                 bells: notifier(),
@@ -160,13 +163,15 @@ import WiettyShared
     @Test func theGeneralTabRendersWithColoursSet() {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         let connections = RemoteConnectionsStore(defaults: defaults)
-        let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
-        store.sidebarColors.background = ColorHex.color(from: "#303446")
-        store.sidebarColors.activeTerminalRowForeground = ColorHex.color(from: "#c6d0f5")
+        let storeFx = SettingsFixture(defaults: defaults, service: FakeTerminalService())
+        let store = storeFx.store
+        storeFx.preferences.sidebarColors.background = ColorHex.color(from: "#303446")
+        storeFx.preferences.sidebarColors.activeTerminalRowForeground = ColorHex.color(from: "#c6d0f5")
         let colours = GhosttyColorSettings(host: FakeSurfaceHost(), file: .temporary())
         colours.setColor(GhosttyOverrideFile.ColorKey.background, to: ColorHex.color(from: "#303446"))
         let view = SettingsView(
             store: store,
+            preferences: storeFx.preferences,
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: notifier(),
@@ -200,7 +205,8 @@ import WiettyShared
             let defaults = UserDefaults(suiteName: UUID().uuidString)!
             let view = Form {
                 NotificationSettings(
-                    store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
+                    store: SettingsFixture(defaults: defaults, service: FakeTerminalService()).store,
+            preferences: SettingsFixture(defaults: defaults, service: FakeTerminalService()).preferences,
                     bells: notifier(),
                     desktopNotifications: setting(),
                     permission: permission,
@@ -222,7 +228,8 @@ import WiettyShared
         let setting = setting(overriding: true)
         #expect(setting.overridesUserConfig)
         let view = Form {
-            NotificationSettings(store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
+            NotificationSettings(store: SettingsFixture(defaults: defaults, service: FakeTerminalService()).store,
+            preferences: SettingsFixture(defaults: defaults, service: FakeTerminalService()).preferences,
                                  bells: notifier(),
                                  desktopNotifications: setting, permission: .granted)
         }
@@ -244,10 +251,11 @@ import WiettyShared
     /// drops a sound leaves the control blank rather than saying which sound is gone.
     @Test func theSoundPickerRendersASoundItDoesNotOffer() {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
-        let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
-        store.bellSound = .named("SoundFromAnotherMac")
+        let storeFx = SettingsFixture(defaults: defaults, service: FakeTerminalService())
+        let store = storeFx.store
+        storeFx.preferences.bellSound = .named("SoundFromAnotherMac")
         let view = Form {
-            NotificationSettings(store: store, bells: notifier(),
+            NotificationSettings(store: store, preferences: storeFx.preferences, bells: notifier(),
                                  desktopNotifications: setting(), permission: .granted)
         }
         .formStyle(.grouped)
@@ -267,10 +275,12 @@ import WiettyShared
         let connections = RemoteConnectionsStore(defaults: defaults)
         connections.add(RemoteConnection(id: UUID(), name: "Office Mac",
                                          host: "192.168.1.20", port: 7434, token: "t"))
-        let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: defaults, service: FakeTerminalService())
+        let store = storeFx.store
         store.remoteEnabled = true
         let view = SettingsView(
             store: store,
+            preferences: storeFx.preferences,
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: notifier(),
@@ -357,7 +367,7 @@ import WiettyShared
             let defaults = UserDefaults(suiteName: UUID().uuidString)!
             let connections = RemoteConnectionsStore(defaults: defaults)
             let bar = NavBarView(
-                store: ProjectStore(defaults: defaults, service: FakeTerminalService()),
+                store: SettingsFixture(defaults: defaults, service: FakeTerminalService()).store,
                 remoteWorkspaces: RemoteWorkspacesController(connections: connections),
                 selection: selection,
                 onOpenSettings: {})

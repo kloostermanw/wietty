@@ -51,6 +51,29 @@ package enum SettingsKeys {
         colorPillBackground, colorPillForeground,
     ]
 
+    /// The order the managed lines appear in the file, as exact keys and as list
+    /// prefixes.
+    ///
+    /// The layout used to be implicit in the order one method appended its pairs.
+    /// Once two objects contribute lines, that would make the file's shape depend on
+    /// which of them was registered first, and the four settings that moved to
+    /// `UIPreferences` are interleaved with the store's rather than grouped at
+    /// either end. Stating the order here keeps the file byte identical to what the
+    /// single writer produced, and keeps it that way whatever is added next.
+    ///
+    /// A key that matches nothing here is written after everything that does, in the
+    /// order its source gave it.
+    package static let fileOrder: [String] = [
+        showWorkspaceBadge, bellSound, notificationSource,
+        checkIntervalFast, checkIntervalNormal, checkIntervalSlow,
+        sidebarWidth, remoteEnabled, remotePort, mcpPort,
+        colorBackground, colorForeground,
+        colorActiveWorkspaceBackground, colorActiveWorkspaceForeground,
+        colorActiveTerminalRowBackground, colorActiveTerminalRowForeground,
+        colorPillBackground, colorPillForeground,
+        agentPrefix, groupPrefix, selectedGroup, approvedPrefix, workspacePrefix,
+    ]
+
     /// The list prefixes, so a list that shrank loses its trailing entries.
     package static let prefixes: [String] = [agentPrefix, workspacePrefix, approvedPrefix, groupPrefix]
 }

@@ -22,11 +22,12 @@ import WiettyCore
 
     @Test func scalarSettingsAreWrittenToTheConfigFile() throws {
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let store = storeFx.store
         store.showWorkspaceBadge = true
-        store.bellSound = .named("Ping")
+        storeFx.preferences.bellSound = .named("Ping")
         store.checkIntervals = CheckIntervals(fast: 20, normal: 90, slow: 400)
-        store.sidebarWidth = 350
+        storeFx.preferences.sidebarWidth = 350
         store.remoteEnabled = true
         store.remotePort = 9100
         store.mcpPort = 4100
@@ -46,12 +47,14 @@ import WiettyCore
     @Test func scalarSettingsRoundTripAcrossInstances() {
         let defaults = makeDefaults()
         let config = WiettyConfigFile.temporary()
-        let store1 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1 = store1Fx.store
         store1.remotePort = 9100
-        store1.bellSound = .named("Submarine")
-        let store2 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        store1Fx.preferences.bellSound = .named("Submarine")
+        let store2Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2 = store2Fx.store
         #expect(store2.remotePort == 9100)
-        #expect(store2.bellSound == .named("Submarine"))
+        #expect(store2Fx.preferences.bellSound == .named("Submarine"))
     }
 
     // MARK: Secrets stay out
@@ -60,7 +63,8 @@ import WiettyCore
     /// config file the user is invited to edit must never hold it.
     @Test func theRemoteTokenIsNeverWrittenToTheConfigFile() throws {
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let store = storeFx.store
         let token = store.remoteToken.value   // generate it
         store.remoteEnabled = true            // force a settings write
 
@@ -73,7 +77,8 @@ import WiettyCore
 
     @Test func agentsAreWrittenAsIndexedKeys() throws {
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let store = storeFx.store
         store.agents = [
             AgentDefinition(name: "Claude", command: "claude"),
             AgentDefinition(name: "Aider", command: "aider", defaultArguments: "--yes"),
@@ -89,9 +94,11 @@ import WiettyCore
     @Test func agentsRoundTripAcrossInstances() {
         let defaults = makeDefaults()
         let config = WiettyConfigFile.temporary()
-        let store1 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1 = store1Fx.store
         store1.agents = [AgentDefinition(name: "Aider", command: "aider", defaultArguments: "--yes")]
-        let store2 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2 = store2Fx.store
         #expect(store2.agents.count == 1)
         #expect(store2.agents.first?.name == "Aider")
         #expect(store2.agents.first?.defaultArguments == "--yes")
@@ -101,7 +108,8 @@ import WiettyCore
 
     @Test func approvedCommandsAreWrittenPerWorkspaceUUID() throws {
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let store = storeFx.store
         let id = UUID()
         store.approve(["npm test", "make build"], for: id)
 
@@ -114,9 +122,11 @@ import WiettyCore
         let defaults = makeDefaults()
         let config = WiettyConfigFile.temporary()
         let id = UUID()
-        let store1 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1 = store1Fx.store
         store1.approve(["npm test"], for: id)
-        let store2 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2 = store2Fx.store
         #expect(store2.approvedCommands[id] == ["npm test"])
     }
 
@@ -124,7 +134,8 @@ import WiettyCore
 
     @Test func workspacesAreWrittenAsPlainPaths() throws {
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let store = storeFx.store
         let folder = makeFolder()
         store.addProject(url: folder)
 
@@ -136,7 +147,8 @@ import WiettyCore
     /// the move is that a person can read and edit it.
     @Test func workspacesDoNotWriteBookmarkData() throws {
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let store = storeFx.store
         store.addProject(url: makeFolder())
         let text = try String(contentsOf: config.url, encoding: .utf8)
         #expect(!text.contains("bookmark"))
@@ -146,9 +158,11 @@ import WiettyCore
         let defaults = makeDefaults()
         let config = WiettyConfigFile.temporary()
         let folder = makeFolder()
-        let store1 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1 = store1Fx.store
         store1.addProject(url: folder)
-        let store2 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2 = store2Fx.store
         #expect(store2.projects.count == 1)
         #expect(store2.projects.first?.url.standardizedFileURL.path == folder.standardizedFileURL.path)
     }
@@ -164,10 +178,11 @@ import WiettyCore
         defaults.set(true, forKey: "wietty.showWorkspaceBadge")
 
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store = storeFx.store
 
         #expect(store.remotePort == 9100)
-        #expect(store.bellSound == .named("Submarine"))
+        #expect(storeFx.preferences.bellSound == .named("Submarine"))
         #expect(store.showWorkspaceBadge)
         #expect((try config.read())["remote-port"] == "9100")
     }
@@ -190,7 +205,8 @@ import WiettyCore
         defaults.set(try JSONEncoder().encode(stored), forKey: "wietty.agents")
 
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store = storeFx.store
 
         #expect(store.agents.map(\.name) == ["Aider"])
         #expect((try config.read())["agent.0.command"] == "aider")
@@ -218,7 +234,8 @@ import WiettyCore
         defaults.set([try JSONEncoder().encode(record)], forKey: "wietty.projects.bookmarks")
 
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store = storeFx.store
 
         #expect(store.projects.count == 1)
         #expect(store.projects.first?.url.standardizedFileURL.path == folder.standardizedFileURL.path)
@@ -238,7 +255,8 @@ import WiettyCore
         let corrupt = Data([0xFF, 0xFE, 0x00, 0x01])
         try corrupt.write(to: config.url)
 
-        let store = ProjectStore(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let store = storeFx.store
         #expect(store.lastError != nil)
 
         // A change that would normally persist must be a no-op against the bad file.
@@ -253,7 +271,8 @@ import WiettyCore
         defaults.set(9100, forKey: "wietty.remotePort")
         // A parent path that is a file, not a directory, so creating the config dir fails.
         let unwritable = WiettyConfigFile(url: URL(fileURLWithPath: "/dev/null/wietty/config"))
-        let store = ProjectStore(defaults: defaults, config: unwritable, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: defaults, config: unwritable, service: FakeTerminalService())
+        let store = storeFx.store
 
         #expect(defaults.object(forKey: "wietty.remotePort") as? Int == 9100)
         #expect(store.lastError != nil)
@@ -265,13 +284,15 @@ import WiettyCore
     @Test func deletingTheFileResetsSettingsToDefaults() throws {
         let defaults = makeDefaults()
         let config = WiettyConfigFile.temporary()
-        let store1 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1 = store1Fx.store
         store1.remotePort = 9100
         store1.addProject(url: makeFolder())
 
         try FileManager.default.removeItem(at: config.url)
 
-        let store2 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2 = store2Fx.store
         #expect(store2.remotePort == RemoteServer.defaultPort)
         #expect(store2.projects.isEmpty)
     }
@@ -288,10 +309,11 @@ import WiettyCore
         sidebar-width = 0
         """.write(to: config.url, atomically: true, encoding: .utf8)
 
-        let store = ProjectStore(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let store = storeFx.store
         #expect(store.remotePort == RemoteServer.defaultPort)   // unparseable -> default
         #expect(store.mcpPort == ProjectStore.portRange.upperBound) // out of range -> clamped
-        #expect(store.sidebarWidth == SidebarWidth.default)     // impossible width -> default
+        #expect(storeFx.preferences.sidebarWidth == SidebarWidth.default)     // impossible width -> default
     }
 
     /// An approved command carrying an `=` (an env-var prefix like `FOO=bar make`)
@@ -300,9 +322,11 @@ import WiettyCore
         let defaults = makeDefaults()
         let config = WiettyConfigFile.temporary()
         let id = UUID()
-        let store1 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1 = store1Fx.store
         store1.approve(["FOO=bar make build"], for: id)
-        let store2 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2 = store2Fx.store
         #expect(store2.approvedCommands[id] == ["FOO=bar make build"])
     }
 
@@ -310,11 +334,13 @@ import WiettyCore
     @Test func migrationLeavesTheRemoteTokenInUserDefaults() {
         let defaults = makeDefaults()
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store = storeFx.store
         let token = store.remoteToken.value
         // A fresh store on the same defaults sees the same token, proving it persisted
         // in UserDefaults rather than only in memory.
-        let store2 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2 = store2Fx.store
         #expect(store2.remoteToken.value == token)
     }
 }

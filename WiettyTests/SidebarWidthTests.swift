@@ -133,28 +133,28 @@ import Foundation
     /// shared one: the suites in this target each build their own store, and an
     /// earlier review on this branch pushed back on widening production or test
     /// surface just to seat a new suite.
-    private func makeStore(defaults: UserDefaults) -> ProjectStore {
-        ProjectStore(defaults: defaults,
-                     service: FakeTerminalService(),
-                     gitProvider: RecordingProviderStub())
+    /// The width belongs to `UIPreferences` now, which loads it from what the store
+    /// read at launch, so these build the pair rather than the store alone.
+    private func makePreferences(defaults: UserDefaults) -> UIPreferences {
+        SettingsFixture(defaults: defaults, service: FakeTerminalService()).preferences
     }
 
     @Test func absentMeansTheDefault() {
-        let store = makeStore(defaults: defaults("sidebar-absent"))
+        let store = makePreferences(defaults: defaults("sidebar-absent"))
         #expect(store.sidebarWidth == SidebarWidth.default)
     }
 
     @Test func aStoredWidthIsRead() {
         let d = defaults("sidebar-stored")
         d.set(430.0, forKey: "wietty.sidebarWidth")
-        #expect(makeStore(defaults: d).sidebarWidth == 430)
+        #expect(makePreferences(defaults: d).sidebarWidth == 430)
     }
 
     @Test func aWidthSurvivesAnotherStore() {
         let d = defaults("sidebar-round-trip")
-        let store = makeStore(defaults: d)
+        let store = makePreferences(defaults: d)
         store.sidebarWidth = 512
-        #expect(makeStore(defaults: d).sidebarWidth == 512)
+        #expect(makePreferences(defaults: d).sidebarWidth == 512)
     }
 
     /// A stored width below the sidebar's own minimum is corrected on read rather
@@ -162,6 +162,6 @@ import Foundation
     @Test func anImpossibleStoredWidthIsCorrected() {
         let d = defaults("sidebar-impossible")
         d.set(12.0, forKey: "wietty.sidebarWidth")
-        #expect(makeStore(defaults: d).sidebarWidth == SidebarWidth.minimum)
+        #expect(makePreferences(defaults: d).sidebarWidth == SidebarWidth.minimum)
     }
 }

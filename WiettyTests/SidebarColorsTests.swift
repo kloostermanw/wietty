@@ -63,9 +63,10 @@ import WiettyCore
 
     @Test func coloursAreWrittenToTheConfigFile() throws {
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: makeDefaults(), config: config, service: FakeTerminalService())
-        store.sidebarColors.background = ColorHex.color(from: "#303446")
-        store.sidebarColors.activeTerminalRowBackground = ColorHex.color(from: "#292b34")
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let store = storeFx.store
+        storeFx.preferences.sidebarColors.background = ColorHex.color(from: "#303446")
+        storeFx.preferences.sidebarColors.activeTerminalRowBackground = ColorHex.color(from: "#292b34")
 
         let values = try config.read()
         #expect(values["color-background"] == "#303446")
@@ -75,37 +76,41 @@ import WiettyCore
     @Test func coloursRoundTripAcrossInstances() throws {
         let defaults = makeDefaults()
         let config = WiettyConfigFile.temporary()
-        let store1 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
-        store1.sidebarColors.foreground = ColorHex.color(from: "#c6d0f5")
-        let store2 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
-        #expect(ColorHex.string(from: try #require(store2.sidebarColors.foreground)) == "#c6d0f5")
+        let store1Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1 = store1Fx.store
+        store1Fx.preferences.sidebarColors.foreground = ColorHex.color(from: "#c6d0f5")
+        let store2Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2 = store2Fx.store
+        #expect(ColorHex.string(from: try #require(store2Fx.preferences.sidebarColors.foreground)) == "#c6d0f5")
     }
 
     /// Clearing a colour deletes its line, so the sidebar goes back to the default
     /// rather than carrying a stale override.
     @Test func clearingAColourRemovesItsLine() throws {
         let config = WiettyConfigFile.temporary()
-        let store = ProjectStore(defaults: makeDefaults(), config: config, service: FakeTerminalService())
-        store.sidebarColors.background = ColorHex.color(from: "#303446")
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
+        let store = storeFx.store
+        storeFx.preferences.sidebarColors.background = ColorHex.color(from: "#303446")
         #expect(try config.read()["color-background"] == "#303446")
-        store.sidebarColors.background = nil
+        storeFx.preferences.sidebarColors.background = nil
         #expect(try config.read()["color-background"] == nil)
     }
 
     @Test func aFreshStoreHasNoColourOverrides() {
-        let store = ProjectStore(defaults: makeDefaults(), config: WiettyConfigFile.temporary(),
-                                 service: FakeTerminalService())
-        #expect(store.sidebarColors == SidebarColors())
+        let storeFx = SettingsFixture(defaults: makeDefaults(), config: WiettyConfigFile.temporary())
+        #expect(storeFx.preferences.sidebarColors == SidebarColors())
     }
 
     @Test func pillColoursRoundTripAcrossInstances() throws {
         let defaults = makeDefaults()
         let config = WiettyConfigFile.temporary()
-        let store1 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
-        store1.sidebarColors.pillBackground = ColorHex.color(from: "#ca9ee6")
-        store1.sidebarColors.pillForeground = ColorHex.color(from: "#232634")
-        let store2 = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
-        #expect(ColorHex.string(from: try #require(store2.sidebarColors.pillBackground)) == "#ca9ee6")
-        #expect(ColorHex.string(from: try #require(store2.sidebarColors.pillForeground)) == "#232634")
+        let store1Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store1 = store1Fx.store
+        store1Fx.preferences.sidebarColors.pillBackground = ColorHex.color(from: "#ca9ee6")
+        store1Fx.preferences.sidebarColors.pillForeground = ColorHex.color(from: "#232634")
+        let store2Fx = SettingsFixture(defaults: defaults, config: config, service: FakeTerminalService())
+        let store2 = store2Fx.store
+        #expect(ColorHex.string(from: try #require(store2Fx.preferences.sidebarColors.pillBackground)) == "#ca9ee6")
+        #expect(ColorHex.string(from: try #require(store2Fx.preferences.sidebarColors.pillForeground)) == "#232634")
     }
 }

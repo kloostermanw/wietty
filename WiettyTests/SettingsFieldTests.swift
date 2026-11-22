@@ -19,11 +19,13 @@ import WiettyShared
                           agents: [AgentDefinition] = [.claude],
                           connections: [RemoteConnection] = []) -> SettingsView {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
-        let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
+        let storeFx = SettingsFixture(defaults: defaults, service: FakeTerminalService())
+        let store = storeFx.store
         store.agents = agents
         let connectionStore = RemoteConnectionsStore(defaults: defaults)
         for connection in connections { connectionStore.add(connection) }
-        return SettingsView(store: store, remoteConnections: connectionStore,
+        return SettingsView(store: store, preferences: storeFx.preferences,
+                            remoteConnections: connectionStore,
                             remoteWorkspaces: RemoteWorkspacesController(connections: connectionStore),
                             bells: BellNotifier(sink: FakeNotificationSink()),
                             desktopNotifications: .fake(),
