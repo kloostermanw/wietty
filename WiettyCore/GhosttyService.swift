@@ -15,6 +15,10 @@ package final class SharedTerminalState: @unchecked Sendable {
     private var live: Set<String> = []
     private var models: [String: any TerminalScreenModel] = [:]
 
+    /// `GhosttyService` builds the app's one instance. Reachable from the tests so
+    /// `StreamBaselineTests` can wire the hub to a model exactly as `GhosttyStack` does.
+    package init() {}
+
     package var liveSessions: Set<String> {
         lock.lock(); defer { lock.unlock() }
         return live

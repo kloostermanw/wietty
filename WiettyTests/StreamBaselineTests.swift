@@ -28,29 +28,53 @@ struct StreamBaselineTests {
 
     /// One terminal and whatever carries its bytes to the helper side.
     ///
-    /// Today that is a `TerminalRelay` on the pty, which is what `GhosttyService`
-    /// builds for every terminal, with an output callback that does nothing.
+    /// Today that is a `TerminalRelay` on the pty, wired the way `GhosttyService.open`
+    /// and `GhosttyStack` wire every terminal: the relay's output callback runs the
+    /// `ProgramStatusTap`, then `PaneStreamHub.write`, whose `onIngest` feeds the
+    /// session's libghostty-vt screen model under the session's lock, and only then
+    /// does the relay write the chunk to the helper. That work sits on the same read
+    /// source as the helper's bytes, so a baseline without it would be faster than
+    /// the app. No viewer is attached to the hub; its flush timer runs, as the app's
+    /// does.
     private final class Session {
         let pty: RawPTY
         let relay: TerminalRelay
+        let hub: PaneStreamHub
 
         init(command: String) throws {
+            let session = "gt:" + UUID().uuidString.lowercased()
+            // `GhosttyService.initialSize`, and the default scrollback limit.
+            let size = TerminalSize(cols: 120, rows: 34)
+            let model = try GhosttyVtScreenModel(size: size,
+                                                 scrollbackLines: TerminalScrollback.defaultLines,
+                                                 graphemeClustering: true)
+            let shared = SharedTerminalState()
+            let hub = PaneStreamHub(startTimer: true)
+            hub.onIngest = { session, bytes in shared.model(for: session)?.write(bytes) }
+            self.hub = hub
             pty = try RawPTY.spawn(command: command, directory: URL(fileURLWithPath: "/tmp"),
-                                   environment: [:], size: TerminalSize(cols: 80, rows: 24),
-                                   shell: "/bin/sh")
+                                   environment: [:], size: size, shell: "/bin/sh")
+            let status = ProgramStatusTap(reply: { [weak pty] answer in pty?.write(answer) },
+                                          report: { _ in })
             do {
-                let path = try TerminalRelay.socketPath(for: "gt:" + UUID().uuidString.lowercased())
-                relay = try TerminalRelay(pty: pty, socketPath: path) { _ in }
+                let path = try TerminalRelay.socketPath(for: session)
+                relay = try TerminalRelay(pty: pty, socketPath: path) { bytes in
+                    status.ingest(bytes)
+                    hub.write(session: session, bytes: bytes)
+                }
             } catch {
                 pty.terminate()
+                hub.stop()
                 throw error
             }
+            shared.note(model: model, for: session)
             relay.start(onExit: { _ in })
         }
 
         func close() {
             relay.stop()
             pty.terminate()
+            hub.stop()
         }
     }
 
