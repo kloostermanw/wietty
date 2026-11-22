@@ -37,8 +37,7 @@ packages:
 targets:
   # Everything Wietty does that needs no window: the store, the terminal byte path,
   # the supervisors and the servers. A target of its own so the compiler refuses an
-  # import of SwiftUI or AppKit on this side of the boundary. See
-  # docs/superpowers/specs/2026-11-21-phase-1-core-extraction-design.md and issue #84.
+  # import of SwiftUI or AppKit on this side of the boundary. See issue #84.
   #
   # The three targets share SWIFT_PACKAGE_NAME so that `package` declarations reach
   # the app and the tests while nothing else sees them. Without that, every member a
