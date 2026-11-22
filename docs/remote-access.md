@@ -106,10 +106,13 @@ phase 3 of issue #84 puts it on the stream. Remote keystrokes take the same path
 a local one takes, into the pty master, so both orders are the pty's. Four things
 are worth knowing on the client side:
 
-- **`TERM` is `xterm-ghostty` when that terminfo entry is installed, and
-  `xterm-256color` otherwise** (`RawPTY.terminalType`, resolved once per launch
-  with `infocmp`). In practice the first case means Ghostty.app is present on
-  the serving Mac. Because the served bytes are the child's own, a program
+- **`TERM` is `xterm-ghostty` in the ordinary case, and `xterm-256color` only
+  on a build that did not produce the bundled terminfo entry**
+  (`RawPTY.terminalType`, which reads `BundledTerminfo`). The app compiles
+  that entry into its own bundle and points the child at it with
+  `TERMINFO_DIRS`, so Ghostty.app does not have to be installed on the serving
+  Mac, and nothing is looked up with `infocmp`. See terminal.md, "Spawning the
+  shell". Because the served bytes are the child's own, a program
   drawing for `xterm-ghostty` can emit sequences a client does not implement:
   xterm.js in the browser page and SwiftTerm in the iPadOS client each render
   what they support and ignore the rest. Nothing translates between them.

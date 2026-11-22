@@ -637,12 +637,29 @@ a socket that then stays silent forever.
   an object still alive at exit gets no `deinit` and the relay's socket file would otherwise sit in the
   temp directory until the stale sweep reached it.
 - **A remote viewer's first paint carries the viewport and nothing above or beneath it.** No
-  scrollback, no palette, and not the screen under an alternate screen. An escape sequence cut in two by
-  the moment of an attach shows as stray characters until the next redraw. Causes above, under
-  "Serving a remote viewer".
-- **A column change reflows the whole scrollback under the model's lock**, which can hold a terminal's
-  output behind each notch of a window drag once its scrollback is full. See "The server's own
-  terminal".
+  scrollback, and not the screen under an alternate screen. Causes above, under "Serving a remote
+  viewer".
+- **The palette is left out of the paint frame, on purpose.** A viewer draws indexed colours with its
+  own theme, for the paint as for the stream, so the same terminal can look different on the Mac, in the
+  browser and on the iPad. What the model could send is the library's default table, which is neither
+  the surface's theme nor the viewer's, so sending it would be a third set of colours rather than the
+  right one. A program that changes the palette itself with `OSC 4` reaches a viewer attached at the
+  time, through the stream, and not one that attaches later.
+- **An escape sequence cut exactly at the moment a viewer attaches shows its second half as text.**
+  The model has consumed the first half, so the paint cannot hold it, and the new viewer's stream
+  starts in the middle of the sequence. It takes an attach landing between the two reads that cut a
+  sequence, it affects only the viewer that attached, and the next redraw corrects it. A character
+  split the same way is protected, by the session's UTF-8 chunker. An escape sequence is not.
+- **A column change reflows the whole scrollback under the model's lock**, so the output of the
+  terminal being resized waits behind it, on each notch of a window drag once its scrollback is full.
+  Other terminals are not held: the lock is per session and the flush timer skips a busy one. The cost
+  grows with the `scrollback-lines` setting. See "The server's own terminal".
+- **The scrollback limit and grapheme clustering are both read when a terminal opens.** A terminal
+  that is already open keeps the history limit it started with after `scrollback-lines` changes, and
+  keeps the clustering mode its surface resolved from the Ghostty configuration at that moment
+  (`grapheme-width-method`), so a change to either reaches terminals opened afterwards. For clustering
+  the surface behaves the same way, which is what keeps the two emulators agreeing on how many cells an
+  emoji takes.
 - **The stream carries whatever `RawPTY.terminalType` resolved**, which is `xterm-ghostty` in the
   ordinary case: the app compiles that terminfo entry into its own bundle and points the child at it
   with `TERMINFO_DIRS` (`BundledTerminfo`, and "Spawning the shell" above), so no other terminal has to
