@@ -117,11 +117,26 @@ package final class GhosttyService: TerminalService {
     private let onProgramStatus: @Sendable (String, ProgramStatusScanner.Event) -> Void
     private let onTerminated: @MainActor (String) -> Void
     /// Builds the screen model of a terminal that is being opened, at the grid it
-    /// is opened with and with grapheme clustering as the host says its surfaces
-    /// have it. Injected so a test can hand the service a model it can inspect; the
-    /// default is the real one.
-    private let makeScreenModel: @MainActor (TerminalSize, _ graphemeClustering: Bool) throws
+    /// is opened with, keeping at most the history `scrollbackLines` answers with,
+    /// and with grapheme clustering as the host says its surfaces have it. Injected
+    /// so a test can hand the service a model it can inspect; the default is the
+    /// real one.
+    private let makeScreenModel: @MainActor (TerminalSize, _ scrollbackLines: Int,
+                                             _ graphemeClustering: Bool) throws
         -> any TerminalScreenModel
+
+    /// How many lines of history the next terminal's model is built to keep.
+    ///
+    /// Asked in `open`, on the main actor, once per terminal, and never from the
+    /// relay's queue or the hub's: a model is handed its limit when it is built and
+    /// nothing reads the setting after that. So a change reaches terminals opened
+    /// after it, and one that is already open keeps what it started with.
+    ///
+    /// A closure the owner of the setting points at itself, rather than a value
+    /// passed in, because the service is built before the store that holds the
+    /// setting (`GhosttyStack.followScrollbackSetting(of:)`). The default until
+    /// then, and for a service nothing is wired to.
+    package var scrollbackLines: @MainActor () -> Int = { TerminalScrollback.defaultLines }
     private var terminals: [String: Terminal] = [:]
 
     /// The terminal the frontend says is on screen, as it last told us.
@@ -181,9 +196,10 @@ package final class GhosttyService: TerminalService {
          onStreamEnded: @escaping @Sendable (String) -> Void = { _ in },
          onProgramStatus: @escaping @Sendable (String, ProgramStatusScanner.Event) -> Void = { _, _ in },
          onDisplayRequest: @escaping @MainActor (String?) -> Void = { _ in },
-         makeScreenModel: @escaping @MainActor (TerminalSize, _ graphemeClustering: Bool) throws
+         makeScreenModel: @escaping @MainActor (TerminalSize, _ scrollbackLines: Int,
+                                                _ graphemeClustering: Bool) throws
              -> any TerminalScreenModel
-             = { try GhosttyVtScreenModel(size: $0, graphemeClustering: $1) },
+             = { try GhosttyVtScreenModel(size: $0, scrollbackLines: $1, graphemeClustering: $2) },
          onTerminated: @escaping @MainActor (String) -> Void) {
         self.host = host
         self.helperPath = helperPath
@@ -235,8 +251,12 @@ package final class GhosttyService: TerminalService {
         // Grapheme clustering is asked of the host here, once, because this is the
         // moment the surface is created from the same configuration. A terminal
         // that is already open keeps what it started with, as its surface's
-        // default modes do.
-        let model = try makeScreenModel(Self.initialSize, host.graphemeClustering)
+        // default modes do. The scrollback limit is read here for the same reason
+        // and with the same consequence. Clamped here as well as where the setting
+        // is stored, so no caller can build a model outside the documented range.
+        let model = try makeScreenModel(Self.initialSize,
+                                        TerminalScrollback.clamped(scrollbackLines()),
+                                        host.graphemeClustering)
         let pty = try RawPTY.spawn(command: command, directory: folder, environment: [:],
                                    size: Self.initialSize, shell: shell)
         let onOutput = self.onOutput

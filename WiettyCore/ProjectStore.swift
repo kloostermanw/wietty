@@ -288,6 +288,21 @@ package final class ProjectStore: SettingsPairSource {
         }
     }
 
+    /// Lines of history each terminal's screen model keeps (`TerminalScrollback`).
+    ///
+    /// Here and not in `UIPreferences`, by the rule that sorted the others: it
+    /// decides what the server answers a read of a terminal's output with, whether
+    /// or not a frontend is attached. Read by `GhosttyService.open`, so it applies
+    /// to terminals opened after a change.
+    package var scrollbackLines: Int {
+        didSet {
+            let clamped = TerminalScrollback.clamped(scrollbackLines)
+            if clamped != scrollbackLines { scrollbackLines = clamped; return }
+            guard scrollbackLines != oldValue else { return }
+            persistSettings()
+        }
+    }
+
     package var agents: [AgentDefinition] {
         didSet {
             guard agents != oldValue else { return }
@@ -535,6 +550,7 @@ package final class ProjectStore: SettingsPairSource {
             self.remoteEnabled = cfg[SettingsKeys.remoteEnabled] == "true"
             self.mcpPort = Self.port(cfg[SettingsKeys.mcpPort], default: MCPServerHost.defaultPort)
             self.remotePort = Self.port(cfg[SettingsKeys.remotePort], default: RemoteServer.defaultPort)
+            self.scrollbackLines = Self.scrollback(cfg[SettingsKeys.scrollbackLines])
             self.agents = Self.agents(from: cfg)
             self.approvedCommands = Self.approvals(from: cfg)
             self.groups = Self.groups(from: cfg)
@@ -552,6 +568,8 @@ package final class ProjectStore: SettingsPairSource {
             self.mcpPort = storedMCPPort == 0 ? MCPServerHost.defaultPort : Self.clampPort(storedMCPPort)
             let storedRemotePort = defaults.integer(forKey: remotePortKey)
             self.remotePort = storedRemotePort == 0 ? RemoteServer.defaultPort : Self.clampPort(storedRemotePort)
+            // New with the file: no build wrote it to `UserDefaults`.
+            self.scrollbackLines = TerminalScrollback.defaultLines
             self.agents = Self.loadAgents(defaults, key: agentsKey)
             let storedApprovals = defaults.dictionary(forKey: approvedCommandsKey) as? [String: [String]] ?? [:]
             self.approvedCommands = storedApprovals.reduce(into: [UUID: Set<String>]()) {
@@ -609,6 +627,15 @@ package final class ProjectStore: SettingsPairSource {
     /// actually start something (`isValid`). No seed here: a file that exists is a
     /// full snapshot, so no agents means the list is empty on purpose. Seeding only
     /// happens when migrating, via `loadAgents`.
+    /// The scrollback limit a config line holds. A file without the line, which is
+    /// every file written before the setting existed, means the default, and so
+    /// does a value that is not a number. A number outside the range is brought
+    /// into it rather than refused, the way a port is.
+    private static func scrollback(_ value: String?) -> Int {
+        guard let value, let lines = Int(value) else { return TerminalScrollback.defaultLines }
+        return TerminalScrollback.clamped(lines)
+    }
+
     private static func agents(from cfg: [String: String]) -> [AgentDefinition] {
         var result: [AgentDefinition] = []
         var index = 0
@@ -2399,6 +2426,7 @@ package final class ProjectStore: SettingsPairSource {
             (SettingsKeys.remoteEnabled, remoteEnabled ? "true" : "false"),
             (SettingsKeys.remotePort, String(remotePort)),
             (SettingsKeys.mcpPort, String(mcpPort)),
+            (SettingsKeys.scrollbackLines, String(scrollbackLines)),
         ]
         for (i, agent) in agents.enumerated() {
             pairs.append(("\(SettingsKeys.agentPrefix)\(i).name", agent.name))

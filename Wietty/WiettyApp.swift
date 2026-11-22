@@ -52,6 +52,9 @@ struct WiettyApp: App {
         let projects = ProjectStore(service: stack.service,
                                     jobEvents: stack.ghostty.pollJobs)
         _store = State(wrappedValue: projects)
+        // The stack is built first and the scrollback limit is the store's, so the
+        // two are introduced here. Before any terminal can be opened.
+        stack.ghostty.followScrollbackSetting(of: projects)
         // Shares the store's writer, so both halves of the settings still land in one
         // file in one order, and reads the groups from it to resolve the selection.
         let paneSelection = TerminalSelection()

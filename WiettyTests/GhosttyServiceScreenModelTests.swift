@@ -39,11 +39,14 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
 @MainActor private final class ModelFactoryLog {
     private(set) var sizes: [TerminalSize] = []
     private(set) var clustering: [Bool] = []
+    private(set) var scrollback: [Int] = []
     weak var last: RecordingScreenModel?
     var failure: (any Error)?
 
-    func make(_ size: TerminalSize, _ graphemeClustering: Bool) throws -> any TerminalScreenModel {
+    func make(_ size: TerminalSize, _ scrollbackLines: Int,
+              _ graphemeClustering: Bool) throws -> any TerminalScreenModel {
         sizes.append(size)
+        scrollback.append(scrollbackLines)
         clustering.append(graphemeClustering)
         if let failure { throw failure }
         let model = RecordingScreenModel(size: size)
@@ -73,13 +76,68 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
         -> GhosttyService {
         GhosttyService(host: host, helperPath: "/usr/bin/true",
                        onOutput: onOutput,
-                       makeScreenModel: { try models.make($0, $1) },
+                       makeScreenModel: { try models.make($0, $1, $2) },
                        onTerminated: { _ in })
     }
 
     private func open(_ service: GhosttyService, _ command: String?) async throws -> String {
         try await service.open(folder: Self.folder, existingWindowId: nil,
                                command: command, badge: nil).sessionId
+    }
+
+    // MARK: - Scrollback limit
+
+    /// With nothing wired, a terminal's model is built with the default limit.
+    @Test func aModelIsBuiltWithTheDefaultScrollbackWhenNothingSaysOtherwise() async throws {
+        let models = ModelFactoryLog()
+        let service = service(FakeSurfaceHost(), models: models)
+        defer { service.closeAll() }
+        _ = try await open(service, "sleep 30")
+        #expect(models.scrollback == [TerminalScrollback.defaultLines])
+    }
+
+    /// The limit is asked for when a terminal opens, once. A terminal opened after
+    /// the setting changed gets a model with the new limit, and the one that was
+    /// already open keeps the model it had: nothing is rebuilt or resized.
+    @Test func aTerminalOpenedAfterAChangeGetsAModelWithTheNewLimit() async throws {
+        let models = ModelFactoryLog()
+        let service = service(FakeSurfaceHost(), models: models)
+        defer { service.closeAll() }
+        var limit = 4_000
+        service.scrollbackLines = { limit }
+        let first = try await open(service, "sleep 30")
+        let firstModel = try #require(service.screenModel(for: first))
+        limit = 25_000
+        _ = try await open(service, "sleep 30")
+        #expect(models.scrollback == [4_000, 25_000])
+        #expect(service.screenModel(for: first) === firstModel)
+    }
+
+    /// Whatever answers, a model is never built outside the documented range.
+    @Test func aLimitOutsideTheRangeIsClampedBeforeAModelIsBuilt() async throws {
+        let models = ModelFactoryLog()
+        let service = service(FakeSurfaceHost(), models: models)
+        defer { service.closeAll() }
+        service.scrollbackLines = { 0 }
+        _ = try await open(service, "sleep 30")
+        service.scrollbackLines = { .max }
+        _ = try await open(service, "sleep 30")
+        #expect(models.scrollback == [TerminalScrollback.range.lowerBound,
+                                      TerminalScrollback.range.upperBound])
+    }
+
+    /// The stack is what points the service at the store, and it follows the
+    /// store rather than copying it: a later change is what the next open reads.
+    @Test func theStackMakesTheServiceFollowTheStoresSetting() throws {
+        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let service = try #require(stack.ghosttyService)
+        let store = SettingsFixture(config: WiettyConfigFile.temporary()).store
+        #expect(service.scrollbackLines() == TerminalScrollback.defaultLines)
+        stack.followScrollbackSetting(of: store)
+        store.scrollbackLines = 3_000
+        #expect(service.scrollbackLines() == 3_000)
+        store.scrollbackLines = 50_000
+        #expect(service.scrollbackLines() == 50_000)
     }
 
     // MARK: - Feeding

@@ -26,6 +26,7 @@ Scalars (one key each):
 | `remote-enabled`         | `true`/`false`, the LAN server toggle |
 | `remote-port`            | the LAN remote terminal port |
 | `mcp-port`               | the loopback MCP server port |
+| `scrollback-lines`       | lines of history the server keeps per terminal, 1000 to 100000 (default 10000) |
 | `selected-group`         | the active group's id, or absent for "All" |
 | `color-background`       | the sidebar background, a `#RRGGBB` colour |
 | `color-foreground`       | the sidebar foreground |
@@ -41,6 +42,16 @@ the default", which is what an untouched install has and what deleting the line
 returns to. These are Wietty's own UI colours (`SidebarColors`). The terminal's own
 colours are libghostty's to apply, so they live in `ghostty.cfg` rather than here (see
 "What does not live in the file" below).
+
+`scrollback-lines` is how much history each terminal's screen model keeps, which is
+how far an MCP read of a terminal's output can reach. It costs memory: about 1 KiB
+per line once a terminal has filled it, so the default of 10,000 lines is about 10 MiB
+per terminal and the maximum of 100,000 about 100 MiB. A value outside 1,000 to
+100,000 is brought to the nearer end when the file is read, and one that is not a
+number reads as the default. A change applies to terminals opened afterwards. Like the
+ports, the line is written at its default too, so a file from before the setting
+existed reads as 10,000 and gains this one line, under `mcp-port`, the next time
+anything is saved. See terminal.md, "The server's own terminal".
 
 Lists are flattened into indexed keys:
 
@@ -101,7 +112,7 @@ External edits you make by hand take effect on the next launch; Wietty does not 
 the file the way it watches `ghostty.cfg` and a workspace `wietty.json`.
 
 There are two sources. `ProjectStore` owns the workspaces and everything the server
-side needs, and `UIPreferences` owns the four that are this Mac's view of the data
+side needs (the ports, the check intervals, the scrollback limit), and `UIPreferences` owns the four that are this Mac's view of the data
 rather than part of it: the sidebar width and colours, the active group, and the
 notification sound. The rule that sorted them is whether the server's own behaviour
 depends on the setting with no frontend attached, which is checkable today by asking
