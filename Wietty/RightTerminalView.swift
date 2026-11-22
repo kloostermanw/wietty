@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 import WiettyShared
 
 /// The right half of the main window: whatever is selected, and nothing else.

@@ -1,0 +1,164 @@
+import Foundation
+import Observation
+
+/// Owns the test-processes of every workspace and reconciles them against the
+/// on-disk `tests` definitions. Tests are run-to-completion checks executed by a
+/// `ManagedProcess` in `short_running` mode; this type keeps them separate from
+/// the regular process rows and adds manual run / run-all controls. The file is
+/// the source of truth; this type never writes definitions back. Staleness (a
+/// passing test going neutral when the working tree changes) is tracked via
+/// `applyWorkingTreeFingerprint`.
+@MainActor
+@Observable
+package final class TestSupervisor {
+    private var byProject: [UUID: [ManagedProcess]] = [:]
+    private let launcher: ProcessLaunching
+
+    /// Latest working-tree fingerprint observed per workspace (nil until the
+    /// first `.workingTree` check runs).
+    private var currentFingerprint: [UUID: String] = [:]
+    /// The fingerprint stamped when each test was last run (the working-tree
+    /// state that run reflects). Keyed by project then test name. A nil entry
+    /// means "not yet baselined".
+    private var runFingerprint: [UUID: [String: String]] = [:]
+
+    package init(launcher: ProcessLaunching = PTYProcessLauncher()) {
+        self.launcher = launcher
+    }
+
+    package func tests(for projectId: UUID) -> [ManagedProcess] {
+        (byProject[projectId] ?? []).sorted { $0.name < $1.name }
+    }
+
+    package func test(projectId: UUID, name: String) -> ManagedProcess? {
+        byProject[projectId]?.first { $0.name == name }
+    }
+
+    /// A test is a `short_running` process. Maps a `TestConfig` to the
+    /// `ProcessConfig` the runner understands, carrying the test's own
+    /// `shell_init` across unchanged. The workspace-wide lines are not folded in
+    /// here: as in `ProcessSupervisor`, they travel alongside the definition and
+    /// `ManagedProcess` merges them per launch.
+    private func processConfig(_ def: TestConfig) -> ProcessConfig {
+        ProcessConfig(
+            command: def.command, kind: .shortRunning, env: def.env,
+            allowEmptyVars: def.allowEmptyVars, shellInit: def.shellInit
+        )
+    }
+
+    /// Reconciles test definitions for one workspace: adds new, updates existing,
+    /// drops removed. Tests are not daemons and never auto-start, so a removed
+    /// definition is simply dropped (any in-flight run is torn down).
+    package func apply(
+        _ config: WorkspaceConfig?,
+        projectId: UUID,
+        directory: URL,
+        variables: @escaping @MainActor () -> [String: String] = { [:] }
+    ) {
+        let defined = config?.tests ?? [:]
+        let current = byProject[projectId] ?? []
+        let global = config?.shellInit ?? []
+
+        var kept: [ManagedProcess] = []
+        for test in current {
+            if let def = defined[test.name] {
+                test.updateDefinition(processConfig(def), globalShellInit: global)
+                kept.append(test)
+            } else {
+                test.kill() // drop: stop any in-flight run
+            }
+        }
+
+        let existingNames = Set(kept.map(\.name))
+        for (name, def) in defined where !existingNames.contains(name) {
+            kept.append(ManagedProcess(
+                name: name, config: processConfig(def), globalShellInit: global,
+                directory: directory, launcher: launcher, variables: variables
+            ))
+        }
+
+        byProject[projectId] = kept
+    }
+
+    /// Starts one test and reports whether it actually launched. `start()` refuses a
+    /// test that is already in flight, and the baseline is stamped only on a launch
+    /// that happened: rebasing it for a refused call would let the in-flight run,
+    /// started against an older tree, finish green and read as fresh against the
+    /// current one, which is the exact claim `applyWorkingTreeFingerprint` exists to
+    /// prevent. An unknown name returns false rather than throwing; callers that need
+    /// the distinction resolve the test first.
+    @discardableResult
+    package func run(projectId: UUID, name: String) -> Bool {
+        guard let test = test(projectId: projectId, name: name), test.start() else { return false }
+        runFingerprint[projectId, default: [:]][name] = currentFingerprint[projectId]
+        return true
+    }
+
+    /// Runs every test in the workspace, returning the names actually started. Tests
+    /// already in flight are left alone, so the result is not always every test.
+    @discardableResult
+    package func runAll(projectId: UUID) -> Set<String> {
+        var started: Set<String> = []
+        for test in byProject[projectId] ?? [] {
+            if run(projectId: projectId, name: test.name) { started.insert(test.name) }
+        }
+        return started
+    }
+
+    /// Suspends until none of `tests` is in flight (starting, running, or stopping),
+    /// or until `timeout` elapses, and reports whether they all settled. A test that
+    /// is idle, finished, or failed already counts as settled, so a wait on a test
+    /// nobody started returns at once instead of hanging until the deadline; telling
+    /// "passed" from "never ran" is left to the caller, which reads the states.
+    ///
+    /// Takes the processes rather than names so a test whose definition is dropped
+    /// mid-wait is still observed: `apply` kills it and its exit settles the wait,
+    /// even though the supervisor no longer lists it. Event driven, not polled: each
+    /// round suspends on the next state change of any unsettled test, raced against
+    /// the deadline. Returns false (not settled) if the calling task is cancelled,
+    /// which is how a dropped HTTP request ends its wait.
+    package func waitUntilSettled(_ tests: [ManagedProcess], timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while true {
+            let pending = tests.filter { processIsRunning(for: $0.state) }
+            if pending.isEmpty { return true }
+            if Task.isCancelled || ContinuousClock.now >= deadline { return false }
+            await withTaskGroup(of: Void.self) { group in
+                for test in pending {
+                    let seen = test.state
+                    group.addTask { await test.waitForStateChange(from: seen) }
+                }
+                group.addTask { try? await Task.sleep(until: deadline, clock: .continuous) }
+                await group.next()
+                group.cancelAll()
+            }
+        }
+    }
+
+    /// Records the workspace's latest working-tree fingerprint and stales any
+    /// passing test whose baseline differs. A `.finished` test with no baseline
+    /// yet adopts this fingerprint (stays fresh) rather than being reset, so a
+    /// test that passed before the first fingerprint was known is not spuriously
+    /// staled. Failing tests are never touched here; they clear only by passing.
+    package func applyWorkingTreeFingerprint(_ fingerprint: String, projectId: UUID) {
+        currentFingerprint[projectId] = fingerprint
+        for test in byProject[projectId] ?? [] where test.state == .finished {
+            let stamped = runFingerprint[projectId]?[test.name]
+            if stamped == nil {
+                runFingerprint[projectId, default: [:]][test.name] = fingerprint
+            } else if stamped != fingerprint {
+                test.resetToIdleIfFinished()
+            }
+        }
+    }
+
+    /// A `TestConfig` never defines a `stop` command, so `kill()` alone is the
+    /// full teardown (unlike `ProcessSupervisor`, which also runs `stop()` for
+    /// daemons).
+    package func removeWorkspace(_ projectId: UUID) {
+        byProject[projectId]?.forEach { $0.kill() }
+        byProject[projectId] = nil
+        currentFingerprint[projectId] = nil
+        runFingerprint[projectId] = nil
+    }
+}

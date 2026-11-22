@@ -1,5 +1,6 @@
-import SwiftUI
 import AppKit
+import SwiftUI
+import WiettyCore
 
 /// Reads the store and the memory monitor itself and hands `StatusBarView` plain
 /// values. Observation tracks what a body reads, so reading them here rather than in

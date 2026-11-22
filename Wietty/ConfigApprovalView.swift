@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 /// Asks whether the commands in a workspace's `wietty.json` may run.
 ///

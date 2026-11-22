@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+import WiettyCore
 @testable import Wietty
 
 /// Starts real Hummingbird servers on loopback, unlike `MCPServerHostTests`, which

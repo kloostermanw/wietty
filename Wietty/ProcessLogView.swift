@@ -1,4 +1,5 @@
 import SwiftUI
+import WiettyCore
 
 /// A read-only, auto-scrolling view of one process's output, for the pane.
 ///

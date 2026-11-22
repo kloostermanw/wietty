@@ -48,6 +48,13 @@ targets:
     type: framework
     platform: macOS
     sources: [WiettyCore]
+    dependencies:
+      - package: MCP
+        product: MCP
+      - package: Hummingbird
+        product: Hummingbird
+      - package: HummingbirdWebSocket
+        product: HummingbirdWebSocket
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.kloosterman.WiettyCore
@@ -65,12 +72,6 @@ targets:
     sources: [Wietty]
     dependencies:
       - target: WiettyCore
-      - package: MCP
-        product: MCP
-      - package: Hummingbird
-        product: Hummingbird
-      - package: HummingbirdWebSocket
-        product: HummingbirdWebSocket
       - package: SwiftTerm
         product: SwiftTerm
       - package: WiettyShared
@@ -157,6 +158,13 @@ targets:
       # is loaded into it, so a second copy here would be a second module at runtime.
       - target: WiettyCore
         embed: false
+      # MCP and HTTPTypes are NOT re-declared here, although MCPServerHostTests and
+      # RemoteActivateTests import them. Linking a package product into both
+      # WiettyCore and a second target makes SwiftPM build dynamic product
+      # frameworks that fail to link (WSCore and NIOTransportServices, undefined
+      # Logging.Logger). WiettyCore links them, its build puts their modules in the
+      # shared products directory for the compiler to find, and the test bundle is
+      # loaded into a host that already has the framework.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.kloosterman.wiettyTests

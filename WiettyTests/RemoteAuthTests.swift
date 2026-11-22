@@ -1,4 +1,5 @@
 import Testing
+import WiettyCore
 @testable import Wietty
 
 /// Covers `RemoteServer.isAuthorized`, the pure predicate at the heart of the
