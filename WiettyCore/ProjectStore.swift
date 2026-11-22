@@ -910,7 +910,13 @@ package final class ProjectStore: SettingsPairSource {
         attention.remove(refId)
         acknowledgeProgramStatus(refId)
         do {
-            return try await service.focus(sessionId: sessionId)
+            let result = try await service.probe(sessionId: sessionId)
+            // Asking is the service's job; showing is the frontend's. With a window
+            // open this still moves the pane, synchronously, exactly as the side
+            // effect inside `focus` did. With no frontend listening the terminal is
+            // still answered for, which is the point.
+            events.emit(.showTerminal(sessionId: sessionId))
+            return result
         } catch {
             throw StoreError.terminal((error as? TerminalError)?.errorDescription ?? error.localizedDescription)
         }
@@ -948,7 +954,7 @@ package final class ProjectStore: SettingsPairSource {
         }
     }
 
-    func activateThrowing(_ ref: TerminalRef, in project: Project) async throws {
+    package func activateThrowing(_ ref: TerminalRef, in project: Project) async throws {
         guard let prePIndex = projects.firstIndex(where: { $0.id == project.id }),
               let preTIndex = projects[prePIndex].terminals.firstIndex(where: { $0.id == ref.id }) else { return }
         let sessionId = projects[prePIndex].terminals[preTIndex].sessionId
@@ -970,8 +976,12 @@ package final class ProjectStore: SettingsPairSource {
             // stored row, not of any one service.
             let result = sessionId.isEmpty
                 ? FocusResult(found: false, jobName: nil)
-                : try await service.focus(sessionId: sessionId)
+                : try await service.probe(sessionId: sessionId)
             if result.found {
+                // The row is alive, so this is the whole of activating it: show it.
+                // The reopen branch below does not need its own request, because
+                // opening a terminal raises one for the session it just minted.
+                events.emit(.showTerminal(sessionId: sessionId))
                 // Live session: if it's a Claude row but claude is no longer
                 // the foreground job (shell prompt / None jobName), re-run it.
                 // `jobKnown` gates this: an unanswered job query is not evidence

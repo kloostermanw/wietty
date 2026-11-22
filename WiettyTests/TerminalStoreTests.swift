@@ -62,7 +62,7 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         return handle
     }
 
-    func focus(sessionId: String) async throws -> FocusResult {
+    func probe(sessionId: String) async throws -> FocusResult {
         if let error = errorToThrow { throw error }
         focusCalls.append(sessionId)
         return focusResult

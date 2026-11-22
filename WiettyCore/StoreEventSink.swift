@@ -31,6 +31,15 @@ package enum StoreEvent {
     /// The rows whose attention flag has just been cleared, so a notification about a
     /// bell that has been dealt with can be taken back.
     case attentionCleared(Set<UUID>)
+
+    /// A terminal should be put on screen: a row was clicked, an agent called
+    /// `select_process`, or an iPad activated a row.
+    ///
+    /// A request rather than an instruction. The frontend honours it synchronously, so
+    /// with a window open the pane moves exactly when it used to. With no frontend
+    /// listening nothing happens and the terminal still opens, runs and streams, which
+    /// is what phase 5 needs.
+    case showTerminal(sessionId: String)
 }
 
 /// Delivers `StoreEvent`s to everyone listening, synchronously.

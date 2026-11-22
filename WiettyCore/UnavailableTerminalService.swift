@@ -17,7 +17,7 @@ package struct UnavailableTerminalService: TerminalService {
               badge: String?) async throws -> TerminalHandle {
         throw error
     }
-    package func focus(sessionId: String) async throws -> FocusResult { throw error }
+    package func probe(sessionId: String) async throws -> FocusResult { throw error }
     package func send(sessionId: String, text: String) async throws { throw error }
     package func close(sessionId: String) async throws { throw error }
     package func readOutput(sessionId: String, maxLines: Int) async throws -> String { throw error }

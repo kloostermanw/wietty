@@ -14,6 +14,9 @@ struct WiettyApp: App {
     /// The MCP and LAN servers, and the teardown that closes every terminal when
     /// the app quits. Owned here rather than by `ContentView`, because what runs
     /// is the app's business and phase 5 makes it outlive any window.
+    /// Which local terminal the pane shows. Owned here rather than by `ContentView`
+    /// for the reason `router` is. See `TerminalSelection`.
+    @State private var selection = TerminalSelection()
     @State private var runtime = ServerRuntime()
     @State private var updates = UpdateService()
     @StateObject private var remoteConnections: RemoteConnectionsStore
@@ -62,7 +65,8 @@ struct WiettyApp: App {
 
     var body: some Scene {
         Window("Wietty", id: Self.mainWindowID) {
-            ContentView(store: store, runtime: runtime, preferences: preferences, terminals: terminals,
+            ContentView(store: store, runtime: runtime, selection: selection,
+                        preferences: preferences, terminals: terminals,
                         remoteConnections: remoteConnections, remoteWorkspaces: remoteWorkspaces,
                         bells: bells, router: router, promptTemplates: promptTemplates,
                         promptTemplatePresentation: promptTemplatePresentation)
