@@ -72,8 +72,14 @@ package final class GhosttyVtScreenModel: TerminalScreenModel, @unchecked Sendab
 
     /// - Parameter size: the grid the terminal was opened with.
     /// - Parameter scrollbackLines: how much history to keep, at most.
-    package init(size: TerminalSize, scrollbackLines: Int = TerminalScrollback.lines) throws {
-        terminal = try GhosttyVtTerminal(size: size, scrollbackLines: scrollbackLines)
+    /// - Parameter graphemeClustering: what the surface this model mirrors resolved
+    ///   for it, `TerminalSurfaceHosting.graphemeClustering`.
+    package init(size: TerminalSize,
+                 scrollbackLines: Int = TerminalScrollback.lines,
+                 graphemeClustering: Bool = true) throws {
+        terminal = try GhosttyVtTerminal(size: size,
+                                         scrollbackLines: scrollbackLines,
+                                         graphemeClustering: graphemeClustering)
     }
 
     package func write(_ bytes: [UInt8]) {

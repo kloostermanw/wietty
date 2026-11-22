@@ -86,6 +86,20 @@ import WiettyCore
         #expect(terminal.cursor.x == 2)
     }
 
+    /// What a surface does for a user whose Ghostty config sets
+    /// `grapheme-width-method = legacy`: every person is a wide cell of their own
+    /// and the joiners take none. Through a reset too, for the same reason as above.
+    @Test func withoutGraphemeClusteringAJoinedEmojiIsOneCellPairPerCodePoint() throws {
+        let terminal = try GhosttyVtTerminal(size: TerminalSize(cols: 80, rows: 24),
+                                             scrollbackLines: 100,
+                                             graphemeClustering: false)
+        write("👨‍👩‍👧‍👦", to: terminal)
+        #expect(terminal.cursor.x == 8)
+
+        write("\(Self.esc)c👨‍👩‍👧‍👦", to: terminal)
+        #expect(terminal.cursor.x == 8)
+    }
+
     // MARK: - The paint frame
 
     @Test func paintFrameCarriesColours() throws {

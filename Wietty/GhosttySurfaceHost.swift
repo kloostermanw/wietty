@@ -203,6 +203,36 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         return value
     }
 
+    var graphemeClustering: Bool { Self.graphemeClustering(in: config) }
+
+    /// What a configuration made of one file alone resolves for grapheme
+    /// clustering. The user's own Ghostty config is not loaded, so this answers for
+    /// the file and nothing else, which is what lets the suite pin both values of
+    /// the key without depending on whose machine it runs on.
+    static func graphemeClustering(loading file: URL) -> Bool {
+        let config = ghostty_config_new()
+        defer { ghostty_config_free(config) }
+        ghostty_config_load_file(config, file.path)
+        ghostty_config_finalize(config)
+        return graphemeClustering(in: config)
+    }
+
+    /// libghostty's answer for `grapheme-width-method`, as the one thing the rest
+    /// of the app needs from it. The getter hands back an enum as the name of its
+    /// case, a C string libghostty owns, and this key is one it exposes: measured,
+    /// as `desktopNotifications(in:)` says each key has to be.
+    ///
+    /// Anything but `legacy` is true, including a getter that refuses, because
+    /// `unicode` is libghostty's default and what a surface then starts with.
+    private static func graphemeClustering(in config: ghostty_config_t?) -> Bool {
+        guard let config else { return true }
+        var value: UnsafePointer<CChar>?
+        let key = "grapheme-width-method"
+        _ = key.withCString { ghostty_config_get(config, &value, $0, UInt(strlen($0))) }
+        guard let value else { return true }
+        return String(cString: value) != "legacy"
+    }
+
     func reloadConfig() {
         guard let app else { return }
         let rebuilt = Self.buildConfig()

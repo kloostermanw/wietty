@@ -44,7 +44,10 @@ package final class GhosttyVtTerminal {
     ///   keeps none. The library prunes history a page at a time, so a full
     ///   scrollback holds somewhat fewer rows than asked rather than exactly that
     ///   many: 10,000 gives about 9,665 at 120 columns, 1,000 about 953.
-    package init(size: TerminalSize, scrollbackLines: Int) throws {
+    /// - Parameter graphemeClustering: whether mode 2027 starts on, and comes back
+    ///   on after a full reset. True is what a surface does under Ghostty's default
+    ///   configuration; pass what the surface this terminal mirrors resolved.
+    package init(size: TerminalSize, scrollbackLines: Int, graphemeClustering: Bool = true) throws {
         guard let cols = UInt16(exactly: size.cols), let rows = UInt16(exactly: size.rows),
               cols > 0, rows > 0 else {
             throw GhosttyVtError.invalidSize(size)
@@ -67,19 +70,22 @@ package final class GhosttyVtTerminal {
         ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &bytes)
         ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &lines)
 
-        // Grapheme clustering (mode 2027) on, and on as the value a reset restores.
-        // A bare libghostty-vt terminal starts with it off. A libghostty surface
-        // starts with it on, because Ghostty's `grapheme-width-method` defaults to
-        // `unicode`, and puts it back after a full reset. The mode decides how many
+        // Grapheme clustering (mode 2027) as the surface has it, and as the value a
+        // reset restores. A bare libghostty-vt terminal starts with it off. A
+        // libghostty surface starts with it on, because Ghostty's
+        // `grapheme-width-method` defaults to `unicode`, and puts it back after a
+        // full reset; a user who set that key to `legacy` has a surface that
+        // starts with it off, which is why this is a parameter. The mode decides how many
         // cells an emoji made of several code points takes, so with it off this
         // terminal lays out a line holding one differently from the surface it is
-        // meant to mirror. Found by the coexistence check, not by reading: it was
-        // the one kind of output on which the two disagreed.
+        // meant to mirror whenever the two differ. Found by the coexistence check,
+        // not by reading: it was the one kind of output on which the two disagreed.
         //
         // As a default rather than by writing `CSI ? 2027 h`, because a program
         // that sends a full reset (`reset`, `tput reset`) would otherwise turn it
         // off here and nowhere else.
-        var clustering = GhosttyTerminalModeConfig(mode: Self.graphemeClusterMode, value: true)
+        var clustering = GhosttyTerminalModeConfig(mode: Self.graphemeClusterMode,
+                                                   value: graphemeClustering)
         ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE_DEFAULT, &clustering)
     }
 

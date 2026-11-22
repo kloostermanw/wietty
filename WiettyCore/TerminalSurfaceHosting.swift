@@ -137,6 +137,16 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// nothing at all, no matter what the rest of `docs/notifications.md` describes.
     var desktopNotifications: (effective: Bool, userConfig: Bool) { get }
 
+    /// Whether a surface created now starts with grapheme clustering (DEC mode
+    /// 2027) on: true unless the resolved Ghostty configuration sets
+    /// `grapheme-width-method = legacy`.
+    ///
+    /// Here because a terminal's `TerminalScreenModel` has to lay out an emoji made
+    /// of several code points in as many cells as the surface does, and this one
+    /// key decides that. The model cannot read the configuration itself: only
+    /// libghostty resolves the files that make it up, and only the host may ask.
+    var graphemeClustering: Bool { get }
+
     /// Rebuilds the configuration from disk and hands it to the app and every live
     /// surface, so a setting changed in the Settings window takes effect on
     /// terminals that are already open rather than on the next launch.
@@ -176,5 +186,7 @@ package final class InertSurfaceHost: TerminalSurfaceHosting {
     /// toggle from claiming notifications are turned off when the truth is that
     /// there is no terminal at all to turn them off for.
     package var desktopNotifications: (effective: Bool, userConfig: Bool) { (true, true) }
+    /// libghostty's own default again.
+    package var graphemeClustering: Bool { true }
     package func reloadConfig() {}
 }

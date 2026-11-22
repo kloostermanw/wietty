@@ -52,12 +52,14 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
 /// the only thing keeping a model alive is one of the things under test.
 @MainActor private final class ModelFactoryLog {
     private(set) var sizes: [TerminalSize] = []
+    private(set) var clustering: [Bool] = []
     weak var last: RecordingScreenModel?
     var hubCount: @Sendable () -> Int = { .max }
     var failure: (any Error)?
 
-    func make(_ size: TerminalSize) throws -> any TerminalScreenModel {
+    func make(_ size: TerminalSize, _ graphemeClustering: Bool) throws -> any TerminalScreenModel {
         sizes.append(size)
+        clustering.append(graphemeClustering)
         if let failure { throw failure }
         let model = RecordingScreenModel(size: size, hubCount: hubCount)
         last = model
@@ -87,7 +89,7 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
         -> GhosttyService {
         GhosttyService(host: host, helperPath: "/usr/bin/true",
                        onOutput: onOutput,
-                       makeScreenModel: { try models.make($0) },
+                       makeScreenModel: { try models.make($0, $1) },
                        onTerminated: { _ in })
     }
 
@@ -180,6 +182,44 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
         #expect(service.screenModel(for: session)?.size == TerminalSize(cols: 111, rows: 41))
         // Its own terminal only.
         #expect(service.screenModel(for: other)?.size == GhosttyService.initialSize)
+    }
+
+    /// The setting that decides how many cells a joined emoji takes. A user whose
+    /// Ghostty config says `legacy` has surfaces with mode 2027 off, and a model
+    /// that kept it on would lay out every line holding such an emoji differently
+    /// from the surface it mirrors. Read when the terminal opens, so a later
+    /// terminal follows a setting that changed in between.
+    @Test func aModelIsBuiltWithTheHostsGraphemeClustering() async throws {
+        let host = FakeSurfaceHost()
+        let models = ModelFactoryLog()
+        let recording = service(host, models: models)
+        defer { recording.closeAll() }
+        _ = try await open(recording, "sleep 5")
+        host.graphemeClustering = false
+        _ = try await open(recording, "sleep 5")
+        #expect(models.clustering == [true, false])
+    }
+
+    /// The same, through the real model. Four people joined into one emoji are
+    /// one wide cell with clustering and four without, so what follows them is
+    /// painted in a different column.
+    @Test func aLegacyHostGivesAModelThatDoesNotClusterGraphemes() async throws {
+        let bytes = Array("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}x".utf8)
+        let host = FakeSurfaceHost()
+        let service = service(host)
+        defer { service.closeAll() }
+        let clustered = try #require(service.screenModel(for: try await open(service, "sleep 5")))
+        host.graphemeClustering = false
+        let legacy = try #require(service.screenModel(for: try await open(service, "sleep 5")))
+
+        clustered.write(bytes)
+        legacy.write(bytes)
+        #expect(clustered.paintFrame() != legacy.paintFrame())
+
+        // And only because of the setting: two terminals opened alike agree.
+        let alsoLegacy = try #require(service.screenModel(for: try await open(service, "sleep 5")))
+        alsoLegacy.write(bytes)
+        #expect(alsoLegacy.paintFrame() == legacy.paintFrame())
     }
 
     // MARK: - Lifetime

@@ -90,6 +90,9 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// without Wietty's overlay. Settable so a test can put the two out of step,
     /// which is the state the Settings toggle has to describe rather than hide.
     var desktopNotifications: (effective: Bool, userConfig: Bool) = (true, true)
+    /// What this host claims the Ghostty configuration resolved for grapheme
+    /// clustering. Settable to stand for a user who chose `legacy`.
+    var graphemeClustering = true
     /// How many times the setting asked for the config to be re-read. A write that
     /// does not reload leaves every open terminal on the old value, and nothing on
     /// screen would say so.
