@@ -11,16 +11,6 @@ import WiettyCore
         func receive(_ message: RemoteMessage) { lock.lock(); storage.append(message); lock.unlock() }
     }
 
-    @Test func paintEmitsResizeThenDataWithClearAndCursor() {
-        let messages = PaneStreamHub.paintMessages(rows: ["ab", "cd"], cursorX: 1, cursorY: 1,
-                                                   cols: 2, rows: 2)
-        #expect(messages.first == .resize(cols: 2, rows: 2))
-        guard case let .data(vt) = messages[1] else { Issue.record("expected data"); return }
-        #expect(vt.hasPrefix("\u{1B}[2J\u{1B}[H"))
-        #expect(vt.contains("ab\r\ncd"))
-        #expect(vt.hasSuffix("\u{1B}[2;2H"))   // cursor is 1-based in VT
-    }
-
     @Test func deliversCoalescedOutputToASubscriber() {
         let hub = PaneStreamHub()
         let sink = Sink()
