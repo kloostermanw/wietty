@@ -722,45 +722,54 @@ struct ContentView: View {
     /// somewhere for it to go.
     private func startBellNotifications() {
         bells.onTap = { target in showBell(target) }
-        store.onBell = { project, ref in
-            guard BellAlert.shouldPost(
-                appIsFrontmost: NSApp.isActive,
-                terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
-            let notification = BellNotification.local(workspace: project.name,
-                                                      label: ref.displayName, refId: ref.id,
-                                                      sound: preferences.bellSound)
-            Task { await bells.post(notification) }
-        }
-        // A notification the process asked for by name, with its own words. The same
-        // on screen rule as a bell: a terminal the user is already looking at needs
-        // no banner. The rule that differs is upstream, in the store, which reports
-        // every one of these rather than only the first per flag.
-        store.onNotification = { project, ref, title, body in
-            guard BellAlert.shouldPost(
-                appIsFrontmost: NSApp.isActive,
-                terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
-            let notification = BellNotification.sent(workspace: project.name, label: ref.displayName,
-                                                     refId: ref.id, title: title, body: body,
-                                                     sound: preferences.bellSound)
-            Task { await bells.post(notification) }
-        }
-        // A program's status becoming something to come back for (`OSC 7501`), under
-        // the setting that makes it the banner's source. The same on screen rule as
-        // a bell; which transitions count, and the rate limit, are the store's.
-        store.onProgramStatus = { project, ref, record in
-            guard BellAlert.shouldPost(
-                appIsFrontmost: NSApp.isActive,
-                terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
-            let notification = BellNotification.programStatus(workspace: project.name,
-                                                              label: ref.displayName,
-                                                              refId: ref.id, record: record,
-                                                              sound: preferences.bellSound)
-            Task { await bells.post(notification) }
-        }
-        // Visiting a row takes its notification back, so Notification Center does not
-        // keep bells that have already been dealt with.
-        store.onAttentionCleared = { ids in
-            bells.withdraw(ids.map { .local(refId: $0) })
+        // One subscription for the four things the store used to hand over as four
+        // separate closures. Delivery is synchronous, so the two questions below are
+        // still answered at the instant of the event rather than a turn later: an
+        // event that arrived while the app was in the background must not be judged
+        // against a window that has since come forward. See `StoreEventSink`.
+        store.events.subscribe { event in
+            switch event {
+            case let .bell(project, ref):
+                guard BellAlert.shouldPost(
+                    appIsFrontmost: NSApp.isActive,
+                    terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
+                let notification = BellNotification.local(workspace: project.name,
+                                                          label: ref.displayName, refId: ref.id,
+                                                          sound: preferences.bellSound)
+                Task { await bells.post(notification) }
+
+            // A notification the process asked for by name, with its own words. The
+            // same on screen rule as a bell: a terminal the user is already looking at
+            // needs no banner. The rule that differs is upstream, in the store, which
+            // reports every one of these rather than only the first per flag.
+            case let .notification(project, ref, title, body):
+                guard BellAlert.shouldPost(
+                    appIsFrontmost: NSApp.isActive,
+                    terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
+                let notification = BellNotification.sent(workspace: project.name, label: ref.displayName,
+                                                         refId: ref.id, title: title, body: body,
+                                                         sound: preferences.bellSound)
+                Task { await bells.post(notification) }
+
+            // A program's status becoming something to come back for (`OSC 7501`),
+            // under the setting that makes it the banner's source. The same on screen
+            // rule as a bell; which transitions count, and the rate limit, are the
+            // store's.
+            case let .programStatus(project, ref, record):
+                guard BellAlert.shouldPost(
+                    appIsFrontmost: NSApp.isActive,
+                    terminalIsOnScreen: paneSelection.selects(localSession: ref.sessionId)) else { return }
+                let notification = BellNotification.programStatus(workspace: project.name,
+                                                                  label: ref.displayName,
+                                                                  refId: ref.id, record: record,
+                                                                  sound: preferences.bellSound)
+                Task { await bells.post(notification) }
+
+            // Visiting a row takes its notification back, so Notification Center does
+            // not keep bells that have already been dealt with.
+            case let .attentionCleared(ids):
+                bells.withdraw(ids.map { .local(refId: $0) })
+            }
         }
         guard remoteBells == nil else { return }
         let observer = RemoteBellObserver { connection, diff in
