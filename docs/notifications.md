@@ -302,7 +302,8 @@ that is visible from the outside: the request comes back, nobody was asked, and 
 state is still "not asked yet".
 
 The bundle has to carry a real signature for that not to happen. Ad hoc is enough
-and no developer account or entitlement is involved, but "unsigned" is not enough,
+for this (a Debug build is ad hoc signed; a release is signed with Developer ID,
+see `docs/releasing.md`) and no entitlement is involved, but "unsigned" is not enough,
 and `CODE_SIGNING_ALLOWED: NO` in `project.yml` means unsigned: it leaves the
 Mach-O with a linker signature and the *bundle* with none, so `codesign -dv`
 reports `Identifier=Wietty` rather than the bundle id, `Info.plist=not bound` and

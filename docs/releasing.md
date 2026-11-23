@@ -23,8 +23,45 @@ the tag you actually want (the version scheme is `vMAJOR.MINOR.PATCH`).
 4. **cmd3** runs `scripts/publish-release.sh --release <tag>`, which:
    - creates the GitHub release for the pushed tag (`--generate-notes` fills in
      the release body, which the in-app updater shows),
-   - runs `scripts/make-dmg.sh` to build a Release `.dmg`,
+   - runs `scripts/make-dmg.sh` to build a Release `.dmg`, signed with Developer ID
+     and notarized (see "Signing and notarization" below),
    - uploads it as `Wietty.<tag>.dmg`.
+
+## Signing and notarization
+
+Gatekeeper accepts a downloaded app only when it is signed with a Developer ID certificate and
+Apple has notarized it. `scripts/make-dmg.sh` does both, so a release needs two things in the
+keychain of the Mac that runs it.
+
+| what | how it gets there |
+|---|---|
+| The certificate "Developer ID Application" of the team in `project.yml` | Created once by the team's Account Holder, at developer.apple.com under Certificates, from a signing request made in Keychain Access. Install it in the login keychain, next to its private key. |
+| Notarization credentials under the profile name `wietty-notary` | `xcrun notarytool store-credentials wietty-notary --apple-id <id> --team-id <team>`, once. It asks for an app specific password and stores it in the keychain. Nothing of it is in the repository. |
+
+Two certificates with similar names do not work. "Developer ID Installer" signs `.pkg` installers,
+and "Apple Distribution" is for the App Store and TestFlight.
+
+What the build does, and where it is configured:
+
+- **`project.yml`** signs a Release build of the app, `WiettyCore` and the `wietty-pty` helper with
+  Developer ID, the hardened runtime and a secure timestamp. Xcode signs the embedded package
+  framework (`WiettyShared`) with the app's identity when it copies it in. A Debug build stays ad hoc
+  signed, so an ordinary build and the test suite need no certificate.
+- **`scripts/make-dmg.sh`** removes the previous app bundle, builds, and checks that the app, the
+  helper and every framework and library in the bundle carry the team's Developer ID signature and a
+  timestamp. It then signs the disk image, submits it with `notarytool` and waits for the verdict,
+  staples the ticket to the image, and asks Gatekeeper (`spctl`) to assess the result. It stops with
+  an error at the first step that fails, and prints Apple's log when notarization is refused.
+- The script checks for the certificate and the credentials before it builds, so a missing one
+  costs seconds, not a build.
+
+Without the certificate, `WIETTY_ADHOC=1 scripts/make-dmg.sh` builds the same image ad hoc signed
+and not notarized. That image runs on the Mac that built it. Gatekeeper rejects it everywhere else.
+The profile name can be changed with `WIETTY_NOTARY_PROFILE`.
+
+The signing identity is part of how macOS recognises an app. The first release signed with
+Developer ID is a different app to the system than the ad hoc builds before it, so macOS may ask
+again for permissions it had already granted, such as notifications and local network access.
 
 ## Version syncing and the in-app updater
 
