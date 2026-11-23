@@ -96,6 +96,24 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: YES
         CODE_SIGNING_ALLOWED: YES
+      # A Release build is what `scripts/make-dmg.sh` ships, and Gatekeeper accepts only
+      # a Developer ID signature that Apple has notarized. So Release is signed with the
+      # Developer ID certificate of the team below, with the hardened runtime and a secure
+      # timestamp, both of which notarization requires. Debug keeps the ad hoc identity
+      # from `base`, so an ordinary build and the test suite need no certificate. Without
+      # the certificate a Release build still works with the identity overridden on the
+      # command line: see docs/releasing.md.
+      #
+      # Injecting the base entitlements is off because that is where `get-task-allow`
+      # comes from, and a notarized binary may not carry it.
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          DEVELOPMENT_TEAM: FP5KVVVJLP
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          ENABLE_HARDENED_RUNTIME: YES
+          OTHER_CODE_SIGN_FLAGS: "--timestamp"
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
   Wietty:
     type: application
     platform: macOS
@@ -157,12 +175,22 @@ targets:
         # was not bound, and nothing was sealed. macOS refuses to ask for
         # notification permission for such a bundle, turning the request down in
         # about a millisecond with `UNErrorDomain Code=1` and no prompt, so bells
-        # and OSC 9 notifications could never work in a shipped build. No developer
-        # account is involved: "-" is the ad hoc identity, and it is enough.
+        # and OSC 9 notifications could never work in a shipped build. "-" is the ad hoc
+        # identity, and it is enough for that. A Release build is signed with
+        # Developer ID instead, in `configs` below.
         # See docs/notifications.md.
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: YES
         CODE_SIGNING_ALLOWED: YES
+      # Developer ID for Release, as on WiettyCore above.
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          DEVELOPMENT_TEAM: FP5KVVVJLP
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          ENABLE_HARDENED_RUNTIME: YES
+          OTHER_CODE_SIGN_FLAGS: "--timestamp"
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
   # The helper libghostty surfaces run as their command (Task 7 of the
   # libghostty substrate work). See wietty-pty/main.swift for why it exists.
   wietty-pty:
@@ -178,6 +206,15 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: YES
         CODE_SIGNING_ALLOWED: YES
+      # Developer ID for Release, as on WiettyCore above.
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          DEVELOPMENT_TEAM: FP5KVVVJLP
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          ENABLE_HARDENED_RUNTIME: YES
+          OTHER_CODE_SIGN_FLAGS: "--timestamp"
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
   WiettyTests:
     type: bundle.unit-test
     platform: macOS
