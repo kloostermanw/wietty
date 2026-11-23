@@ -141,8 +141,8 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Interval chosen so typing feels immediate while a burst of output still
     /// coalesces into one message.
     private static let flushInterval = DispatchTimeInterval.milliseconds(8)
-    /// The same interval, for the quiet rule: a write into an empty buffer goes out
-    /// at once when the last flush is older than this.
+    /// The same interval, for the quiet rule: a write into an empty buffer of a session
+    /// that has a viewer goes out at once when the last flush is older than this.
     private static let quietNanoseconds: UInt64 = 8_000_000
 
     package init(startTimer: Bool = false) {
