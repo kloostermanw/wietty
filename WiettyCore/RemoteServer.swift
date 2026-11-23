@@ -133,7 +133,14 @@ package final class RemoteServer {
                     try? await Self.write(refusal, to: outbound)
                     return
                 }
-                guard let session = Self.query(request, "session") else { return }
+                // Answered rather than closed in silence: a client that is told
+                // nothing reports a lost connection and may reconnect, forever.
+                guard let session = Self.query(request, "session") else {
+                    let refusal = StreamMessage.error(
+                        code: "session", message: "No terminal session was named.")
+                    try? await Self.write(refusal, to: outbound)
+                    return
+                }
                 let resize = Self.query(request, "resize").flatMap(ResizeMode.init(rawValue:)) ?? .repaint
                 await Self.serve(session: session, resize: resize, streamer: streamer,
                                  inbound: inbound, outbound: outbound)

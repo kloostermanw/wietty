@@ -285,7 +285,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
 
         guard let join = join(stream, session: session, viewer: id, registering: viewer) else { return }
         join.deliver()
-        if join.messages.isEmpty, join.snapshotAsked {
+        if !join.snapshotBuilt, join.snapshotAsked {
             GhosttyLog.stack.error("""
                 no snapshot of session \(session, privacy: .public) for a viewer attaching; \
                 it starts from the stream alone
@@ -301,9 +301,12 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         let outstanding: [UInt8]
         let outstandingTo: [Sink]
         let viewer: Sink
-        /// A `resize` and a `snapshot`, or nothing when no snapshot was built.
+        /// A `resize` and a `snapshot`. When no snapshot was built: for a new
+        /// viewer, the `resize` alone if the grid is known, and otherwise nothing.
         let messages: [StreamMessage]
-        /// Whether there was a hook to ask, so an empty `messages` means it failed.
+        /// Whether `messages` holds a snapshot.
+        let snapshotBuilt: Bool
+        /// Whether there was a hook to ask, so no snapshot means it failed.
         let snapshotAsked: Bool
 
         func deliver() {
@@ -319,6 +322,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
                       registering new: Viewer? = nil) -> Join? {
         lock.lock()
         let hook = onSnapshot
+        let grid = sizeForPane[session]
         lock.unlock()
 
         stream.lock.lock()
@@ -339,13 +343,20 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
             // snapshot: the viewer then holds the same half the model does.
             messages = [.resize(cols: frame.size.cols, rows: frame.size.rows, own: false),
                         .snapshot(TerminalPaint.hardReset + frame.bytes + stream.pendingCharacter)]
+        } else if new != nil, let grid {
+            // No snapshot, but the grid is known: without it a new viewer would
+            // render the stream on a grid of its own choosing. A size that changes
+            // after it was read here is sent again by the resize that changed it,
+            // which is queued behind this join. A viewer being resynchronised has
+            // been sent every grid already.
+            messages = [.resize(cols: grid.cols, rows: grid.rows, own: false)]
         }
         let everyoneElse = stream.viewers.filter { $0.key != id }.map(\.value.sink)
         // A new viewer without a snapshot starts from the stream after this point,
         // as it always has; a resync without one keeps the stream it had.
         let outstandingTo = frame == nil && new == nil ? everyoneElse + [viewer.sink] : everyoneElse
         return Join(outstanding: outstanding, outstandingTo: outstandingTo, viewer: viewer.sink,
-                    messages: messages, snapshotAsked: hook != nil)
+                    messages: messages, snapshotBuilt: frame != nil, snapshotAsked: hook != nil)
     }
 
     /// Sends one viewer the grid and a snapshot again, joined to the stream as an
@@ -374,7 +385,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         guard let session, let stream,
               let join = join(stream, session: session, viewer: id) else { return false }
         join.deliver()
-        guard !join.messages.isEmpty else {
+        guard join.snapshotBuilt else {
             GhosttyLog.stack.error("""
                 no snapshot of session \(session, privacy: .public) for a resync
                 """)

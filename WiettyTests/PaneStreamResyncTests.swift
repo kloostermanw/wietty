@@ -100,6 +100,26 @@ private func frame(_ text: String, alternate: Bool = false) -> TerminalSnapshotF
         #expect(log.dataBytes(of: "v") == bytes("still here"))
     }
 
+    /// A new viewer of a session whose snapshot cannot be built still learns the
+    /// grid, when the grid is known, before the stream. Without a known grid it
+    /// gets nothing ahead of the stream, as before: there is nothing to tell it.
+    @Test func aViewerWithoutASnapshotIsSentTheKnownGrid() {
+        let hub = PaneStreamHub()
+        hub.onSnapshot = { _ in nil }
+        hub.noteSize(session: "gt:1", TerminalSize(cols: 100, rows: 30))
+        hub.waitForPendingDeliveries()
+        let log = DeliveryLog()
+        hub.attach(session: "gt:1", resize: .reflow) { log.add("known", $0) }
+        hub.attach(session: "gt:2", resize: .reflow) { log.add("unknown", $0) }
+        hub.write(session: "gt:1", bytes: bytes("a"))
+        hub.write(session: "gt:2", bytes: bytes("b"))
+        hub.flush()
+
+        #expect(log.messages(of: "known") == [.resize(cols: 100, rows: 30, own: false),
+                                             .data(bytes("a"))])
+        #expect(log.messages(of: "unknown") == [.data(bytes("b"))])
+    }
+
     /// The contract task 7 builds on: a `ViewerQueue` that overflows asks the hub,
     /// from inside the hub's own delivery, for a resync. That must neither
     /// deadlock nor leave the queue waiting, and what the viewer drains is the

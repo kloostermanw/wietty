@@ -189,7 +189,9 @@ WS /attach?session=<id>&token=<t>&protocol=2&resize=repaint
   route, are the only version 1 code left. Nothing is attached.
 - `protocol` present and not `2`: one `error` with code `protocol`, then the
   server closes. Nothing is attached.
-- `session` missing: the server closes without sending anything.
+- `session` missing (with `protocol=2`): one `error` with code `session`, then the
+  server closes. Nothing is attached. Before version 2 the socket was closed with
+  nothing sent, which a client could only read as a lost connection.
 - `resize` is `repaint` or `reflow` (see "Snapshot and repaint" below); missing or
   unknown means `repaint`.
 
@@ -222,7 +224,9 @@ missing `own` as `false`. A `resize` whose `cols` or `rows` is outside 1 to
 (four byte big endian length, type byte, payload); no route uses it yet.
 
 **Order.** `hello`, then `resize` and `snapshot`, then live `data`. A session
-that names no live terminal gets `hello` and `ended`. Every frame after the hello
+that names no live terminal gets `hello` and `ended`. When no snapshot can be
+built for a live session, the viewer gets `hello`, the `resize` alone when the
+server knows the grid, and then live `data`. Every frame after the hello
 is written by one writer per socket, in the order the hub delivered it.
 
 **Sizes.** Outbound frames are written whole, whatever their size: a snapshot of
