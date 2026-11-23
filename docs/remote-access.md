@@ -157,7 +157,9 @@ The controlling side lives in the [wietty-shared](https://github.com/kloosterman
 package, so the macOS app and the iPadOS client decode the same wire format with
 the same code. This app keeps the entire served side, plus one adapter
 (`RemoteProjectAdapter`) that maps the package's `RemoteWorkspace` values onto
-the local `Project` type `WorkspaceCardView` expects.
+the local `Project` type `WorkspaceCardView` expects. The served side consumes
+the package too, for the message type of a terminal stream (`StreamMessage`),
+so the core target links it as well as the app.
 
 ### Setting up a connection
 

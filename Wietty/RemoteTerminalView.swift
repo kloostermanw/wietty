@@ -29,11 +29,16 @@ struct RemoteTerminalView: NSViewRepresentable {
         connection.onData = { [weak terminalView] bytes in
             terminalView?.feed(byteArray: bytes[...])
         }
-        connection.onResize = { [weak terminalView] cols, rows in
+        connection.onResize = { [weak terminalView] cols, rows, _ in
             terminalView?.resize(cols: cols, rows: rows)
         }
         connection.onEnded = { [weak terminalView] reason in
-            let message = reason == .sessionEnded ? "[session ended]" : "[connection lost]"
+            let message = switch reason {
+            case .sessionEnded: "[session ended]"
+            case .connectionLost: "[connection lost]"
+            case .serverTooOld: "[this Mac runs an older Wietty]"
+            case let .refused(_, message): message
+            }
             terminalView?.feed(text: "\r\n\u{1B}[31m\(message)\u{1B}[0m\r\n")
         }
         context.coordinator.connection = connection

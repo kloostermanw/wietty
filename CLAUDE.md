@@ -30,6 +30,12 @@ Which side of the remote protocol lives where decides which repo a bug belongs i
   consumes them; `RemoteProjectAdapter` maps the package's `RemoteWorkspace` onto the local
   `Project` type and is deliberately not in the package.
 
+- **The stream's messages, in `wietty-shared` for both sides.** `StreamMessage` is the one type
+  both ends of a terminal stream speak, so the served side uses the package too: `WiettyCore`
+  links `WiettyShared` as well as the app, and `ViewerQueue` holds `StreamMessage` values for one
+  viewer. Linked into two targets, the package is built as a dynamic framework the app embeds, and
+  `WiettyTests` has to link it explicitly (see `project.yml`).
+
 **One terminal.** A terminal is a pseudo terminal the app spawns and owns, rendered by libghostty in
 the main window's pane. Nothing needs to be installed for it: no iTerm2, no tmux, not even
 Ghostty.app. `TerminalStack` builds it at launch and there is nothing to choose. See
