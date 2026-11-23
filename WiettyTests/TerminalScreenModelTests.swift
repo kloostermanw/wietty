@@ -243,6 +243,68 @@ private final class Finished: @unchecked Sendable {
         #expect(frames.filter { !$0.alternate }.count >= 100)
     }
 
+    /// Across many repaint frames taken while another task resizes the model back
+    /// and forth, every frame is the one its own grid gives.
+    ///
+    /// A resize lands on the main actor while the hub takes a repaint on its
+    /// delivery queue, so the grid and the frame must be read in one critical
+    /// section: read in two, a frame of one grid could go out under the other's
+    /// `resize`. As with the snapshot frame above, this shows agreement and not the
+    /// single lock that guarantees it; the gap between two acquisitions is small.
+    @Test func aRepaintFrameMatchesItsGridWhileAnotherTaskResizes() async throws {
+        let small = TerminalSize(cols: 30, rows: 6)
+        let large = TerminalSize(cols: 60, rows: 14)
+        let model = try GhosttyVtScreenModel(size: large, scrollbackLines: 1_000)
+        for line in 1...20 { write("row \(line)\r\n", to: model) }
+        write("last", to: model)
+
+        // The frame each grid gives, and proof that going there and back gives it
+        // again, which is what lets a frame taken in the race be checked against it.
+        model.resize(to: small)
+        let smallFrame = model.paintFrame()
+        model.resize(to: large)
+        let largeFrame = model.paintFrame()
+        model.resize(to: small)
+        try #require(model.paintFrame() == smallFrame)
+        model.resize(to: large)
+        try #require(model.paintFrame() == largeFrame)
+        try #require(smallFrame != largeFrame)
+        let reference = { (size: TerminalSize) in size == small ? smallFrame : largeFrame }
+        let finished = Finished()
+
+        let repaints = await withTaskGroup(of: [(size: TerminalSize, frame: [UInt8])].self) { group in
+            group.addTask {
+                var round = 0
+                while !finished.isSet {
+                    round += 1
+                    model.resize(to: round % 2 == 0 ? large : small)
+                    await Task.yield()
+                }
+                return []
+            }
+            group.addTask {
+                var taken: [(size: TerminalSize, frame: [UInt8])] = []
+                var smallCount = 0
+                while min(smallCount, taken.count - smallCount) < 100 && taken.count < 50_000 {
+                    guard let repaint = model.repaintFrame() else { continue }
+                    if repaint.size == small { smallCount += 1 }
+                    taken.append(repaint)
+                    await Task.yield()
+                }
+                finished.set()
+                return taken
+            }
+            var all: [(size: TerminalSize, frame: [UInt8])] = []
+            for await batch in group { all += batch }
+            return all
+        }
+
+        let mismatched = repaints.filter { reference($0.size) != $0.frame }.count
+        #expect(mismatched == 0, "\(mismatched) of \(repaints.count) frames under the other grid")
+        #expect(repaints.filter { $0.size == small }.count >= 100)
+        #expect(repaints.filter { $0.size == large }.count >= 100)
+    }
+
     /// One snapshot frame of a full default scrollback at 120 columns: within loose
     /// bounds of size and rows, so a change that made it quadratic or dropped the
     /// history would show. The numbers in `docs/terminal.md` come from this.

@@ -27,6 +27,17 @@ package protocol TerminalScreenModel: AnyObject, Sendable {
     /// colours, cursor, modes and the rest, for a terminal that has just reset.
     func paintFrame() -> [UInt8]
 
+    /// What a viewer that asked for repaints is sent after the grid moved: the
+    /// grid, and the paint frame for behind `TerminalPaint.reset`, read together so
+    /// a resize cannot land between them and pair one grid with the other's frame.
+    /// Nil when no frame could be built, which the hub reads as a paint that failed
+    /// rather than as an empty screen.
+    ///
+    /// The frame paints a terminal that has just been reset, and a viewer being
+    /// repainted after a resize is not one, so the hub puts the soft reset in
+    /// front of it: see `TerminalPaint.reset`.
+    func repaintFrame() -> (size: TerminalSize, frame: [UInt8])?
+
     /// History up to the scrollback limit, then the visible screen with modes and cursor,
     /// as VT. Without a reset: `TerminalPaint.hardReset` goes in front of it.
     /// The grid and the screen it describes are read under the same lock as the
@@ -62,14 +73,9 @@ package protocol TerminalScreenModel: AnyObject, Sendable {
 }
 
 extension TerminalScreenModel {
-    /// What a viewer that asked for repaints is sent after the grid moved: the
-    /// grid, and the paint frame for behind `TerminalPaint.reset`. Nil when no
-    /// frame could be built, which the hub reads as a paint that failed rather
-    /// than as an empty screen.
-    ///
-    /// The frame paints a terminal that has just been reset, and a viewer being
-    /// repainted after a resize is not one, so the hub puts the soft reset in
-    /// front of it: see `TerminalPaint.reset`.
+    /// For a conformance with no lock of its own to share between the two reads,
+    /// such as a test's stand in. `GhosttyVtScreenModel` reads both in one
+    /// critical section instead.
     package func repaintFrame() -> (size: TerminalSize, frame: [UInt8])? {
         let size = self.size
         let frame = paintFrame()
@@ -196,6 +202,16 @@ package final class GhosttyVtScreenModel: TerminalScreenModel, @unchecked Sendab
     package func paintFrame() -> [UInt8] {
         lock.lock(); defer { lock.unlock() }
         return terminal.paintFrame()
+    }
+
+    /// The grid and the frame in one critical section, for the same reason as
+    /// `snapshotFrame()`: a resize arrives on the main actor while a repaint is
+    /// taken on the hub's delivery queue.
+    package func repaintFrame() -> (size: TerminalSize, frame: [UInt8])? {
+        lock.lock(); defer { lock.unlock() }
+        let frame = terminal.paintFrame()
+        guard !frame.isEmpty else { return nil }
+        return (terminal.size, frame)
     }
 
     /// The grid, the flag and the bytes in one critical section. That is what

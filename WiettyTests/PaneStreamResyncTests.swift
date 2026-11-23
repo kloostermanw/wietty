@@ -255,19 +255,33 @@ private func frame(_ text: String, alternate: Bool = false) -> TerminalSnapshotF
     /// than the interval, is batched too. Without the time condition every one of
     /// these writes would find the buffer empty and go out on its own: a terminal
     /// printing a steady trickle would put a message on the wire per read.
+    ///
+    /// Bounded by the time the loop really took rather than by a fixed count: on a
+    /// loaded machine the 200 short sleeps take far longer than their sum, and a
+    /// fixed count then failed a hub that batched exactly as it should. Every
+    /// delivery is a tick of the 8 ms timer or a quiet write, and a quiet write
+    /// needs 8 ms since the last delivery, in which the ticks found nothing to send.
+    /// So the deliveries are at most one per 8 ms window, plus the first write, the
+    /// closing flush and a little slack for the timer's leeway.
     @Test func aSteadyTrickleIsBatchedByTheInterval() {
         let hub = PaneStreamHub()
         let log = DeliveryLog()
         hub.attach(session: "gt:1", resize: .repaint) { log.add("v", $0) }
+        let start = DispatchTime.now().uptimeNanoseconds
         for _ in 0..<200 {
             hub.write(session: "gt:1", bytes: [0x2E])
             usleep(100)
         }
         hub.waitForPendingDeliveries()
         hub.flush()
+        let elapsed = DispatchTime.now().uptimeNanoseconds - start
+        let windows = Int((elapsed + 7_999_999) / 8_000_000)
+        // The attach delivered nothing: the hub has no snapshot hook here.
         let deliveries = log.messages(of: "v").count
         #expect(log.dataBytes(of: "v") == Array(repeating: 0x2E, count: 200))
-        #expect(deliveries < 50, "\(deliveries) deliveries for 200 writes")
+        #expect(deliveries <= windows + 3,
+                "\(deliveries) deliveries for 200 writes in \(elapsed / 1_000_000) ms")
+        #expect(deliveries < 100, "\(deliveries) deliveries for 200 writes")
     }
 
     // MARK: - Input
