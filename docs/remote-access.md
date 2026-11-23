@@ -54,10 +54,14 @@ the serving Mac calls a terminal, and is opaque to every client.
 The path from the browser back to the terminal, in order:
 
 - **Browser (xterm.js).** `remote_index.html` bundles xterm.js. It fetches
-  `GET /api/sessions` for the session list, then opens `WS /attach`. The page
-  still speaks version 1 (no `protocol` parameter, input as `{"data":"<bytes>"}`
-  text) until it is moved to version 2, so for now it is answered with the old
-  client notice below and its input is ignored.
+  `GET /api/sessions` for the session list, then opens `WS /attach` with
+  `protocol=2&resize=repaint` and `binaryType = "arraybuffer"`. Each message is
+  applied in arrival order with nothing asynchronous in between, so the `resize`
+  reaches the terminal before the `snapshot` is written. Binary frames are written
+  without their type byte, unknown messages are ignored, `ended` and `error` stop
+  the page without reconnecting (`error` shows its message in red), and input goes
+  out as binary `data` frames of at most 64 KiB of payload. The page sends no
+  `resize` and has no fit addon: the terminal stays at the grid the server says.
 - **`RemoteServer.swift`.** A Hummingbird HTTP plus WebSocket server bound to
   `0.0.0.0` on the remote port (7434 by default), separate from the loopback
   MCP server. It serves the web client, the token gated session and workspace
