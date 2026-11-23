@@ -14,6 +14,7 @@
   #term { position: fixed; inset: 0; display: none; }
   #status { position: fixed; left: 0; right: 0; top: 0; padding: 8px 12px; z-index: 10;
     background: #3a2a00; color: #ffcf6b; font-size: 13px; text-align: center; display: none; }
+  #status.error { background: #4a1010; color: #ff8a8a; }
   #status button { margin-left: 10px; background: #5a4200; color: #ffe6a8;
     border: 1px solid #7a5a00; border-radius: 6px; padding: 2px 8px; font-size: 12px; }
 </style>
@@ -27,8 +28,9 @@
 const params = new URLSearchParams(location.search);
 const token = params.get("token") || "";
 
-function showStatus(text, withBackButton) {
+function showStatus(text, withBackButton, isError) {
   const status = document.getElementById("status");
+  status.className = isError ? "error" : "";
   status.textContent = text;
   if (withBackButton) {
     const back = document.createElement("button");
@@ -91,16 +93,23 @@ function attach(sessionId) {
   term.open(host);
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const url = proto + "//" + location.host + "/attach?session=" +
-    encodeURIComponent(sessionId) + "&token=" + encodeURIComponent(token);
+    encodeURIComponent(sessionId) + "&token=" + encodeURIComponent(token) +
+    "&protocol=2&resize=repaint";
   const ws = new WebSocket(url);
+  ws.binaryType = "arraybuffer";
   let sessionEnded = false;
+  // Each message is applied in full, in arrival order, with nothing asynchronous
+  // in between: the server sends `resize` and then `snapshot`, and the grid must
+  // be in place before the snapshot's bytes are written.
   ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
-    if (msg.type === "resize") term.resize(msg.cols, msg.rows);
-    else if (msg.type === "data") term.write(msg.vt);
-    else if (msg.type === "ended") {
+    const outcome = handleStreamFrame(term, event.data);
+    if (outcome.ended) {
       sessionEnded = true;
       showStatus("Session ended.", true);
+      ws.close();
+    } else if (outcome.error !== undefined) {
+      sessionEnded = true;
+      showStatus(outcome.error, true, true);
       ws.close();
     }
   };
@@ -111,9 +120,59 @@ function attach(sessionId) {
     if (!sessionEnded) showStatus("Disconnected. Check that Wietty is reachable and your link is current.", true);
   };
   term.onData((data) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ data }));
+    if (ws.readyState === WebSocket.OPEN) {
+      for (const frame of inputFrames(data)) ws.send(frame);
+    }
   });
 }
+
+// stream:begin (the terminal stream, protocol version 2; see docs/remote-access.md)
+const TYPE_DATA = 0x02, TYPE_SNAPSHOT = 0x03, TYPE_REPAINT = 0x04;
+// The server closes the socket on an inbound message over 1 MiB.
+const MAX_INPUT_PAYLOAD = 64 * 1024;
+
+// Applies one WebSocket message to the terminal. Returns { ended: true } or
+// { error: "<text>" } when the stream is over, and {} otherwise. A message of a
+// kind this client does not know is ignored.
+function handleStreamFrame(term, data) {
+  if (typeof data === "string") {
+    let msg;
+    try { msg = JSON.parse(data); } catch (e) { return {}; }
+    if (!msg || typeof msg !== "object") return {};
+    if (msg.type === "resize") {
+      // `own` is ignored: the server's grid is the grid, whoever's it is.
+      if (Number.isInteger(msg.cols) && Number.isInteger(msg.rows)) term.resize(msg.cols, msg.rows);
+    } else if (msg.type === "ended") {
+      return { ended: true };
+    } else if (msg.type === "error") {
+      return { error: typeof msg.message === "string" && msg.message ? msg.message : "The Mac refused the connection." };
+    }
+    return {};
+  }
+  if (!(data instanceof ArrayBuffer) || data.byteLength < 1) return {};
+  const type = new Uint8Array(data, 0, 1)[0];
+  if (type === TYPE_DATA || type === TYPE_SNAPSHOT || type === TYPE_REPAINT) {
+    term.write(new Uint8Array(data, 1));
+  }
+  return {};
+}
+
+// The input a key press or paste becomes: binary frames, a 0x02 type byte and
+// at most 64 KiB of payload each. The encoded bytes are split, not the string, so
+// a multi byte character may straddle two frames; the stream is bytes.
+function inputFrames(text) {
+  const bytes = new TextEncoder().encode(text);
+  const frames = [];
+  for (let at = 0; at < bytes.length; at += MAX_INPUT_PAYLOAD) {
+    const chunk = bytes.subarray(at, at + MAX_INPUT_PAYLOAD);
+    const frame = new Uint8Array(1 + chunk.length);
+    frame[0] = TYPE_DATA;
+    frame.set(chunk, 1);
+    frames.push(frame);
+  }
+  return frames;
+}
+// stream:end
 
 loadSessions();
 </script>
