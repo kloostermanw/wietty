@@ -35,9 +35,9 @@ package enum GhosttyLog {
 ///
 /// Bytes are handed out raw rather than decoded. The stream is split into chunks
 /// at arbitrary boundaries, so a multi-byte character routinely straddles two
-/// reads; decoding here would replace the split half with U+FFFD before
-/// `UTF8Chunker` ever saw it. `PaneStreamHub` owns that boundary policy for
-/// every substrate.
+/// reads; decoding here would replace the split half with U+FFFD. Nothing on the
+/// server decodes them: `PaneStreamHub` hands them to every viewer exactly as they
+/// were read, and a viewer's terminal decodes them as it would from any pty.
 package final class RawPTY: @unchecked Sendable {
     package let masterFd: Int32
     /// The child's pid. It becomes its own process group id, because `forkpty` does
@@ -68,8 +68,9 @@ package final class RawPTY: @unchecked Sendable {
     /// Serial because terminal input order is as load bearing as output order. One
     /// queue per pty keeps every writer's bytes in the order they were handed over,
     /// where a concurrent queue would scramble a paste that arrives as several
-    /// chunks. This is the same rule `TmuxStack.onSend` follows with its serial queue,
-    /// and the `AsyncStream` in `GhosttyStack` keeps its half of it upstream of here.
+    /// chunks. This is the same rule `TmuxStack.onSend` follows with its serial queue.
+    /// Upstream of here a remote viewer's input is handed over on the thread that
+    /// read it from the socket, one message after another, so it arrives in order.
     private let writes: DispatchQueue
 
     private let lock = NSLock()

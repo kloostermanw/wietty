@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WiettyCore
+import WiettyShared
 @testable import Wietty
 
 /// Lock-guarded accumulator, not a captured `var`: a hub viewer's sink is
@@ -11,6 +12,7 @@ private final class TextSink: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = ""
     func append(_ text: String) { lock.lock(); storage += text; lock.unlock() }
+    func append(_ bytes: [UInt8]) { append(String(decoding: bytes, as: UTF8.self)) }
     func contains(_ needle: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return storage.contains(needle)
@@ -29,9 +31,9 @@ private final class TextSink: @unchecked Sendable {
 /// The same, for the tests that care which messages arrived and in what order.
 private final class MessageLog: @unchecked Sendable {
     private let lock = NSLock()
-    private var storage: [RemoteMessage] = []
-    func add(_ message: RemoteMessage) { lock.lock(); storage.append(message); lock.unlock() }
-    var messages: [RemoteMessage] { lock.lock(); defer { lock.unlock() }; return storage }
+    private var storage: [StreamMessage] = []
+    func add(_ message: StreamMessage) { lock.lock(); storage.append(message); lock.unlock() }
+    var messages: [StreamMessage] { lock.lock(); defer { lock.unlock() }; return storage }
 }
 
 /// The same, for a sink that only has to record that something arrived.
@@ -74,7 +76,7 @@ private final class Flag: @unchecked Sendable {
     @Test func abrokenStackEndsAnAttachRatherThanLeavingItSilent() {
         let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: nil)
         let ended = Flag()
-        stack.hub.attach(session: "gt:anything") { if case .ended = $0 { ended.raise() } }
+        stack.hub.attach(session: "gt:anything", resize: .repaint) { if case .ended = $0 { ended.raise() } }
         #expect(ended.isRaised)
     }
 
@@ -114,7 +116,7 @@ private final class Flag: @unchecked Sendable {
         // suspending here would let the census answer `ended` before the viewer
         // ever registered.
         let seen = TextSink()
-        stack.hub.attach(session: handle.sessionId) { message in
+        stack.hub.attach(session: handle.sessionId, resize: .repaint) { message in
             if case let .data(chunk) = message { seen.append(chunk) }
         }
         try await waitUntil { stack.hub.flush(); return seen.contains("hubbed-21") }
@@ -134,7 +136,7 @@ private final class Flag: @unchecked Sendable {
                                                   existingWindowId: nil,
                                                   command: nil, badge: nil)
         let seen = TextSink()
-        stack.hub.attach(session: handle.sessionId) { message in
+        stack.hub.attach(session: handle.sessionId, resize: .repaint) { message in
             if case let .data(chunk) = message { seen.append(chunk) }
         }
         // Sent on every poll rather than once after a fixed settle. A shell reaching
@@ -142,7 +144,7 @@ private final class Flag: @unchecked Sendable {
         // either a flake or slow; a repeated probe is neither, and a duplicate that
         // does land only prints a duplicate marker.
         try await waitUntil {
-            stack.hub.send(session: handle.sessionId, text: "echo remote-$((20+1))\n")
+            stack.hub.send(session: handle.sessionId, bytes: Array("echo remote-$((20+1))\n".utf8))
             stack.hub.flush()
             return seen.contains("remote-21")
         }
@@ -151,11 +153,12 @@ private final class Flag: @unchecked Sendable {
     /// Keystrokes arriving faster than the main actor can drain them reach the pty
     /// master in the order they were handed over.
     ///
-    /// This is the rule the whole `onSend` design exists for: input order is as load
-    /// bearing as output order, and a paste arrives as several messages in a row. A
-    /// hub hook that bridged to the main actor with one unstructured `Task` per
-    /// keystroke leaves that order to the scheduler, which is what
-    /// `TmuxStack.onSend` refuses with its serial queue.
+    /// Input order is as load bearing as output order, and a paste arrives as
+    /// several messages in a row. The hub hands each one to the terminal's writer on
+    /// the caller's thread, and the writer queues it on the pty's own serial queue,
+    /// so the order the caller sent them in is the order they reach the master. A
+    /// hop through one unstructured `Task` per keystroke would leave it to the
+    /// scheduler.
     ///
     /// `cat` rather than a shell, and no settle at all: a pty echoes what is written
     /// to its master back out of it as the write is processed, so the echo order IS
@@ -168,14 +171,14 @@ private final class Flag: @unchecked Sendable {
                                                   existingWindowId: nil,
                                                   command: "cat", badge: nil)
         let seen = TextSink()
-        stack.hub.attach(session: handle.sessionId) { message in
+        stack.hub.attach(session: handle.sessionId, resize: .repaint) { message in
             if case let .data(chunk) = message { seen.append(chunk) }
         }
         // Back to back, with nothing awaited between them, which is the only way to
         // hand the hook more than it can deliver synchronously.
-        stack.hub.send(session: handle.sessionId, text: "alpha-1\n")
-        stack.hub.send(session: handle.sessionId, text: "beta-2\n")
-        stack.hub.send(session: handle.sessionId, text: "gamma-3\n")
+        stack.hub.send(session: handle.sessionId, bytes: Array("alpha-1\n".utf8))
+        stack.hub.send(session: handle.sessionId, bytes: Array("beta-2\n".utf8))
+        stack.hub.send(session: handle.sessionId, bytes: Array("gamma-3\n".utf8))
         try await waitUntil { stack.hub.flush(); return seen.contains("gamma-3") }
         let offsets = seen.firstOffsets(of: ["alpha-1", "beta-2", "gamma-3"])
         let alpha = try #require(offsets[0])
@@ -183,6 +186,24 @@ private final class Flag: @unchecked Sendable {
         let gamma = try #require(offsets[2])
         #expect(alpha < beta)
         #expect(beta < gamma)
+    }
+
+    /// A remote viewer's input reaches the terminal with the main actor busy.
+    ///
+    /// The hub hands it to the writer the service registered for the session, on
+    /// the thread it arrived on. It used to go through the main actor, so a UI that
+    /// was busy held every remote keystroke back for as long as it was. This test
+    /// is that busy main actor: it waits on the semaphore without yielding, so a
+    /// path through the main actor could only time out.
+    @Test func inputReachesTheWriterWhileTheMainActorIsBlocked() throws {
+        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        defer { stack.ghosttyService?.closeAll() }
+        let shared = try #require(stack.ghosttyService?.shared)
+        let arrived = DispatchSemaphore(value: 0)
+        shared.register(writer: { bytes in if bytes == [0x71] { arrived.signal() } }, for: "gt:blocked")
+        let hub = stack.hub
+        DispatchQueue.global().async { hub.send(session: "gt:blocked", bytes: [0x71]) }
+        #expect(arrived.wait(timeout: .now() + 3) == .success)
     }
 
     /// A viewer attaching to a session the substrate does not hold must be ended
@@ -194,7 +215,7 @@ private final class Flag: @unchecked Sendable {
         let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
         defer { stack.ghosttyService?.closeAll() }
         let ended = Flag()
-        stack.hub.attach(session: "gt:never-existed") { if case .ended = $0 { ended.raise() } }
+        stack.hub.attach(session: "gt:never-existed", resize: .repaint) { if case .ended = $0 { ended.raise() } }
         #expect(ended.isRaised)
     }
 
@@ -217,7 +238,7 @@ private final class Flag: @unchecked Sendable {
         // here would let the census answer `ended` before the viewer registered,
         // which is a different code path from the one under test.
         let ended = Flag()
-        stack.hub.attach(session: handle.sessionId) { if case .ended = $0 { ended.raise() } }
+        stack.hub.attach(session: handle.sessionId, resize: .repaint) { if case .ended = $0 { ended.raise() } }
         try await waitUntil { ended.isRaised }
     }
 
@@ -231,7 +252,7 @@ private final class Flag: @unchecked Sendable {
                                                   existingWindowId: nil,
                                                   command: "sleep 30", badge: nil)
         let ended = Flag()
-        stack.hub.attach(session: handle.sessionId) { if case .ended = $0 { ended.raise() } }
+        stack.hub.attach(session: handle.sessionId, resize: .repaint) { if case .ended = $0 { ended.raise() } }
         #expect(ended.isRaised == false)
         try await stack.service.close(sessionId: handle.sessionId)
         stack.hub.waitForPendingDeliveries()
@@ -250,13 +271,13 @@ private final class Flag: @unchecked Sendable {
                                                   command: "echo parted-$((7+6))", badge: nil)
         // No `await` between the open and the attach, for the reason above.
         let log = MessageLog()
-        stack.hub.attach(session: handle.sessionId) { log.add($0) }
+        stack.hub.attach(session: handle.sessionId, resize: .repaint) { log.add($0) }
         try await waitUntil { log.messages.contains(.ended) }
 
         let ending = try #require(log.messages.firstIndex(of: .ended))
         let printed = log.messages.prefix(ending).contains { message in
             guard case let .data(chunk) = message else { return false }
-            return chunk.contains("parted-13")
+            return String(decoding: chunk, as: UTF8.self).contains("parted-13")
         }
         #expect(printed)
     }
@@ -282,15 +303,16 @@ private final class Flag: @unchecked Sendable {
         stack.hub.waitForPendingDeliveries()
 
         let log = MessageLog()
-        stack.hub.attach(session: handle.sessionId) { log.add($0) }
-        #expect(log.messages.first == .resize(cols: 80, rows: 10))
-        guard case let .data(vt) = try #require(log.messages.dropFirst().first) else {
-            Issue.record("expected the painted screen")
+        stack.hub.attach(session: handle.sessionId, resize: .repaint) { log.add($0) }
+        #expect(log.messages.first == .resize(cols: 80, rows: 10, own: false))
+        guard case let .snapshot(vt) = try #require(log.messages.dropFirst().first) else {
+            Issue.record("expected the snapshot")
             return
         }
-        #expect(vt.contains("\u{1B}[38;5;1malpha"))
+        #expect(vt.starts(with: TerminalPaint.hardReset))
+        #expect(String(decoding: vt, as: UTF8.self).contains("\u{1B}[38;5;1malpha"))
         let viewer = try GhosttyVtTerminal(size: TerminalSize(cols: 80, rows: 10), scrollbackLines: 0)
-        viewer.write(Array(vt.utf8))
+        viewer.write(vt)
         #expect(viewer.viewportLines() == ["alpha", "beta-7"])
         #expect(viewer.cursor == (x: 6, y: 1))
     }
@@ -321,23 +343,23 @@ private final class Flag: @unchecked Sendable {
         stack.hub.waitForPendingDeliveries()
 
         let log = MessageLog()
-        stack.hub.attach(session: handle.sessionId) { log.add($0) }
+        stack.hub.attach(session: handle.sessionId, resize: .repaint) { log.add($0) }
         let afterAttach = log.messages.count
 
         host.emitResize(handle.sessionId, TerminalSize(cols: 100, rows: 30))
         stack.hub.waitForPendingDeliveries()
 
         let sent = Array(log.messages.dropFirst(afterAttach))
-        #expect(sent.first == .resize(cols: 100, rows: 30))
+        #expect(sent.first == .resize(cols: 100, rows: 30, own: false))
         // The repaint carries the screen as it is AFTER the reflow: the service
         // resizes the model and only then reports, and a hook wired the other way
         // round would paint the wrapped line over a terminal that has unwrapped it.
-        guard case let .data(vt) = try #require(sent.dropFirst().first) else {
+        guard case let .repaint(vt) = try #require(sent.dropFirst().first) else {
             Issue.record("expected the reflowed screen")
             return
         }
         let viewer = try GhosttyVtTerminal(size: TerminalSize(cols: 100, rows: 30), scrollbackLines: 0)
-        viewer.write(Array(vt.utf8))
+        viewer.write(vt)
         #expect(viewer.viewportLines() == [line])
     }
 

@@ -532,6 +532,57 @@ import WiettyCore
         #expect(!copy.isModeSet(3))
     }
 
+    /// A receiver that honours DECCOLM and does not forget mode 40 on a reset
+    /// (SwiftTerm) would switch to 132 columns on the frame's `?3h`, clearing what
+    /// it was told and changing its width. So the frame disallows the switch
+    /// first, sets 3, and allows it again where the library puts 40.
+    @Test func aSnapshotDisallowsTheColumnSwitchBeforeSettingMode3() throws {
+        let source = try terminal(cols: 40, rows: 10)
+        write("\(Self.esc)[?40h\(Self.esc)[?3h", to: source)
+        source.resize(to: TerminalSize(cols: 100, rows: 10))
+        #expect(source.isModeSet(3) && source.isModeSet(40))
+
+        let bytes = source.snapshotFrame().bytes
+        let disallow = try #require(bytes.firstRange(of: Array("\(Self.esc)[?40l".utf8)))
+        let columns = try #require(bytes.firstRange(of: Array("\(Self.esc)[?3h".utf8)))
+        let allow = try #require(bytes.firstRange(of: Array("\(Self.esc)[?40h".utf8)))
+        #expect(disallow.upperBound <= columns.lowerBound)
+        #expect(columns.upperBound <= allow.lowerBound)
+
+        let copy = try terminal(cols: 100, rows: 10)
+        copy.write(TerminalPaint.hardReset + bytes)
+        #expect(copy.size == TerminalSize(cols: 100, rows: 10))
+        #expect(copy.isModeSet(40))
+    }
+
+    /// A frame that cannot be cut stops the test host, where it is a bug to find,
+    /// and is only logged everywhere else: a Debug build is what the app is run as
+    /// day to day, and a terminal state nobody foresaw must not crash it.
+    @Test func aFrameFaultStopsOnlyTheTestHost() {
+        var logged: [String] = []
+        var stopped: [String] = []
+        TerminalFrameFault.report("cut", stopUnderTestHost: true, isTestHost: false,
+                                  log: { logged.append($0) }, stop: { stopped.append($0) })
+        #expect(logged == ["cut"])
+        #expect(stopped.isEmpty)
+
+        TerminalFrameFault.report("cut", stopUnderTestHost: true, isTestHost: true,
+                                  log: { logged.append($0) }, stop: { stopped.append($0) })
+        #expect(logged == ["cut", "cut"])
+        #expect(stopped == ["cut"])
+    }
+
+    /// A failed format pass is logged and stops nothing, under the test host or
+    /// not: a paint or a text read that fails has an answer to fall back on.
+    @Test func aFailedFormatPassIsLoggedAndStopsNothing() {
+        var logged: [String] = []
+        var stopped: [String] = []
+        TerminalFrameFault.report("pass", stopUnderTestHost: false, isTestHost: true,
+                                  log: { logged.append($0) }, stop: { stopped.append($0) })
+        #expect(logged == ["pass"])
+        #expect(stopped.isEmpty)
+    }
+
     @Test func theAlternateScreenFlagFollowsTheMode() throws {
         let terminal = try terminal()
         #expect(!terminal.isAlternateScreen)

@@ -7,13 +7,15 @@ import OSLog
 /// The hub asks from its own queues and cannot wait for a hop to the main actor.
 /// The census gates an attach, which has to be answered before the viewer is
 /// registered. A terminal's screen model is fed on the relay's queue with every
-/// chunk and asked for a paint on the hub's delivery queue, under the hub's lock
-/// for that session. Hopping any of them would put a terminal's bytes, or a
-/// viewer's first frame, behind whatever the UI is doing.
+/// chunk and asked for a frame on the hub's delivery queue, under the hub's lock
+/// for that session. A remote viewer's input is handed to the terminal's writer on
+/// whatever thread it arrived on. Hopping any of them would put a terminal's bytes,
+/// a viewer's first frame, or a keystroke behind whatever the UI is doing.
 package final class SharedTerminalState: @unchecked Sendable {
     private let lock = NSLock()
     private var live: Set<String> = []
     private var models: [String: any TerminalScreenModel] = [:]
+    private var writers: [String: @Sendable ([UInt8]) -> Void] = [:]
 
     /// `GhosttyService` builds the app's one instance. Reachable from the tests so
     /// `StreamBaselineTests` can wire the hub to a model exactly as `GhosttyStack` does.
@@ -50,6 +52,24 @@ package final class SharedTerminalState: @unchecked Sendable {
     /// relay that fed it has stopped, so the terminal's memory goes with it.
     package func removeModel(for session: String) {
         lock.lock(); models[session] = nil; lock.unlock()
+    }
+
+    /// What writes a terminal's input to its pty, for the hub to hand a remote
+    /// viewer's bytes to without the main actor. The writer queues them on the
+    /// pty's own serial queue, so calling it from any thread is safe and keeps
+    /// the order of the calls.
+    package func register(writer: @escaping @Sendable ([UInt8]) -> Void, for session: String) {
+        lock.lock(); writers[session] = writer; lock.unlock()
+    }
+
+    /// The writer of a terminal that is open and has not exited, or nil.
+    package func writer(for session: String) -> (@Sendable ([UInt8]) -> Void)? {
+        lock.lock(); defer { lock.unlock() }
+        return writers[session]
+    }
+
+    package func removeWriter(for session: String) {
+        lock.lock(); writers[session] = nil; lock.unlock()
     }
 }
 
@@ -322,6 +342,9 @@ package final class GhosttyService: TerminalService {
         // lines. Nothing after this point can throw, so nothing has to take it
         // back out.
         shared.note(model: model, for: session)
+        // Weakly, like the status tap's reply: the registry must not keep a pty
+        // alive, and one that has been released has nobody left to read input.
+        shared.register(writer: { [weak pty] bytes in pty?.write(bytes) }, for: session)
         relay.start(onExit: { [weak self] _ in
             Task { @MainActor in self?.reap(session) }
         })
@@ -362,6 +385,10 @@ package final class GhosttyService: TerminalService {
         terminal.relay.stop()
         terminal.pty.terminate()
         shared.note(live: liveSessions)
+        // The writer goes now and the model stays: the master is closed, so input
+        // for this terminal is refused here as `send` refuses it, rather than
+        // handed to a pty that drops it without a word.
+        shared.removeWriter(for: session)
         // Every viewer of this terminal, wherever it is. The census only answers an
         // attach that has not happened yet; a browser or an iPad already watching
         // this session has nothing else to learn from and would otherwise stay on a
@@ -473,6 +500,7 @@ package final class GhosttyService: TerminalService {
         // not left behind: a full scrollback is megabytes, and an attach to this
         // id is answered `ended` by the census from here on.
         shared.removeModel(for: sessionId)
+        shared.removeWriter(for: sessionId)
         // Told even when the child was reaped earlier, because a viewer can attach
         // between the two: the census answers an attach on a reaped terminal
         // `ended`, but a viewer that attached while it was alive is still here.
@@ -549,6 +577,7 @@ package final class GhosttyService: TerminalService {
             terminal.pty.terminate()
             host.destroySurface(id: session)
             shared.removeModel(for: session)
+            shared.removeWriter(for: session)
             // Told here too, and it is not only for tidiness at exit: this is also
             // the teardown a test performs while a viewer is attached.
             onStreamEnded(session)

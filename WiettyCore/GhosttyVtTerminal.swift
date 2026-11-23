@@ -1,10 +1,32 @@
 import Foundation
+import OSLog
 // Private, so the C module stays out of this target's interface. The app and the
 // test bundle import `WiettyCore` without depending on the package, and nothing
 // outside this file may name a libghostty-vt type: the blast radius of a new
 // release is meant to be one file, the rule `GhosttySurfaceHost` sets for
 // GhosttyKit.
 private import GhosttyVt
+
+/// How a fault in a frame this terminal builds is reported.
+///
+/// Logged always, as an error, because a frame that is wrong reaches every viewer
+/// of the terminal and nobody at this Mac sees it. Stopped on only under the test
+/// host, where it is a bug to find: a Debug build is also what the app is run as
+/// day to day, and a terminal state nobody foresaw must not take it down when
+/// there is a frame to fall back on.
+package enum TerminalFrameFault {
+    /// - Parameter stopUnderTestHost: whether the fault is a bug worth stopping
+    ///   the test host for, rather than one that is only worth a log line.
+    /// - Parameters isTestHost, log, stop: seams for the tests of this policy.
+    package static func report(_ message: String,
+                               stopUnderTestHost: Bool,
+                               isTestHost: Bool = TestHost.isActive,
+                               log: (String) -> Void = { GhosttyLog.stack.error("\($0, privacy: .public)") },
+                               stop: (String) -> Void = { assertionFailure($0) }) {
+        log(message)
+        if stopUnderTestHost && isTestHost { stop(message) }
+    }
+}
 
 package enum GhosttyVtError: Error, Equatable {
     /// `ghostty_terminal_new` refused, with the library's own result code.
@@ -241,10 +263,10 @@ package final class GhosttyVtTerminal {
     /// if a later release puts the row anywhere else in its output or writes a
     /// different front for the two passes, or if the front holds a sequence
     /// this type does not understand, the frame is the library's single pass
-    /// with grapheme clustering stated in front of it, and an assertion fails.
-    /// A debug build, the test host among them, stops there. A release build
-    /// still sends a frame, which is wrong only for a mode that changes how
-    /// content is laid down, autowrap off above all.
+    /// with grapheme clustering stated in front of it, and the fault is logged
+    /// as an error. The test host stops there (`TerminalFrameFault`); the app,
+    /// Debug or Release, still sends a frame, which is wrong only for a mode that
+    /// changes how content is laid down, autowrap off above all.
     ///
     /// On the alternate screen this is that screen and nothing else: the
     /// alternate screen has no history, and the formatter only reads the active
@@ -285,7 +307,9 @@ package final class GhosttyVtTerminal {
               everything.count >= infront.count, everything.prefix(infront.count).elementsEqual(infront),
               let prefix = SnapshotPrefix(infront.dropLast(row.count)),
               let content = vt(GHOSTTY_FORMATTER_EXTRAS_NONE, whole) else {
-            assertionFailure("snapshot frame: the library's output could not be cut into front, content and tail")
+            TerminalFrameFault.report(
+                "snapshot frame: the library's output could not be cut into front, content and tail",
+                stopUnderTestHost: true)
             guard let single = vt(Self.paintExtras, whole) else { return [] }
             return clustering + single
         }
@@ -318,8 +342,15 @@ package final class GhosttyVtTerminal {
         private(set) var tabStops: [UInt8] = []
 
         /// Alternate screen (47, 1047, 1049) and columns (3, DECCOLM, and 40,
-        /// which allows it). All DEC private.
+        /// which allows it). All DEC private. The library writes 3 before 40, and
+        /// that order is what keeps a receiver that has just been reset from
+        /// switching columns: its 40 is still off when the 3 arrives.
         private static let beforeContentModes: Set<Int> = [3, 40, 47, 1047, 1049]
+        /// Written in front of mode 3, so that a receiver whose reset does not
+        /// turn 40 off (SwiftTerm keeps it) also finds the switch disallowed.
+        /// The library's own 40 still follows, so the receiver ends allowing the
+        /// switch when the source does.
+        private static let disallowColumnSwitch = Array("\u{1B}[?40l".utf8)
         private static let clearTabStops = Array("\u{1B}[3g".utf8)
 
         /// Nil for a front this type does not understand: anything after the run
@@ -330,6 +361,7 @@ package final class GhosttyVtTerminal {
                 for number in numbers {
                     let sequence = Array("\u{1B}[\(isPrivate ? "?" : "")\(number)".utf8) + [final]
                     if isPrivate && Self.beforeContentModes.contains(number) {
+                        if number == 3 { beforeContent += Self.disallowColumnSwitch }
                         beforeContent += sequence
                     } else if !(isPrivate && number == 2027) {
                         afterContent += sequence
@@ -537,7 +569,10 @@ package final class GhosttyVtTerminal {
 
     /// One format call. Nil when any library call failed, and an empty array
     /// only when the output really was empty, which the library reports as
-    /// success with no buffer.
+    /// success with no buffer. A failure is logged: every caller has something to
+    /// fall back on, an empty paint or text or the single pass snapshot, and each
+    /// of those is otherwise indistinguishable from a terminal with nothing to
+    /// show.
     private func formatted(emit: GhosttyFormatterFormat,
                            extras: GhosttyFormatterExtras,
                            trim: Bool,
@@ -545,7 +580,10 @@ package final class GhosttyVtTerminal {
                            selection: GhosttySelection) -> [UInt8]? {
         var formatter: GhosttyFormatter?
         guard ghostty_formatter_terminal_new(nil, &formatter, terminal) == GHOSTTY_SUCCESS,
-              let formatter else { return nil }
+              let formatter else {
+            Self.formatPassFailed("the formatter could not be created")
+            return nil
+        }
         defer { ghostty_formatter_free(formatter) }
 
         var emit = emit
@@ -558,15 +596,23 @@ package final class GhosttyVtTerminal {
               ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_TRIM, &trim) == GHOSTTY_SUCCESS,
               ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap) == GHOSTTY_SUCCESS,
               ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS
-        else { return nil }
+        else {
+            Self.formatPassFailed("an option was refused")
+            return nil
+        }
 
         var pointer: UnsafeMutablePointer<UInt8>?
         var length: size_t = 0
         guard ghostty_formatter_format_alloc(formatter, nil, &pointer, &length) == GHOSTTY_SUCCESS else {
+            Self.formatPassFailed("formatting failed")
             return nil
         }
         guard let pointer else { return [] }
         defer { ghostty_free(nil, pointer, length) }
         return Array(UnsafeBufferPointer(start: pointer, count: length))
+    }
+
+    private static func formatPassFailed(_ reason: String) {
+        TerminalFrameFault.report("format pass failed: \(reason)", stopUnderTestHost: false)
     }
 }

@@ -30,20 +30,6 @@ package final class GhosttyStack {
     /// it.
     private let host: any TerminalSurfaceHosting
 
-    /// The channel a remote viewer's keystrokes travel down, and the reason there
-    /// is a channel at all rather than a `Task` per keystroke.
-    ///
-    /// The hub hands keystrokes over on its own thread and the write has to happen
-    /// on the main actor, where the terminal registry lives. One unstructured
-    /// `Task` per keystroke would be the obvious bridge and is the wrong one: input
-    /// order is as load bearing as output order, and Tasks created in order can
-    /// still run in either order. An `AsyncStream` with a single consumer
-    /// delivers in yield order, so a paste arriving as several messages cannot be
-    /// reassembled scrambled.
-    ///
-    /// Nil on a stack that could not be built, which has no service to send to.
-    private let keystrokes: AsyncStream<(session: String, text: String)>.Continuation?
-
     /// - Parameter helperPath: where `wietty-pty` is. Nil means it is not in
     ///   the bundle, which is a startup error rather than a per terminal one:
     ///   every surface's command would be missing.
@@ -78,7 +64,6 @@ package final class GhosttyStack {
             monitor = InactiveMonitor()
             ghosttyService = nil
             ghosttyMonitor = nil
-            keystrokes = nil
             // A census even here, because this stack knows the answer with
             // certainty: it holds no terminals and
             // never will. `PaneStreamHub.attach` skips the `ended` short circuit
@@ -101,13 +86,13 @@ package final class GhosttyStack {
             // the surface reach every remote viewer, and the terminal's screen
             // model, which the hub feeds through `onIngest` below.
             onOutput: { session, bytes in hub.write(session: session, bytes: bytes) },
-            // The grid, to the same hub. A viewer learns its size in the paint it
-            // gets on attach and from nothing else, so without this a window resize
+            // The grid, to the same hub. A viewer learns its size on attach and
+            // from nothing else, so without this a window resize
             // leaves every already attached viewer rendering reflowed bytes against
             // the old grid until it reattaches. `noteSize` dedupes and does the
             // delivery on its own queue, so this costs nothing when a report does not
             // move the grid. Into the hub rather than back into the service, for the
-            // same reason the census and the paint go through `shared`: this closure
+            // same reason the census and the frames go through `shared`: this closure
             // runs on the main actor and the hub is lock guarded, so the direction is
             // the safe one.
             onResized: { session, size in hub.noteSize(session: session, size) },
@@ -160,53 +145,29 @@ package final class GhosttyStack {
         hub.onSessionCensus = { .sessions(shared.liveSessions) }
         // The server's own terminal, fed by the hub in the step that accepts a
         // chunk for delivery. The hub holds the session's lock across both, so a
-        // paint asked for under that lock is the screen at exactly the offset the
-        // viewers are served from. A session with no model is one that has been
-        // torn down while its relay was still draining, and those bytes have
+        // frame asked for under that lock is the terminal at exactly the offset
+        // the viewers are served from. A session with no model is one that has
+        // been torn down while its relay was still draining, and those bytes have
         // nobody left to read them.
         hub.onIngest = { session, bytes in shared.model(for: session)?.write(bytes) }
-        // The screen a viewer is sent on attach and again when the grid moves:
-        // the model's own paint frame, with colours, modes and the real cursor,
-        // behind the grid it was taken at. Asked for by the hub under the same
-        // session lock the line above is called under, which is what makes it
-        // exact: the frame holds every byte the hub has accepted and none it has
-        // not.
-        //
-        // A session with no model returns nothing, which the hub treats as a
-        // paint that could not be built rather than as an empty screen.
-        hub.onPaint = { session in shared.model(for: session)?.paintMessages() ?? [] }
-        // A remote viewer's keystrokes take the same path as a local one's: into
-        // the pty master, where the ordering guarantee lives. They go through the
-        // stream rather than straight into a `Task` for the reason its own comment
-        // gives.
-        let (input, continuation) =
-            AsyncStream.makeStream(of: (session: String, text: String).self)
-        keystrokes = continuation
-        hub.onSend = { session, text in continuation.yield((session: session, text: text)) }
-        // Weakly, so the consumer cannot keep the service, and so its terminals,
-        // alive after this stack is gone. A stream that outlives its service drains
-        // to nothing rather than resurrecting it.
-        Task { @MainActor [weak service] in
-            for await keystroke in input {
-                // Stops rather than draining: a service that is gone cannot come
-                // back, so every later keystroke has the same answer.
-                guard let service else { break }
-                do {
-                    try await service.send(sessionId: keystroke.session, text: keystroke.text)
-                } catch {
-                    // Not an alert: a keystroke that failed is not worth
-                    // interrupting the user for, and a terminal that is gone fails
-                    // every one of them. Recorded rather than discarded, because a
-                    // row that had stopped accepting input was otherwise
-                    // indistinguishable from one being typed into correctly. The
-                    // same rule `TmuxStack.onSend` follows.
-                    GhosttyLog.stack.error("""
-                        keystroke to terminal \(keystroke.session, privacy: .public) failed: \
-                        \(String(describing: error), privacy: .public)
-                        """)
-                }
-            }
-        }
+        // What a viewer is sent on attach and on a resync: the model's history
+        // and screen, with colours, modes and the real cursor, and the grid and
+        // screen they were taken on. The two below are asked for by the hub under
+        // the same session lock the line above is called under, which is what
+        // makes them exact: each holds every byte the hub has accepted and none
+        // it has not.
+        hub.onSnapshot = { session in Self.snapshot(of: session, in: shared) }
+        // The visible screen again, after the grid moved, for a viewer that asked
+        // for repaints. A session with no model gives none, which the hub treats
+        // as a frame that could not be built rather than as an empty screen.
+        hub.onRepaint = { session in shared.model(for: session)?.repaintFrame() }
+        // Asked after a write while a viewer that joined on the alternate screen
+        // waits for the terminal to leave it.
+        hub.onAlternateScreen = { session in shared.model(for: session)?.isAlternateScreen ?? false }
+        // A remote viewer's input, straight to the terminal's pty, on the thread
+        // the hub was handed it on. The pty queues it on its own serial queue, so
+        // it arrives in the order it was sent and never waits for the main actor.
+        hub.onInput = { session, bytes in Self.input(bytes, for: session, in: shared) }
         // The hub holds the escape state needed to tell a real bell from an OSC
         // terminator, but libghostty has already parsed both, so the surface's
         // bell is the one that is reported and this hook stays unwired.
@@ -221,10 +182,37 @@ package final class GhosttyStack {
         self.ghosttyMonitor = monitor
     }
 
-    /// Ends the keystroke stream, so its consumer stops rather than waiting on a
-    /// continuation nothing holds any more.
-    deinit {
-        keystrokes?.finish()
+    /// The snapshot `onSnapshot` answers with, from the model `shared` holds for
+    /// the session. Nil without a model, and for a frame with no bytes, which is
+    /// one that could not be built: sent behind a full reset it would leave the
+    /// viewer with nothing at all.
+    ///
+    /// Static, so `StreamBaselineTests` wires the hub with the very same code.
+    package nonisolated static func snapshot(of session: String,
+                                             in shared: SharedTerminalState) -> TerminalSnapshotFrame? {
+        guard let frame = shared.model(for: session)?.snapshotFrame(), !frame.bytes.isEmpty else {
+            return nil
+        }
+        return frame
+    }
+
+    /// What `onInput` does: hands the bytes to the writer the service registered
+    /// for the session.
+    ///
+    /// A session with no writer is closed or has exited, and the bytes are
+    /// dropped. Recorded rather than discarded, because a row that had stopped
+    /// accepting input was otherwise indistinguishable from one being typed into
+    /// correctly; not an alert, because a terminal that is gone fails every
+    /// keystroke.
+    package nonisolated static func input(_ bytes: [UInt8], for session: String,
+                                          in shared: SharedTerminalState) {
+        guard let writer = shared.writer(for: session) else {
+            GhosttyLog.stack.error("""
+                input for terminal \(session, privacy: .public) dropped: it has no writer
+                """)
+            return
+        }
+        writer(bytes)
     }
 
     /// The pane's own keystrokes, by session, forwarded to the surface host.

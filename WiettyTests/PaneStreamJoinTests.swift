@@ -2,42 +2,43 @@ import Darwin
 import Foundation
 import Testing
 import WiettyCore
+import WiettyShared
 @testable import Wietty
 
 /// Everything a viewer was sent, in the order it was sent. Lock guarded for the
 /// reason every sink in this bundle is: the hub calls it from its own queue.
 private final class ViewerLog: @unchecked Sendable {
     private let lock = NSLock()
-    private var storage: [RemoteMessage] = []
-    func add(_ message: RemoteMessage) { lock.lock(); storage.append(message); lock.unlock() }
-    var messages: [RemoteMessage] { lock.lock(); defer { lock.unlock() }; return storage }
+    private var storage: [StreamMessage] = []
+    func add(_ message: StreamMessage) { lock.lock(); storage.append(message); lock.unlock() }
+    var messages: [StreamMessage] { lock.lock(); defer { lock.unlock() }; return storage }
 }
 
 /// What a viewer's own terminal ends up showing: the messages it was sent, played
 /// into a fresh terminal exactly as a browser or an iPad plays them, a `resize`
-/// setting the grid and a `data` being written.
+/// setting the grid and a `snapshot`, a `repaint` or a `data` being written.
 ///
 /// A real terminal rather than a scan of the bytes, because the claim under test
 /// is about a screen. A paint is not a prefix of the stream: it is cursor
 /// addressed, it carries modes, and whether it lines up with what follows can
 /// only be read off the terminal both were written into.
-private func replay(_ messages: [RemoteMessage], scrollbackLines: Int) throws -> [String] {
+private func replay(_ messages: [StreamMessage], scrollbackLines: Int) throws -> [String] {
     var terminal: GhosttyVtTerminal?
     for message in messages {
         switch message {
-        case let .resize(cols, rows):
+        case let .resize(cols, rows, _):
             let size = TerminalSize(cols: cols, rows: rows)
             if let terminal {
                 terminal.resize(to: size)
             } else {
                 terminal = try GhosttyVtTerminal(size: size, scrollbackLines: scrollbackLines)
             }
-        case let .data(text):
+        case let .snapshot(bytes), let .repaint(bytes), let .data(bytes):
             let target = try terminal ?? GhosttyVtTerminal(size: TerminalSize(cols: 80, rows: 24),
                                                            scrollbackLines: scrollbackLines)
             terminal = target
-            target.write(Array(text.utf8))
-        case .ended:
+            target.write(bytes)
+        case .ended, .hello, .error:
             break
         }
     }
@@ -45,6 +46,17 @@ private func replay(_ messages: [RemoteMessage], scrollbackLines: Int) throws ->
     return terminal.text(maxLines: scrollbackLines * 2)
         .components(separatedBy: "\n")
         .filter { !$0.isEmpty }
+}
+
+/// The first two messages of an attach: the grid, then a snapshot that starts
+/// from a full reset, so whatever the viewer showed before is gone.
+private func expectAnAttach(_ messages: [StreamMessage]) {
+    guard messages.count >= 2, case .resize = messages[0],
+          case let .snapshot(frame) = messages[1] else {
+        Issue.record("an attach did not start with a resize and a snapshot")
+        return
+    }
+    #expect(frame.starts(with: TerminalPaint.hardReset))
 }
 
 /// Why a run of lines is not "every number once, in order, ending at `last`", or
@@ -96,9 +108,11 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
             if parseDelay > 0 { usleep(parseDelay) }
             model.write(bytes)
         }
-        hub.onPaint = { _ in model.paintMessages() }
+        hub.onSnapshot = { _ in model.snapshotFrame() }
+        hub.onRepaint = { _ in model.repaintFrame() }
         return (hub, model)
     }
+
 
     /// The output of `seq 1 count` as a pty hands it over, cut into chunks at
     /// arbitrary bytes, so numbers and line endings are split across writes.
@@ -147,14 +161,17 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
                 // Roughly the moment the writer reaches `attachAt`, without the two
                 // being tied together by anything the hub could benefit from.
                 usleep(UInt32(attachAt * 190))
-                hub.attach(session: session) { log.add($0) }
+                hub.attach(session: session, resize: .repaint) { log.add($0) }
             }
             await attacher.value
             await writer.value
             hub.flush()
 
+            expectAnAttach(log.messages)
+            // From the first line: the snapshot carries the history, so a viewer
+            // attaching late has what scrolled past before it came.
             let shown = try replay(log.messages, scrollbackLines: 10_000)
-            if let fault = faultInNumberedLines(shown, endingAt: lines) {
+            if let fault = faultInNumberedLines(shown, endingAt: lines, startingAt: 1) {
                 Issue.record("round \(round), attached near chunk \(attachAt) of \(chunks.count): \(fault)")
                 return
             }
@@ -175,7 +192,8 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
             let chunks = Self.chunks(upTo: lines, using: &random)
             let session = Self.session
             let log = ViewerLog()
-            hub.attach(session: session) { log.add($0) }
+            hub.attach(session: session, resize: .repaint) { log.add($0) }
+            expectAnAttach(log.messages)
 
             let writer = Task.detached {
                 for chunk in chunks {
@@ -206,8 +224,8 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
                 return
             }
             // And it really was repainted along the way, or this proved nothing.
-            let paints = log.messages.filter { if case .resize = $0 { true } else { false } }.count
-            #expect(paints > 1, "round \(round) never repainted")
+            let paints = log.messages.filter { if case .repaint = $0 { true } else { false } }.count
+            #expect(paints > 0, "round \(round) never repainted")
             hub.stop()
         }
     }
@@ -223,7 +241,7 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
         let cut = Array("caf\u{E9} ".utf8).count + 1
         let log = ViewerLog()
         hub.write(session: Self.session, bytes: Array(bytes[..<cut]))
-        hub.attach(session: Self.session) { log.add($0) }
+        hub.attach(session: Self.session, resize: .repaint) { log.add($0) }
         hub.write(session: Self.session, bytes: Array(bytes[cut...]))
         hub.flush()
         #expect(try replay(log.messages, scrollbackLines: 100) == ["caf\u{E9} \u{65E5}\u{672C}"])
@@ -236,17 +254,19 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
         defer { hub.stop() }
         let early = ViewerLog()
         let late = ViewerLog()
-        hub.attach(session: Self.session) { early.add($0) }
+        hub.attach(session: Self.session, resize: .repaint) { early.add($0) }
         let earlyPaint = early.messages.count
         hub.write(session: Self.session, bytes: Array("before\r\n".utf8))
-        hub.attach(session: Self.session) { late.add($0) }
+        hub.attach(session: Self.session, resize: .reflow) { late.add($0) }
         hub.write(session: Self.session, bytes: Array("after\r\n".utf8))
         hub.flush()
 
-        #expect(Array(early.messages.dropFirst(earlyPaint)) == [.data("before\r\n"), .data("after\r\n")])
-        // A size, a paint that already holds "before", then only what came after.
+        #expect(Array(early.messages.dropFirst(earlyPaint))
+                == [.data(Array("before\r\n".utf8)), .data(Array("after\r\n".utf8))])
+        // A size, a snapshot that already holds "before", then only what came after.
+        expectAnAttach(late.messages)
         #expect(late.messages.count == 3)
-        #expect(late.messages.last == .data("after\r\n"))
+        #expect(late.messages.last == .data(Array("after\r\n".utf8)))
         #expect(try replay(late.messages, scrollbackLines: 100) == ["before", "after"])
     }
 
@@ -268,8 +288,8 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
         }
         let stuck = ViewerLog()
         let free = ViewerLog()
-        hub.attach(session: "gt:stuck") { stuck.add($0) }
-        hub.attach(session: "gt:free") { free.add($0) }
+        hub.attach(session: "gt:stuck", resize: .repaint) { stuck.add($0) }
+        hub.attach(session: "gt:free", resize: .repaint) { free.add($0) }
 
         let writer = Task.detached { hub.write(session: "gt:stuck", bytes: Array("held".utf8)) }
         while entered.messages.isEmpty { try await Task.sleep(for: .milliseconds(1)) }
@@ -283,14 +303,14 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
         while free.messages.count < 2, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
-        #expect(free.messages == [.data("one "), .data("two")])
+        #expect(free.messages == [.data(Array("one ".utf8)), .data(Array("two".utf8))])
         #expect(stuck.messages.isEmpty)
 
         // And nothing of the stuck session was lost by being skipped.
         release.signal()
         await writer.value
         hub.flush()
-        #expect(stuck.messages == [.data("held")])
+        #expect(stuck.messages == [.data(Array("held".utf8))])
     }
 
     /// Every chunk the hub accepts is handed to the model's feed, against its own
@@ -335,7 +355,7 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
             // has printed anything.
             try await Task.sleep(for: .milliseconds(round * 25))
             let log = ViewerLog()
-            stack.hub.attach(session: handle.sessionId) { log.add($0) }
+            stack.hub.attach(session: handle.sessionId, resize: .repaint) { log.add($0) }
             let deadline = ContinuousClock.now + .seconds(20)
             while !log.messages.contains(.ended), ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(20))
@@ -345,6 +365,7 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
             // else, which is the census doing its job and says nothing here.
             guard log.messages != [.ended] else { continue }
             attachedWhileRunning += 1
+            expectAnAttach(log.messages)
 
             let shown = try replay(log.messages, scrollbackLines: 20_000)
             if let fault = faultInNumberedLines(shown, endingAt: lines) {

@@ -64,8 +64,13 @@ The path from the browser back to the terminal, in order:
   listings, the token gated per session socket, and the control socket
   described below.
 - **`ScreenStreaming`.** The protocol `RemoteServer` is built against. It
-  declares only `attach`, `detach`, `send`, and `stop`, so the server does not
-  know what is behind it, which is what lets a test back the server with a fake.
+  declares only `attach`, `detach`, `send`, `resync`, and `stop`, so the server
+  does not know what is behind it, which is what lets a test back the server
+  with a fake. It speaks `StreamMessage` from `wietty-shared`. Until the attach
+  route is moved to protocol version 2 (phase 3 of issue #84), the route frames
+  those messages with `StreamCodec` with no version check and no `hello`, and
+  reads input only from binary `data` frames, so the browser client of this
+  document is out of step with it in the meantime.
 - **`PaneStreamHub.swift`.** The one producer. A session id on the wire is a `gt:`
   id the app minted. `TerminalRelay` writes every chunk of the child's own output
   into the hub, which coalesces on an 8 ms timer (a shell echoing a typed line
@@ -74,12 +79,15 @@ The path from the browser back to the terminal, in order:
   either is fixed once. The app's own pane is not among them. It reads the surface
   libghostty draws into directly, and `RemoteServer` is the only caller of
   `PaneStreamHub.attach`; phase 3 of issue #84 is what puts the local pane on this
-  route too. Bytes are split on UTF-8 boundaries,
-  so a multibyte character straddling two flushes is not cut in half. A viewer that
-  attaches is painted first, from the terminal's screen model, because a session
-  sitting idle emits no output and would otherwise show a blank screen. The hub
-  also feeds that model, in the same step that accepts a chunk for delivery, which
-  is what lets the paint and the stream after it meet at exactly one byte.
+  route too. The bytes are delivered exactly as they were read, with nothing
+  decoded or held back; a multibyte character straddling two flushes arrives in
+  two messages and the viewer's terminal joins it. A write into a quiet session
+  is delivered at once rather than on the next tick. A viewer that attaches is
+  sent the grid and a snapshot first, from the terminal's screen model: the
+  history and the screen behind a full reset, because a session sitting idle
+  emits no output and would otherwise show a blank screen. The hub also feeds
+  that model, in the same step that accepts a chunk for delivery, which is what
+  lets the snapshot and the stream after it meet at exactly one byte.
   When a terminal's child exits, every viewer of it receives an end signal and the
   client shows the session has ended. A viewer arriving after that already happened
   gets the same end signal on attach, because the session is checked against a live
@@ -103,8 +111,9 @@ wire are the child's own**, so a rendering fault is fixed once for the browser,
 the iPad, and the pane of another Mac showing this session. The serving Mac's own
 pane is not a client of this route: it shows the libghostty surface, and only
 phase 3 of issue #84 puts it on the stream. Remote keystrokes take the same path
-a local one takes, into the pty master, so both orders are the pty's. Four things
-are worth knowing on the client side:
+a local one takes, into the pty master, so both orders are the pty's: the hub
+hands them to the pty's writer on the thread they arrived on, without the main
+actor. Four things are worth knowing on the client side:
 
 - **`TERM` is `xterm-ghostty` in the ordinary case, and `xterm-256color` only
   on a build that did not produce the bundled terminfo entry**
@@ -116,37 +125,35 @@ are worth knowing on the client side:
   drawing for `xterm-ghostty` can emit sequences a client does not implement:
   xterm.js in the browser page and SwiftTerm in the iPadOS client each render
   what they support and ignore the rest. Nothing translates between them.
-- **The paint on attach is coloured and exact.** It is the screen model's paint
-  frame for the visible viewport: every cell with its colours and attributes,
-  the modes a program has set, the scrolling region, the tab stops, and the
-  cursor where the terminal has it. It arrives as it always did, a `resize`
-  with the grid followed by one `data` message, so the protocol is unchanged
-  and an older client renders it without knowing anything moved; there are
-  simply SGR sequences and a cursor position inside the payload now. The
-  payload begins with a soft reset, an erase and a home, because the same
-  frame is sent again after a resize, to a client that already shows something.
-  It does not carry scrollback, the palette, or the screen underneath an
-  alternate screen. A client keeps its own theme for indexed colours and
-  builds its own history from the stream.
-- **The paint is taken at the instant of attach and the stream continues from
-  that byte.** The server takes what it has buffered, takes the paint, and
-  registers the viewer as one step that no output can interleave with, so a
-  viewer attaching while a build log scrolls sees no line twice and misses
+- **The snapshot on attach is coloured and exact.** A `resize` with the grid,
+  then a `snapshot`: a full reset (`ESC c`) and the screen model's history and
+  screen, every cell with its colours and attributes, the modes a program has
+  set, the scrolling region, the tab stops, and the cursor where the terminal
+  has it. It does not carry the palette, or the screen underneath an alternate
+  screen; a viewer that attached on the alternate screen is sent a fresh
+  snapshot when the program leaves it. A client keeps its own theme for indexed
+  colours.
+- **The snapshot is taken at the instant of attach and the stream continues
+  from that byte.** The server takes what it has buffered, takes the snapshot,
+  and registers the viewer as one step that no output can interleave with, so
+  a viewer attaching while a build log scrolls sees no line twice and misses
   none. A multibyte character cut by that instant arrives whole. An escape
   sequence cut by it does not, and shows as stray characters until the next
-  redraw. See `docs/terminal.md` for the mechanism.
+  redraw. A viewer that has lost its place can be given the same join again
+  (`resync`). See `docs/terminal.md` for the mechanism.
 - **The end signal has one source.** The terminal is a PTY in this process, so
   `GhosttyService` reports its end and `PaneStreamHub.endViewers(ofSession:)`
   delivers the `ended` message. Both ways a terminal ends reach it: the child
   exiting, and the row being closed.
 
 A grid that moves after a viewer attached reaches it through one entry point. A
-viewer is told its size in the paint it receives on attach and by nothing else on
-the socket, so `PaneStreamHub.noteSize` is what keeps that current:
-`GhosttyService`'s resize handler calls it with the grid it just read from the
-surface. The viewer receives a fresh `resize`
-followed by a repaint of the reflowed screen, and a report that did not move the
-grid is deduplicated rather than delivered.
+viewer is told its size on attach and by nothing else on the socket, so
+`PaneStreamHub.noteSize` is what keeps that current: `GhosttyService`'s resize
+handler calls it with the grid it just read from the surface. Every viewer
+receives a fresh `resize`; one that attached asking for repaints also receives a
+`repaint` of the reflowed screen, and one that reflows by itself nothing more. The
+attach route asks for repaints. A report that did not move the grid is
+deduplicated rather than delivered.
 
 ## Controlling side: connecting to another instance
 

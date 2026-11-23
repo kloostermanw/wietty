@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WiettyCore
+import WiettyShared
 @testable import Wietty
 
 /// A stand-in streamer, proving `RemoteServer` depends on the protocol rather
@@ -8,18 +9,23 @@ import WiettyCore
 private final class FakeStreamer: ScreenStreaming, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var attached: [String] = []
-    private(set) var sent: [String] = []
+    private(set) var sent: [[UInt8]] = []
     private(set) var detached = 0
+    private(set) var resynced = 0
     private(set) var stopped = false
 
     @discardableResult
-    func attach(session: String, onMessage: @escaping @Sendable (RemoteMessage) -> Void) -> UUID {
+    func attach(session: String, resize: ResizeMode,
+                onMessage: @escaping @Sendable (StreamMessage) -> Void) -> UUID {
         lock.lock(); attached.append(session); lock.unlock()
-        onMessage(.resize(cols: 80, rows: 24))
+        onMessage(.resize(cols: 80, rows: 24, own: false))
         return UUID()
     }
     func detach(connectionId: UUID) { lock.lock(); detached += 1; lock.unlock() }
-    func send(session: String, text: String) { lock.lock(); sent.append(text); lock.unlock() }
+    func send(session: String, bytes: [UInt8]) { lock.lock(); sent.append(bytes); lock.unlock() }
+    func resync(connectionId: UUID, onUnavailable: @escaping @Sendable () -> Void) {
+        lock.lock(); resynced += 1; lock.unlock()
+    }
     func stop() { lock.lock(); stopped = true; lock.unlock() }
 }
 
@@ -32,10 +38,10 @@ private final class FakeStreamer: ScreenStreaming, @unchecked Sendable {
     @Test func anyStreamingImplementationCanBackTheServer() async {
         let fake = FakeStreamer()
         let streaming: any ScreenStreaming = fake
-        streaming.attach(session: "%12") { _ in }
-        streaming.send(session: "%12", text: "ls")
+        streaming.attach(session: "%12", resize: .reflow) { _ in }
+        streaming.send(session: "%12", bytes: Array("ls".utf8))
         #expect(fake.attached == ["%12"])
-        #expect(fake.sent == ["ls"])
+        #expect(fake.sent == [Array("ls".utf8)])
     }
 
     /// The seam that survives having one terminal: `RemoteServer` still takes the
