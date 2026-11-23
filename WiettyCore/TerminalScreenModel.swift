@@ -27,6 +27,20 @@ package protocol TerminalScreenModel: AnyObject, Sendable {
     /// colours, cursor, modes and the rest, for a terminal that has just reset.
     func paintFrame() -> [UInt8]
 
+    /// History up to the scrollback limit, then the visible screen with modes and cursor,
+    /// as VT. Without a reset: `TerminalPaint.hardReset` goes in front of it.
+    ///
+    /// What a viewer attaching now is sent so that it has the history as well as
+    /// the screen. The active screen only: on the alternate screen it is that
+    /// screen, and the primary screen underneath is not in it. Larger than a paint
+    /// frame by the whole history, up to about a megabyte at 10,000 lines, and
+    /// taken under the same lock as a write, so it is for an attach and never per
+    /// frame.
+    func snapshotFrame() -> [UInt8]
+
+    /// Whether the alternate screen is the active one.
+    var isAlternateScreen: Bool { get }
+
     /// The whole terminal as bytes that restore it: screen, scrollback, title, modes,
     /// and the screen that is not active. For surviving a restart, not for painting.
     ///
@@ -83,6 +97,15 @@ package enum TerminalPaint {
     /// anyway, and leaving first would aim the erase at the primary screen the
     /// viewer is keeping underneath.
     package static let reset = "\u{1B}[!p\u{1B}[2J\u{1B}[H"
+
+    /// What a snapshot frame is prefixed with: a full reset (RIS, `ESC c`).
+    ///
+    /// The snapshot rebuilds the history as well as the screen, so it needs the
+    /// receiver in its power on state, which only a full reset gives: the
+    /// scrollback and both screens emptied, the primary screen active, the
+    /// margins, modes, mouse reporting and keyboard protocol back at their
+    /// defaults. The repaint keeps using `reset`, which keeps a viewer's history.
+    package static let hardReset: [UInt8] = [0x1B, 0x63]
 }
 
 /// How much history a terminal's model keeps.
@@ -155,6 +178,16 @@ package final class GhosttyVtScreenModel: TerminalScreenModel, @unchecked Sendab
     package func paintFrame() -> [UInt8] {
         lock.lock(); defer { lock.unlock() }
         return terminal.paintFrame()
+    }
+
+    package func snapshotFrame() -> [UInt8] {
+        lock.lock(); defer { lock.unlock() }
+        return terminal.snapshotFrame()
+    }
+
+    package var isAlternateScreen: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return terminal.isAlternateScreen
     }
 
     package func snapshot() -> Data {
