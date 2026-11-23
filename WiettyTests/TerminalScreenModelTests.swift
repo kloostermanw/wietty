@@ -117,11 +117,50 @@ private final class Finished: @unchecked Sendable {
             func write(_ bytes: [UInt8]) {}
             func resize(to size: TerminalSize) {}
             func paintFrame() -> [UInt8] { [] }
+            func snapshotFrame() -> [UInt8] { [] }
             func snapshot() -> Data { Data() }
             func text(maxLines: Int) -> String { "" }
             var size: TerminalSize { TerminalSize(cols: 80, rows: 24) }
+            var isAlternateScreen: Bool { false }
         }
         #expect(Blank().paintMessages().isEmpty)
+    }
+
+    /// The hard reset is the two bytes `ESC c` and nothing else: the snapshot is
+    /// built for a terminal in its power on state, and RIS is what puts one there.
+    @Test func theHardResetIsRIS() {
+        #expect(TerminalPaint.hardReset == [0x1B, 0x63])
+    }
+
+    /// Through the protocol, so the flag a later caller decides on is the one the
+    /// model keeps.
+    @Test func theAlternateScreenFlagFollowsTheMode() throws {
+        let model = try model()
+        #expect(!model.isAlternateScreen)
+        write("\(Self.esc)[?1049h", to: model)
+        #expect(model.isAlternateScreen)
+        write("\(Self.esc)[?1049l", to: model)
+        #expect(!model.isAlternateScreen)
+    }
+
+    /// The snapshot carries the history the model keeps and no more: a model with
+    /// a thousand lines of scrollback that was fed five thousand gives a frame a
+    /// fresh terminal with far more room reads back as the kept history and one
+    /// screen.
+    @Test func aSnapshotStopsAtTheScrollbackLimit() throws {
+        let model = try GhosttyVtScreenModel(size: TerminalSize(cols: 80, rows: 40), scrollbackLines: 1_000)
+        for line in 1...5_000 { write("line \(line)\r\n", to: model) }
+
+        let viewer = try GhosttyVtTerminal(size: TerminalSize(cols: 80, rows: 40), scrollbackLines: 20_000)
+        viewer.write(TerminalPaint.hardReset + model.snapshotFrame())
+
+        let lines = viewer.text(maxLines: 20_000).components(separatedBy: "\n")
+        #expect(lines.count <= 1_040)
+        // The library prunes a page at a time, so the model keeps somewhat under
+        // its limit: 856 lines here, screen included.
+        #expect(lines.count > 800, "\(lines.count) lines")
+        #expect(lines.last == "line 5000")
+        #expect(viewer.text(maxLines: 20_000) == model.text(maxLines: 20_000))
     }
 
     @Test func aSnapshotIsNotEmptyAndGrowsWithTheScrollback() throws {

@@ -165,6 +165,53 @@ package final class GhosttyVtTerminal {
                       selection: selection)
     }
 
+    /// VT that rebuilds this terminal in one that has just been hard reset: every
+    /// row of history the terminal still holds, oldest first, then the active
+    /// screen, then the cursor, the modes, the scrolling region, the tab stops and
+    /// the rest of what `paintFrame()` carries, the palette excepted for the same
+    /// reason (see `paintExtras`).
+    ///
+    /// One selection over the whole of the active screen's rows, in the `screen`
+    /// coordinate space that `text(maxLines:)` reads, from the first row of
+    /// history to the last row of the active area, and one format call over it.
+    /// The formatter walks the pages once and writes into one growing buffer, so
+    /// the cost is linear in the rows held. Measured at 120 columns with 9,981
+    /// rows of coloured log lines: 633 KB in under 2 ms.
+    ///
+    /// Not trimmed, so the blank rows at the bottom of the screen are written and
+    /// a receiver of the same grid ends with as many history rows as this
+    /// terminal has, and the cursor lands on the same row. Unwrapped, which reads
+    /// backwards but is what keeps a wrap a wrap: without it the formatter ends
+    /// every row with a line break, and a line the terminal wrapped arrives as
+    /// two lines that merely look the same. Joined, it is written as one line and
+    /// the receiver wraps it again at the same column. The paint frame does not
+    /// unwrap, so a line wrapped on a painted viewer looks right but is two
+    /// lines to that viewer's copy and reflow.
+    ///
+    /// On the alternate screen this is that screen and nothing else: the
+    /// alternate screen has no history, and the formatter only reads the active
+    /// screen, so the primary screen underneath is not in it.
+    package func snapshotFrame() -> [UInt8] {
+        let size = self.size
+        let total = count(GHOSTTY_TERMINAL_DATA_TOTAL_ROWS)
+        guard let selection = selection(tag: GHOSTTY_POINT_TAG_SCREEN,
+                                        firstRow: 0,
+                                        lastRow: total - 1,
+                                        cols: size.cols) else { return [] }
+        return format(emit: GHOSTTY_FORMATTER_FORMAT_VT,
+                      extras: Self.paintExtras,
+                      trim: false,
+                      unwrap: true,
+                      selection: selection)
+    }
+
+    /// Whether the alternate screen is the active one, as the library has it.
+    package var isAlternateScreen: Bool {
+        var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
+        ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+        return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
+    }
+
     /// Everything the formatter can restore except the palette.
     ///
     /// The palette extra writes all 256 entries with `OSC 4`, and what it writes

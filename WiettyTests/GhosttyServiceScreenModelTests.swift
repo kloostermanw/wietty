@@ -30,6 +30,8 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
     func resize(to size: TerminalSize) { lock.lock(); grid = size; lock.unlock() }
     var size: TerminalSize { lock.lock(); defer { lock.unlock() }; return grid }
     func paintFrame() -> [UInt8] { [] }
+    func snapshotFrame() -> [UInt8] { [] }
+    var isAlternateScreen: Bool { false }
     func snapshot() -> Data { Data() }
     func text(maxLines: Int) -> String { String(decoding: bytes, as: UTF8.self) }
 }

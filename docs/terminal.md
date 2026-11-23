@@ -338,6 +338,34 @@ answer the moment the two disagree about any state, so the model is built with n
 no other callback either: the bell, the title and notifications are reported by the surface through
 `GhosttyMonitor`, and a second report would ring every bell twice.
 
+**What a model can produce**, every read answered from the same parse:
+
+- The paint frame (`paintFrame()`): the visible viewport as VT, with colours, the cursor, modes, the
+  scrolling region and the tab stops, for a terminal that has just had `TerminalPaint.reset` (a soft
+  reset, an erase and a home). What a viewer is painted with today, on attach and after a resize.
+- The snapshot frame (`snapshotFrame()`): every row of history the model still holds, oldest first,
+  then the active screen, then the same cursor, modes and the rest, as VT for a terminal that has just
+  had `TerminalPaint.hardReset` (`ESC c`). Written behind that reset into a terminal of the same grid,
+  even one left on another program's alternate screen with mouse reporting, a scrolling region and the
+  kitty keyboard protocol on, it leaves the same history row for row, the same screen and the cursor
+  on the same cell. A line the terminal wrapped arrives wrapped at the same column rather than as two
+  lines, and the blank rows at the bottom of the screen are kept, so the history is neither a row short
+  nor a row long. Measured at 120 columns with 9,981 rows of coloured log lines: 633 KB in under 2 ms.
+  Nothing sends it yet.
+- Whether the alternate screen is the active one (`isAlternateScreen`).
+- The plain text `readOutput` returns (`text(maxLines:)`), and the library's own binary snapshot
+  (`snapshot()`), which is for restoring a terminal and not for painting one.
+
+Both frames leave out the palette, for the reason given under "Serving a remote viewer". Both paint
+the active screen only: on the alternate screen the snapshot frame is that screen with no history,
+because the alternate screen has none, and the primary screen underneath is not in it. libghostty-vt's
+formatter is documented to read the active screen. It will in fact format the primary screen while the
+alternate one is active when handed a selection of tracked grid references taken on the primary screen
+before the switch, but that is outside what the headers promise, and the cursor and modes it would add
+are the alternate screen's. The other route, decoding the binary snapshot into a second terminal and
+leaving the alternate screen there, works within the contract at the cost of copying the whole
+terminal. Neither is used.
+
 **One lock per model**, held for the whole of each call, because libghostty-vt is not reentrant and
 its callers are on three queues: the relay's for a write, the hub's delivery queue for a paint, and
 the main actor for a resize or a text read. What is called often is cheap (a parse runs at hundreds of

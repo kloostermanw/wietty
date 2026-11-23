@@ -217,6 +217,128 @@ import WiettyCore
         #expect(terminal.snapshot().count > empty)
     }
 
+    // MARK: - The snapshot frame
+
+    /// The history the source holds, then its screen, as numbered lines with a few
+    /// the terminal had to wrap, so that a row that continues the one above it is
+    /// part of what has to come across.
+    private func fillWithHistory(_ terminal: GhosttyVtTerminal, lines: Int) {
+        for line in 1...lines {
+            if line % 50 == 0 {
+                write("\(Self.esc)[3\(line % 8)mline \(line)\(Self.esc)[0m "
+                      + String(repeating: "wrapped ", count: 25) + "\r\n", to: terminal)
+            } else {
+                write("\(Self.esc)[3\(line % 8)mline \(line)\(Self.esc)[0m of the log\r\n", to: terminal)
+            }
+        }
+        write("\(Self.esc)[1mprompt$\(Self.esc)[0m half typed", to: terminal)
+    }
+
+    /// The snapshot is what a viewer attaching now is sent instead of a viewport:
+    /// written behind a hard reset into a terminal that has seen nothing, it
+    /// leaves the source's history and screen, and its cursor where the source
+    /// has it.
+    @Test func aSnapshotRebuildsHistoryAndScreenInAFreshTerminal() throws {
+        let source = try terminal(cols: 80, rows: 40)
+        fillWithHistory(source, lines: 300)
+
+        let copy = try terminal(cols: 80, rows: 40)
+        copy.write(TerminalPaint.hardReset + source.snapshotFrame())
+
+        #expect(copy.text(maxLines: 300) == source.text(maxLines: 300))
+        #expect(copy.text(maxLines: 300).hasPrefix("line "))
+        #expect(copy.cursor == source.cursor)
+        // Row for row, wrapped rows included: the history is rebuilt as rows, not
+        // only as the lines they spell.
+        #expect(copy.scrollbackRows == source.scrollbackRows)
+        #expect(copy.viewportLines() == source.viewportLines())
+        #expect(copy.paintFrame() == source.paintFrame())
+    }
+
+    /// The rows a reader is most likely to get wrong: a line exactly as wide as
+    /// the grid, which sets no wrap; one a column wider, which wraps with one
+    /// character on the next row; a wide character that does not fit in the last
+    /// column and moves to the next row whole; and a screen whose rows below the
+    /// cursor are blank. Each has to come across as the rows the source has, or
+    /// the history ends a row short or long and the cursor lands on the wrong row.
+    @Test func aSnapshotKeepsEveryRowAsTheSourceHasIt() throws {
+        let source = try terminal(cols: 20, rows: 8)
+        for line in 1...30 { write("row \(line)\r\n", to: source) }
+        write(String(repeating: "x", count: 20) + "\r\n", to: source)
+        write(String(repeating: "y", count: 21) + "\r\n", to: source)
+        write(String(repeating: "z", count: 19) + "日本\r\n", to: source)
+        write("\(Self.esc)[4mpartly underlined\(Self.esc)[0m\r\n", to: source)
+        for line in 1...10 { write("tail \(line)\r\n", to: source) }
+        // A cleared screen with two lines on it, and blank rows under the second.
+        write("\(Self.esc)[H\(Self.esc)[2Jtop\(Self.esc)[4;6Hmiddle", to: source)
+
+        let copy = try terminal(cols: 20, rows: 8)
+        copy.write(TerminalPaint.hardReset + source.snapshotFrame())
+
+        #expect(copy.scrollbackRows == source.scrollbackRows)
+        #expect(copy.text(maxLines: 100) == source.text(maxLines: 100))
+        #expect(copy.cursor == source.cursor)
+        #expect(copy.viewportLines() == source.viewportLines())
+        #expect(copy.paintFrame() == source.paintFrame())
+        // And the copy's own snapshot is the source's: nothing was lost or added
+        // on the way through, in the history either.
+        #expect(copy.snapshotFrame() == source.snapshotFrame())
+    }
+
+    /// A viewer that already shows something: another program's alternate screen,
+    /// with mouse reporting, a scrolling region, the kitty keyboard protocol and a
+    /// history of its own. The hard reset in front of the snapshot has to clear all
+    /// of it, or the history comes back with the viewer's old lines under it and
+    /// the screen comes back inside the old scrolling region.
+    @Test func aSnapshotIsCorrectOnADirtyTerminal() throws {
+        let source = try terminal(cols: 80, rows: 40)
+        fillWithHistory(source, lines: 300)
+
+        let viewer = try terminal(cols: 80, rows: 40)
+        for line in 1...200 { write("stale \(line) of the viewer\r\n", to: viewer) }
+        write("\(Self.esc)[?1049h\(Self.esc)[?1000h\(Self.esc)[5;10r\(Self.esc)[>1u", to: viewer)
+        write("\(Self.esc)[7;3Hfull screen program", to: viewer)
+        #expect(viewer.isAlternateScreen)
+
+        viewer.write(TerminalPaint.hardReset + source.snapshotFrame())
+
+        #expect(viewer.text(maxLines: 300) == source.text(maxLines: 300))
+        #expect(viewer.cursor == source.cursor)
+        #expect(viewer.isAlternateScreen == source.isAlternateScreen)
+        #expect(!viewer.text(maxLines: 10_000).contains("stale"))
+        #expect(!viewer.text(maxLines: 10_000).contains("full screen program"))
+        #expect(viewer.scrollbackRows == source.scrollbackRows)
+        // Modes, margins and keyboard protocol as the source has them: the paint
+        // frame carries all three, so equal frames mean none of the viewer's own
+        // survived.
+        #expect(viewer.paintFrame() == source.paintFrame())
+    }
+
+    /// The frame paints the active screen. A source on its alternate screen gives a
+    /// viewer that is on its alternate screen too, showing what the program drew.
+    @Test func aSnapshotOfTheAlternateScreenPutsTheViewerOnIt() throws {
+        let source = try terminal(cols: 80, rows: 24)
+        for line in 1...100 { write("shell line \(line)\r\n", to: source) }
+        write("\(Self.esc)[?1049h\(Self.esc)[H\(Self.esc)[2Jeditor top\(Self.esc)[10;5Hcursor here", to: source)
+
+        let viewer = try terminal(cols: 80, rows: 24)
+        viewer.write(TerminalPaint.hardReset + source.snapshotFrame())
+
+        #expect(viewer.isAlternateScreen)
+        #expect(viewer.viewportLines() == source.viewportLines())
+        #expect(viewer.cursor == source.cursor)
+        #expect(viewer.paintFrame() == source.paintFrame())
+    }
+
+    @Test func theAlternateScreenFlagFollowsTheMode() throws {
+        let terminal = try terminal()
+        #expect(!terminal.isAlternateScreen)
+        write("\(Self.esc)[?1049h", to: terminal)
+        #expect(terminal.isAlternateScreen)
+        write("\(Self.esc)[?1049l", to: terminal)
+        #expect(!terminal.isAlternateScreen)
+    }
+
     // MARK: - Size
 
     @Test func sizeIsTheSizeAskedFor() throws {
