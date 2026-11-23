@@ -345,16 +345,42 @@ no other callback either: the bell, the title and notifications are reported by 
   reset, an erase and a home). What a viewer is painted with today, on attach and after a resize.
 - The snapshot frame (`snapshotFrame()`): every row of history the model still holds, oldest first,
   then the active screen, then the same cursor, modes and the rest, as VT for a terminal that has just
-  had `TerminalPaint.hardReset` (`ESC c`). Written behind that reset into a terminal of the same grid,
-  even one left on another program's alternate screen with mouse reporting, a scrolling region and the
-  kitty keyboard protocol on, it leaves the same history row for row, the same screen and the cursor
-  on the same cell. A line the terminal wrapped arrives wrapped at the same column rather than as two
-  lines, and the blank rows at the bottom of the screen are kept, so the history is neither a row short
-  nor a row long. Measured at 120 columns with 9,981 rows of coloured log lines: 633 KB in under 2 ms.
+  had `TerminalPaint.hardReset` (`ESC c`). It comes as one value, `TerminalSnapshotFrame`, with the grid
+  and the screen it was taken on, all read under one acquisition of the lock, so a write can never land
+  between the bytes and the flag. Written behind that reset into a terminal of the same grid, even one
+  left on another program's alternate screen with mouse reporting, a scrolling region and kitty
+  keyboard flags on both screens, it leaves the same history row for row, the same screen and the
+  cursor on the same cell. A line the terminal wrapped arrives wrapped at the same column rather than
+  as two lines, and the blank rows at the bottom of the screen are kept, so the history is neither a
+  row short nor a row long. Measured at 120 columns with a full default scrollback of coloured log
+  lines: about 630 KB in about 2 ms. At 100,000 lines: 6.4 MB in about 17 ms, in the debug test host.
   Nothing sends it yet.
 - Whether the alternate screen is the active one (`isAlternateScreen`).
 - The plain text `readOutput` returns (`text(maxLines:)`), and the library's own binary snapshot
   (`snapshot()`), which is for restoring a terminal and not for painting one.
+
+**The snapshot frame lays down its content with default modes and sets the modes after it.** The
+library's own order is modes and tab stops in front of the content, and the scrolling region, the
+cursor, the pen, the keyboard protocols and the character sets behind it. In front does no harm to a
+viewport, but it does to wrapped history: with autowrap off on the source, every joined line would be
+cut at the last column. So the frame is assembled from parts: grapheme clustering (mode 2027) stated
+outright, because it decides how many cells a joined emoji takes and the reset puts back the
+receiver's default rather than the source's; then the switch to the alternate screen if the source is
+on it; then the content with no extras; then the other modes and the tab stops; then everything the
+library writes behind the content. The parts in front of and behind the content are cut out of the
+library's output for the last row alone. If a later release changes its order so that the cut does not
+match, the frame falls back to the library's single pass. A scrolling region, origin mode, left and
+right margins and the DEC line drawing set on the source are covered by tests as well as autowrap.
+
+Two limits of the snapshot frame are known and not handled here:
+
+- A frame taken on the alternate screen leaves the receiver's primary screen empty, and its saved
+  cursor wherever the receiver had it. When the program exits, the receiver shows an empty primary
+  screen until the shell prints again. Sending a fresh snapshot when the terminal leaves the alternate
+  screen is a later step.
+- A cursor in the pending wrap state (a line written to the last column, nothing after it yet) is not
+  restored, so on the receiver the next character overwrites the last column instead of wrapping. The
+  paint frame has the same limit.
 
 Both frames leave out the palette, for the reason given under "Serving a remote viewer". Both paint
 the active screen only: on the alternate screen the snapshot frame is that screen with no history,
@@ -382,7 +408,9 @@ brought to the nearer end. The number is a memory decision. A retained row costs
 columns whatever is written on it, and the cost is only paid once the rows exist. Measured on ten
 models at 120 by 40, each filled past its limit with plain lines: 10.2 MiB per terminal at 10,000
 lines, 1.2 MiB at 1,000 and 99 MiB at 100,000. Thirty full terminals at the default are about 300
-MiB. The library prunes a page at a time, so a full scrollback holds a little under its limit.
+MiB. The library prunes a whole page at a time, so a full scrollback holds between its limit and about
+one page under it, depending on where in a page the last line fell: with short log lines, 9,605 to
+10,000 rows at the default and 120 columns, and 409 to 1,000 at the floor and 80 columns.
 
 **The limit is read when a terminal opens.** `GhosttyService.open` asks for it once, on the main
 actor, and builds the model with it, so a change applies to terminals opened afterwards and one that
