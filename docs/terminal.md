@@ -348,7 +348,8 @@ no other callback either: the bell, the title and notifications are reported by 
 - The paint frame (`paintFrame()`): the visible viewport as VT, with colours, the cursor, modes, the
   scrolling region and the tab stops, for a terminal that has just had `TerminalPaint.reset` (a soft
   reset, an erase and a home). What a viewer that asked for repaints is sent after a resize
-  (`repaintFrame()` gives it with its grid).
+  (`repaintFrame()` gives it with its grid, both read under one acquisition of the lock, so a resize on
+  the main actor cannot pair the frame of one grid with the size of another).
 - The snapshot frame (`snapshotFrame()`): every row of history the model still holds, oldest first,
   then the active screen, then the same cursor, modes and the rest, as VT for a terminal that has just
   had `TerminalPaint.hardReset` (`ESC c`). It comes as one value, `TerminalSnapshotFrame`, with the grid
