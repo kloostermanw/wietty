@@ -87,7 +87,7 @@ The path from the browser back to the terminal, in order:
   route too. The bytes are delivered exactly as they were read, with nothing
   decoded or held back; a multibyte character straddling two flushes arrives in
   two messages and the viewer's terminal joins it. A write into a quiet session
-  is delivered at once rather than on the next tick. A viewer that attaches is
+  that has a viewer is delivered at once rather than on the next tick. A viewer that attaches is
   sent the grid and a snapshot first, from the terminal's screen model: the
   history and the screen behind a full reset, because a session sitting idle
   emits no output and would otherwise show a blank screen. The hub also feeds

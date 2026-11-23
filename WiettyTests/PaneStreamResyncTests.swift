@@ -237,6 +237,27 @@ private func frame(_ text: String, alternate: Bool = false) -> TerminalSnapshotF
         #expect(log.dataBytes(of: "v") == bytes("xy"))
     }
 
+    /// A quiet write into a session nobody watches schedules nothing: the flush
+    /// would hand the bytes to nobody. Every local terminal is such a session
+    /// until a remote viewer attaches, so this is every echoed keystroke. The bytes
+    /// stay in the buffer, where the timer (or an attach) takes them, as before the
+    /// quiet rule; once a viewer is there the rule applies again.
+    @Test func aQuietWriteWithoutAViewerSchedulesNoDelivery() {
+        let hub = PaneStreamHub()
+        hub.write(session: "gt:1", bytes: bytes("x"))
+        hub.waitForPendingDeliveries()
+        #expect(hub.quietFlushes(session: "gt:1") == 0)
+
+        hub.flush()   // what the timer does: empties the buffer of a session without viewers
+        let log = DeliveryLog()
+        hub.attach(session: "gt:1", resize: .repaint) { log.add("v", $0) }
+        usleep(30_000)
+        hub.write(session: "gt:1", bytes: bytes("y"))
+        hub.waitForPendingDeliveries()
+        #expect(hub.quietFlushes(session: "gt:1") == 1)
+        #expect(log.dataBytes(of: "v") == bytes("y"))
+    }
+
     /// A sustained stream is still batched: the quiet rule fires only for a write
     /// into an empty buffer long after the last flush.
     @Test func aSustainedStreamIsStillBatched() {

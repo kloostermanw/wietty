@@ -548,7 +548,9 @@ by byte, and that alone capped a terminal at about 3 MiB/s.
 **Coalescing, and a quiet terminal.** Output is delivered on an 8 ms timer, so a burst coalesces into
 one message. A write into an empty buffer when the session's last flush is more than 8 ms old is
 delivered at once instead, so the echo of a keystroke on a quiet terminal does not wait for the next
-tick. A steady stream still goes out on the timer.
+tick. A steady stream still goes out on the timer. The rule applies only to a session with a viewer:
+a write nobody watches would be flushed to nobody, so it stays in the buffer for the next tick, which
+empties the buffer of every session, watched or not.
 
 Two things keep the join honest at its edges. A character cut by the moment of a join reaches the
 viewer whole: the model has its first bytes and has drawn nothing of it, so the frame does not hold it,
