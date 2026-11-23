@@ -33,8 +33,11 @@ Which side of the remote protocol lives where decides which repo a bug belongs i
 - **The stream's messages, in `wietty-shared` for both sides.** `StreamMessage` is the one type
   both ends of a terminal stream speak, so the served side uses the package too: `WiettyCore`
   links `WiettyShared` as well as the app, and `ViewerQueue` holds `StreamMessage` values for one
-  viewer. Linked into two targets, the package is built as a dynamic framework the app embeds, and
-  `WiettyTests` has to link it explicitly (see `project.yml`).
+  viewer. Linked into more than one target, the package is built as a dynamic framework, and
+  `WiettyTests` has to link it explicitly (see `project.yml`). Xcode copies that framework into the
+  app and into the test bundle too, whatever `embed` says. Every copy has the same install name, so
+  dyld loads one image of it (in a Debug test run, the one in `Build/Products/Debug/PackageFrameworks`);
+  `WiettySharedImageTests` fails if a change ever makes it load two.
 
 **One terminal.** A terminal is a pseudo terminal the app spawns and owns, rendered by libghostty in
 the main window's pane. Nothing needs to be installed for it: no iTerm2, no tmux, not even

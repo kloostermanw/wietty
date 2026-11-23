@@ -191,8 +191,10 @@ targets:
       # WiettyShared is the exception, and has to be declared. It is linked into both
       # WiettyCore and the app, so SwiftPM builds it as a dynamic product framework,
       # which the app embeds. The tests used to find its symbols in the app's binary,
-      # where it was linked statically; now they have to link the framework. Not
-      # embedded, for the reason WiettyCore is not.
+      # where it was linked statically; now they have to link the framework. Xcode
+      # still copies it into the test bundle, `embed: false` notwithstanding, but every
+      # copy has one install name and dyld loads a single image of it.
+      # WiettySharedImageTests fails if that ever stops being true.
       - package: WiettyShared
         product: WiettyShared
         embed: false
