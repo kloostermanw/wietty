@@ -496,6 +496,15 @@ queue, because the request comes from inside a delivery to that very viewer, whi
 delivery are still on their way to the viewers after it. Run on the spot, the join would hand those
 viewers the next bytes before the current ones.
 
+**Between the hub and a socket.** `RemoteServer`'s attach route gives each viewer an `AttachedViewer`:
+a `ViewerQueue` bounded at 4 MiB that `onMessage` pushes into, so a slow socket never holds up the
+delivery queue, and one writer task per socket that drains it in order. The server's `hello` is pushed
+before the attach, so it is the first frame. An overflow asks for a resync through `ResyncThrottle`, at
+most one per viewer per 250 ms, because each one formats the whole history on the delivery queue under
+the session's lock; requests in between fold into one that runs when the interval is over. The writer
+and the reader of a socket are two child tasks, and whichever ends first ends the other, after which
+the viewer is detached and its queue finished. `docs/remote-access.md` has the wire side.
+
 **The alternate screen rule.** A viewer whose last snapshot was taken on the alternate screen holds an
 empty primary screen underneath it. While such a viewer exists, the hub asks the model after each
 write, under the session's lock, whether the alternate screen is still active (`onAlternateScreen`). When
@@ -552,6 +561,7 @@ corrects it.
 `PaneStreamJoinTests` races a writer against an attach and against repaints, plays everything the
 viewer was sent into a terminal of its own, and asserts every numbered line is there exactly once.
 `PaneStreamResyncTests` covers the resync, the alternate screen rule, the quiet flush and input.
+`ViewerResyncTests` covers the rate limit, and `RemoteAttachRouteTests` the route on a real socket.
 
 **A viewer is also told when the grid moves**, which takes wiring here rather than coming for free. A
 viewer learns its size on attach and from nothing else on the socket, so a window resize would

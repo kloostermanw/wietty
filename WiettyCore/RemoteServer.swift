@@ -28,18 +28,26 @@ package final class RemoteServer {
     private let store: ProjectStore
     private let streamer: any ScreenStreaming
     private let token: RemoteAccessToken
+    private let host: String
     private let port: Int
     private let onStartupError: (@MainActor @Sendable (String) -> Void)?
     private var runTask: Task<Void, Never>?
 
     private(set) var startupError: String?
+    /// The port the server is listening on, once it is. The one asked for, or the
+    /// one the system chose for port 0, which is how a test gets a free port with
+    /// no race.
+    package private(set) var boundPort: Int?
 
+    /// - Parameter host: the address to bind, every interface unless a test binds
+    ///   loopback only.
     package init(store: ProjectStore, streamer: any ScreenStreaming,
-         token: RemoteAccessToken, port: Int = RemoteServer.defaultPort,
+         token: RemoteAccessToken, host: String = "0.0.0.0", port: Int = RemoteServer.defaultPort,
          onStartupError: (@MainActor @Sendable (String) -> Void)? = nil) {
         self.store = store
         self.streamer = streamer
         self.token = token
+        self.host = host
         self.port = port
         self.onStartupError = onStartupError
     }
@@ -47,6 +55,7 @@ package final class RemoteServer {
     package func start() async {
         guard runTask == nil else { return }
         let expected = token.value
+        let host = self.host
         let store = self.store
         let streamer = self.streamer
 
@@ -102,40 +111,32 @@ package final class RemoteServer {
             return await Self.closeSession(store: store, sessionId: ctx.parameters.get("sid"))
         }
 
-        // WebSocket route, token checked at upgrade time.
+        // WebSocket route, token checked at upgrade time. Protocol version 2; see
+        // `docs/remote-access.md`, "The terminal stream (protocol version 2)".
         let wsRouter = Router(context: BasicWebSocketRequestContext.self)
         wsRouter.ws("attach",
             shouldUpgrade: { request, _ in
                 Self.tokenOK(request, expected: expected) ? .upgrade([:]) : .dontUpgrade
             },
             onUpgrade: { inbound, outbound, context in
-                guard let session = Self.query(context.request, "session") else { return }
-                let sink = WebSocketSink(outbound: outbound)
-                // Frames must reach the socket in the order the streamer emits
-                // them (a VT byte stream is order critical). Funnel them through
-                // one AsyncStream drained by a single sequential writer rather
-                // than spawning a Task per message, which would not preserve order.
-                let (stream, continuation) = AsyncStream.makeStream(of: StreamMessage.self)
-                let connectionId = streamer.attach(session: session, resize: .repaint) { message in
-                    continuation.yield(message)
+                let request = context.request
+                // The version first: an old client is recognised by its missing
+                // `protocol` parameter and is told to update, not attached.
+                guard let version = Self.query(request, "protocol") else {
+                    for text in Self.oldClientNotice { try? await outbound.write(.text(text)) }
+                    return
                 }
-                let writer = Task {
-                    for await message in stream { await sink.send(message) }
+                guard version == String(StreamProtocol.version) else {
+                    let refusal = StreamMessage.error(
+                        code: "protocol",
+                        message: "This Mac speaks terminal stream protocol version \(StreamProtocol.version).")
+                    try? await Self.write(refusal, to: outbound)
+                    return
                 }
-                do {
-                    for try await frame in inbound.messages(maxSize: 1 << 20) {
-                        let decoded: StreamMessage? = switch frame {
-                        case let .text(text): StreamCodec.message(from: .text(text))
-                        case let .binary(buffer): StreamCodec.message(from: .binary(Array(buffer.readableBytesView)))
-                        }
-                        if case let .data(bytes) = decoded {
-                            streamer.send(session: session, bytes: bytes)
-                        }
-                    }
-                } catch {}
-                streamer.detach(connectionId: connectionId)
-                continuation.finish()
-                await writer.value
+                guard let session = Self.query(request, "session") else { return }
+                let resize = Self.query(request, "resize").flatMap(ResizeMode.init(rawValue:)) ?? .repaint
+                await Self.serve(session: session, resize: resize, streamer: streamer,
+                                 inbound: inbound, outbound: outbound)
             })
 
         wsRouter.ws("control",
@@ -175,10 +176,16 @@ package final class RemoteServer {
 
         let application = Application(
             router: router,
-            server: .http1WebSocketUpgrade(webSocketRouter: wsRouter),
+            server: .http1WebSocketUpgrade(
+                webSocketRouter: wsRouter,
+                configuration: .init(ws: WebSocketServerConfiguration(maxFrameSize: Self.maxInboundMessage))),
             configuration: ApplicationConfiguration(
-                address: .hostname("0.0.0.0", port: port),
+                address: .hostname(host, port: port),
                 serverName: "wietty-remote"),
+            onServerRunning: { [weak self] channel in
+                let port = channel.localAddress?.port
+                await MainActor.run { self?.boundPort = port }
+            },
             logger: Logger(label: "wietty.remote", factory: { _ in SwiftLogNoOpLogHandler() }))
 
         runTask = Task {
@@ -196,6 +203,86 @@ package final class RemoteServer {
     package func stop() {
         runTask?.cancel()
         runTask = nil
+    }
+
+    // MARK: - The attach route
+
+    /// The largest frame, and the largest message, a viewer may send: input, so a
+    /// paste. One mebibyte; a larger one makes the library close the socket with
+    /// 1009 (message too big). Outbound has no limit: a frame is written whole,
+    /// whatever its size, which a snapshot of a full history needs.
+    package nonisolated static let maxInboundMessage = 1 << 20
+
+    /// What a client with no `protocol` parameter is sent: version 1 text frames,
+    /// built by hand because version 1 has no type left in the code. A version 1
+    /// client decodes `type`, and `vt` for a `data` message, and shows the text in
+    /// its terminal; `ended` then shows the session as ended.
+    package nonisolated static let oldClientNotice: [String] = {
+        let text = "\r\n\u{1B}[31mThis app is too old for this Mac. Update Wietty on this device.\u{1B}[0m\r\n"
+        func json(_ object: [String: String]) -> String {
+            let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            return String(decoding: data ?? Data(), as: UTF8.self)
+        }
+        return [json(["type": "data", "vt": text]), json(["type": "ended"])]
+    }()
+
+    /// One accepted version 2 viewer, from the hello to the close.
+    ///
+    /// Two child tasks: the writer, the only thing that writes to the socket,
+    /// drains the viewer's queue in order; the reader hands input to the streamer.
+    /// Whichever ends first cancels the other, and then the viewer is closed
+    /// (detached, queue finished). The writer ends after it has written `ended`,
+    /// when a write fails, or when the queue is finished; the reader when the
+    /// client closes, the socket fails or a message is too large. Cancelling the
+    /// handler (the server stopping) cancels both. Returning lets the library send
+    /// the close frame and close the socket.
+    private nonisolated static func serve(session: String, resize: ResizeMode,
+                                          streamer: any ScreenStreaming,
+                                          inbound: WebSocketInboundStream,
+                                          outbound: WebSocketOutboundWriter) async {
+        let viewer = AttachedViewer(
+            streamer: streamer, session: session, resize: resize,
+            greeting: .hello(protocolVersion: StreamProtocol.version, session: nil, resize: nil))
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                while let message = await viewer.queue.next() {
+                    do { try await write(message, to: outbound) } catch { return }
+                    if message == .ended { return }
+                }
+            }
+            group.addTask {
+                do {
+                    for try await frame in inbound.messages(maxSize: maxInboundMessage) {
+                        let decoded: StreamMessage? = switch frame {
+                        case let .text(text): StreamCodec.message(from: .text(text))
+                        case let .binary(buffer):
+                            StreamCodec.message(from: .binary(Array(buffer.readableBytesView)))
+                        }
+                        switch decoded {
+                        case let .data(bytes) where !bytes.isEmpty:
+                            streamer.send(session: session, bytes: bytes)
+                        case .resize:
+                            // Accepted and not acted on in this part. Part 2 answers every
+                            // claim here with exactly one `resize` carrying `own: true`.
+                            break
+                        default:
+                            break
+                        }
+                    }
+                } catch {}
+            }
+            await group.next()
+            group.cancelAll()
+        }
+        viewer.close()
+    }
+
+    private nonisolated static func write(_ message: StreamMessage,
+                                          to outbound: WebSocketOutboundWriter) async throws {
+        switch StreamCodec.webSocketFrame(for: message) {
+        case let .text(text): try await outbound.write(.text(text))
+        case let .binary(bytes): try await outbound.write(.binary(ByteBuffer(bytes: bytes)))
+        }
     }
 
     // MARK: - Helpers
@@ -384,18 +471,5 @@ package final class RemoteServer {
                                      runState: store.runState(for: ref),
                                      needsAttention: store.attention.contains(ref.id),
                                      jobName: store.jobNames[ref.id])
-    }
-}
-
-/// Serializes outbound WebSocket writes, framed by `StreamCodec`.
-private actor WebSocketSink {
-    private let outbound: WebSocketOutboundWriter
-    init(outbound: WebSocketOutboundWriter) { self.outbound = outbound }
-
-    func send(_ message: StreamMessage) async {
-        switch StreamCodec.webSocketFrame(for: message) {
-        case let .text(text): try? await outbound.write(.text(text))
-        case let .binary(bytes): try? await outbound.write(.binary(ByteBuffer(bytes: bytes)))
-        }
     }
 }
