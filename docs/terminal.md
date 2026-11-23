@@ -467,7 +467,8 @@ terminal decodes them, as it would from any pty. `docs/remote-access.md` is the 
 things worth stating here follow.
 
 **A viewer is first sent the grid and a snapshot.** On attach the hub sends a `resize` with the grid,
-then a `snapshot`: `TerminalPaint.hardReset` (`ESC c`) and the model's snapshot frame, which is the
+then a `snapshot` (on the wire both come after the server's `hello`, which the route queues before it
+attaches): `TerminalPaint.hardReset` (`ESC c`) and the model's snapshot frame, which is the
 history the model holds, the screen, the cursor, the modes, the scrolling region and the tab stops.
 The reset is the hub's and appears once; the frame carries none of its own. Two things are deliberately
 not in it:

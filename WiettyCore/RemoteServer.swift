@@ -178,13 +178,19 @@ package final class RemoteServer {
             router: router,
             server: .http1WebSocketUpgrade(
                 webSocketRouter: wsRouter,
-                configuration: .init(ws: WebSocketServerConfiguration(maxFrameSize: Self.maxInboundMessage))),
+                configuration: .init(ws: WebSocketServerConfiguration(
+                    maxFrameSize: Self.maxInboundMessage,
+                    // Documented in docs/remote-access.md, so pinned rather than left to
+                    // the library's default (the same today): a viewer that has not
+                    // answered one ping when the next is due is closed with 1001.
+                    autoPing: .enabled(timePeriod: .seconds(30))))),
             configuration: ApplicationConfiguration(
                 address: .hostname(host, port: port),
                 serverName: "wietty-remote"),
             onServerRunning: { [weak self] channel in
                 let port = channel.localAddress?.port
-                await MainActor.run { self?.boundPort = port }
+                // Not after a stop that came first.
+                await MainActor.run { if self?.runTask != nil { self?.boundPort = port } }
             },
             logger: Logger(label: "wietty.remote", factory: { _ in SwiftLogNoOpLogHandler() }))
 
@@ -203,6 +209,7 @@ package final class RemoteServer {
     package func stop() {
         runTask?.cancel()
         runTask = nil
+        boundPort = nil
     }
 
     // MARK: - The attach route
