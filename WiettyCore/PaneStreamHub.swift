@@ -11,8 +11,8 @@ import WiettyShared
 /// Output is coalesced before delivery. A write arrives as soon as the child makes
 /// it, and a shell echoing a typed line produces one per character, so forwarding
 /// each one directly would put a message on the wire for every keystroke. A write
-/// into a quiet session is the exception: it goes out at once, so the echo of a
-/// keystroke does not wait for the timer.
+/// into a quiet session that has a viewer is the exception: it goes out at once, so
+/// the echo of a keystroke does not wait for the timer.
 package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private typealias Sink = @Sendable (StreamMessage) -> Void
 
@@ -55,6 +55,9 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         /// When bytes were last taken from `buffer` by a flush, in uptime
         /// nanoseconds. Zero for never.
         var lastFlush: UInt64 = 0
+        /// How many writes the quiet rule has sent straight to `delivery`. Read
+        /// only by the tests, through `quietFlushes(session:)`.
+        var quietFlushes = 0
 
         /// The accepted bytes, leaving the buffer empty. A swap, not a copy: this
         /// runs under the lock, and the lock is the terminal's write path.
@@ -433,8 +436,13 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         lock.unlock()
 
         stream.lock.lock()
-        let quiet = stream.buffer.isEmpty
+        // Only with a viewer to deliver to: without one the flush would hand the
+        // bytes to nobody, and every echoed keystroke of a terminal nobody watches
+        // would pay a dispatch for it. The timer empties that buffer as before.
+        let quiet = !stream.viewers.isEmpty
+            && stream.buffer.isEmpty
             && DispatchTime.now().uptimeNanoseconds &- stream.lastFlush > Self.quietNanoseconds
+        if quiet { stream.quietFlushes += 1 }
         stream.buffer.append(contentsOf: bytes)
         ingest?(session, bytes)
         stream.pendingCharacter = Self.incompleteCharacter(after: stream.pendingCharacter, bytes)
@@ -555,6 +563,19 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
                 its viewers keep a stale screen
                 """)
         }
+    }
+
+    /// How many writes into a session the quiet rule has sent straight to the
+    /// delivery queue. For the tests: a dispatch that delivers nothing cannot be
+    /// seen in what a viewer receives.
+    package func quietFlushes(session: String) -> Int {
+        lock.lock()
+        let stream = streams[session]
+        lock.unlock()
+        guard let stream else { return 0 }
+        stream.lock.lock()
+        defer { stream.lock.unlock() }
+        return stream.quietFlushes
     }
 
     /// Blocks until the delivery work already queued has run.
