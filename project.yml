@@ -16,11 +16,11 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     from: "1.2.0"
-  # A local checkout for the length of the phase 3 protocol work, which changes the
-  # package and this app together. Nothing is pushed yet, so a version pin would have
-  # nothing to resolve. A later commit restores the pin.
+  # Exact, not a floor: the package defines the wire format, and 1.0.0 is terminal
+  # stream protocol version 2, which this app serves and the iPad has to speak too.
   WiettyShared:
-    path: ../wietty-shared-phase3
+    url: https://github.com/kloostermanw/wietty-shared
+    exactVersion: "1.0.0"
   # The libghostty embedding API is explicitly unstable: pin exactly, never a range.
   #
   # Unconditional on the app target on purpose, even though it is the largest
