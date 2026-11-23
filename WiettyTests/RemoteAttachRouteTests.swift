@@ -421,12 +421,22 @@ private final class Client: @unchecked Sendable {
         #expect(running.server.boundPort == nil)
     }
 
-    /// No session: closed with nothing sent, as before version 2.
-    @Test func aMissingSessionIsClosedWithNothingSent() async throws {
+    /// No session: one `error` with code `session`, then the server closes, so the
+    /// client ends for good instead of reporting a lost connection and reconnecting.
+    /// Nothing is attached. The token is still checked before the upgrade.
+    @Test func aMissingSessionIsRefusedWithAnError() async throws {
         let running = try await start()
         defer { running.stop() }
         let client = Client(url: running.url("&protocol=2"))
         defer { client.close() }
+
+        let message = try await client.message()
+        guard case let .error(code, text) = message else {
+            Issue.record("expected an error, got \(String(describing: message))")
+            return
+        }
+        #expect(code == "session")
+        #expect(!text.isEmpty)
         #expect(await client.isClosedByServer())
         #expect(running.streamer.attaches.isEmpty)
     }
