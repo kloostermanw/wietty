@@ -126,7 +126,8 @@ test run the suite is counted and reported as skipped.
 ### The stream baseline
 
 `StreamBaselineTests` measures the terminal byte path from where `wietty-pty` stands, with the
-relay, `PaneStreamHub` and the libghostty-vt screen model in the path as the app has them. It prints
+relay, `ProgramStatusTap`, `PaneStreamHub` and the libghostty-vt screen model in the path as the app
+has them. It prints
 four lines starting with `BASELINE`: the echo of one keystroke on a quiet terminal, the same while
 the main thread is busy for 50 ms out of every 60, and how fast 100 MB of output arrives, once as one
 endless line (`throughput-oneline`) and once as ordinary 80 character lines (`throughput-lines`). It
@@ -137,10 +138,13 @@ normal suite skips it. Run it before and after any change to the byte path, and 
 scripts/stream-baseline.sh
 ```
 
-Quit Wietty first. It opens no window, but the test host is the app. Compare each number only with
-itself before and after a change, never the two echo numbers with each other: the busy one comes out
-several times lower than the quiet one, most likely because a spinning main thread keeps the CPU out
-of its idle states while the quiet run's pauses let it sleep. Run it three times. Now and then one
+Quit Wietty first, because the test host is the app. No window of the host was seen on screen
+during a run (checked every five seconds, so a window shown for less than that could be missed).
+Compare each number only with itself before and after a change, never the two echo numbers with each
+other. The busy variant reports a shorter delay than the quiet one, most likely because the spinning
+main thread keeps the CPU out of its idle states, so the two are not comparable with each other. The
+busy line also reports the share of the run the main thread really spent spinning, and the test
+fails when that is under half of the intended 50 out of 60. Run it three times. Now and then one
 run comes out shifted as a whole, more than about 20 % away from the other two on some number; when
 that happens, run a second set of three and keep both.
 

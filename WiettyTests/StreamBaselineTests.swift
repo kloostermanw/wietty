@@ -52,8 +52,15 @@ struct StreamBaselineTests {
             let hub = PaneStreamHub(startTimer: true)
             hub.onIngest = { session, bytes in shared.model(for: session)?.write(bytes) }
             self.hub = hub
-            pty = try RawPTY.spawn(command: command, directory: URL(fileURLWithPath: "/tmp"),
-                                   environment: [:], size: size, shell: "/bin/sh")
+            let pty: RawPTY
+            do {
+                pty = try RawPTY.spawn(command: command, directory: URL(fileURLWithPath: "/tmp"),
+                                       environment: [:], size: size, shell: "/bin/sh")
+            } catch {
+                hub.stop()
+                throw error
+            }
+            self.pty = pty
             let status = ProgramStatusTap(reply: { [weak pty] answer in pty?.write(answer) },
                                           report: { _ in })
             do {
@@ -108,8 +115,13 @@ struct StreamBaselineTests {
 
     /// The tty's own echo, so the child's speed is not part of the number: `cat` in
     /// canonical mode reads nothing until a newline, and the line discipline echoes
-    /// each byte as it arrives. Each round sends one `x` and reads until exactly that
-    /// byte is back.
+    /// each byte as it arrives. Each round sends one letter and reads exactly that
+    /// letter back.
+    ///
+    /// The letters cycle `a` to `z`, and every round first checks that nothing is
+    /// waiting to be read. Both are there because one echo arriving after the pause
+    /// would otherwise be read by the next round as its own, in microseconds, and
+    /// every sample after it would be shifted with no error.
     private static let echoCommand = "exec /bin/cat"
     private static let echoRounds = 2_000
     private static let echoPause: useconds_t = 5_000
@@ -125,17 +137,38 @@ struct StreamBaselineTests {
 
     /// The same, while the main thread is busy for 50 ms out of every 60. A route
     /// that hops through the main actor shows it here and not above.
+    ///
+    /// The busy loop reports how long it really spun, and the test fails when that
+    /// is under half of what 50 out of 60 implies, because an idle main thread would
+    /// make this a second copy of the quiet measurement under another name.
     @Test func echoDelayWithBusyMainThread() async throws {
-        let busy = Task { @MainActor in
+        let busy = Task { @MainActor () -> (spun: UInt64, elapsed: UInt64) in
+            let start = DispatchTime.now().uptimeNanoseconds
+            var spun: UInt64 = 0
             while !Task.isCancelled {
-                let until = DispatchTime.now().uptimeNanoseconds + 50_000_000
-                while DispatchTime.now().uptimeNanoseconds < until {}
+                let from = DispatchTime.now().uptimeNanoseconds
+                let until = from + 50_000_000
+                var now = from
+                while now < until { now = DispatchTime.now().uptimeNanoseconds }
+                spun += now - from
                 try? await Task.sleep(for: .milliseconds(10))
             }
+            return (spun, DispatchTime.now().uptimeNanoseconds - start)
         }
-        defer { busy.cancel() }
-        let samples = try await measureEcho()
-        print("BASELINE echo-busy \(Self.summary(samples))")
+        let samples: [UInt64]
+        do {
+            samples = try await measureEcho()
+        } catch {
+            busy.cancel()
+            _ = await busy.value
+            throw error
+        }
+        busy.cancel()
+        let load = await busy.value
+        let share = Double(load.spun) / Double(max(load.elapsed, 1))
+        #expect(share >= 0.5 * 50 / 60,
+                "the main thread was busy for \(Int(share * 100)) % of the run, not about 83 %")
+        print("BASELINE echo-busy \(Self.summary(samples)) busy=\(Int((share * 100).rounded()))%")
     }
 
     private static let throughputBytes = 100_000_000
@@ -148,67 +181,88 @@ struct StreamBaselineTests {
     /// One endless line: 100,000,000 bytes of `a` with no newline, so the screen
     /// model wraps it every row for the whole run.
     ///
-    /// Made into a file before the handshake and `cat` after it, because the
-    /// brief's `head | tr` pipeline is itself the limit: `tr` alone manages about
-    /// 28 MiB/s, which is what the relay alone measured with it in the clock.
+    /// Written to a file before the session starts, and only `cat` runs inside the
+    /// clock, because a generator in the pipeline is itself the limit: `tr` alone
+    /// manages about 28 MiB/s. The file is this test's to remove, whatever happens.
     @Test func throughputOneLine() async throws {
-        let file = "${TMPDIR:-/tmp}/wietty-baseline-$$"
-        try await measureThroughput(
-            name: "throughput-oneline",
-            command: "head -c \(Self.throughputBytes) /dev/zero | LC_ALL=C tr '\\0' a > \(file); "
-                + Self.handshake + "cat \(file); rm -f \(file)",
-            expecting: Self.throughputBytes)
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wietty-baseline-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data(repeating: UInt8(ascii: "a"), count: Self.throughputBytes).write(to: file)
+        try await measureThroughput(name: "throughput-oneline",
+                                    command: Self.handshake + "cat '\(file.path)'",
+                                    payload: Self.throughputBytes, lines: 0)
     }
 
     /// Ordinary output: 100,000,000 bytes of 80 character lines, 79 characters and a
-    /// newline each. The tty turns every newline into CR LF, as it does for any
-    /// program, so 1,250,000 more bytes arrive than were written.
+    /// newline each, so 1,250,000 lines.
     @Test func throughputLines() async throws {
         let line = String(repeating: "abcdefghij", count: 8).prefix(79)
-        try await measureThroughput(
-            name: "throughput-lines",
-            command: Self.handshake + "yes \(line) | head -c \(Self.throughputBytes)",
-            expecting: Self.throughputBytes + Self.throughputBytes / 80)
+        try await measureThroughput(name: "throughput-lines",
+                                    command: Self.handshake + "yes \(line) | head -c \(Self.throughputBytes)",
+                                    payload: Self.throughputBytes, lines: Self.throughputBytes / 80)
     }
 
     // MARK: Helpers, ignorant of the route
 
     /// Printed after the payload, and found in neither payload.
-    private static let endMark: Character = "Z"
+    private static let endMark = UInt8(ascii: "Z")
 
-    private func measureThroughput(name: String, command: String, expecting total: Int) async throws {
+    /// Reads the whole stream into memory inside the clock and checks it after.
+    ///
+    /// The tty turns every newline into CR LF, and when the reader is slower than the
+    /// child it writes some as CR CR LF instead: measured as 1,476 of the 1,250,000
+    /// lines with the hub in the path, and none with the relay alone. So the byte
+    /// count is not fixed. What is fixed is the payload: the bytes that arrived,
+    /// less every carriage return, must be exactly `payload`, and there must be
+    /// exactly `lines` line feeds. A truncated stream fails either check.
+    private func measureThroughput(name: String, command: String,
+                                   payload: Int, lines: Int) async throws {
         // The child stays alive after the mark, so the end of the stream is never a
         // race with the terminal closing.
-        let session = try Session(command: command + "; printf \(Self.endMark); exec sleep 120")
+        let session = try Session(command: command
+                                  + "; printf \(String(UnicodeScalar(Self.endMark))); exec sleep 120")
         defer { session.close() }
         let fd = try openHelperSide(session: session)
         defer { Darwin.close(fd) }
-        let mark = Int32(Self.endMark.asciiValue!)
-        let received = try await Self.offMain {
+        let mark = Int32(Self.endMark)
+        let capacity = payload + 2 * lines + (1 << 20)
+        let result = try await Self.offMain { () -> (nanoseconds: UInt64, bytes: Int, crs: Int, lfs: Int) in
             // Echo must be off before the line is sent, or the newline is echoed
             // into the count.
             var ready = [UInt8](repeating: 0, count: 1)
             _ = try Self.readSome(fd, into: &ready, timeout: 30)
             guard ready[0] == UInt8(ascii: "R") else { throw BaselineError.unexpectedByte(ready[0]) }
-            let start = DispatchTime.now().uptimeNanoseconds
-            try Self.writeAll(fd, [UInt8(ascii: "\n")])
+            let stream = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: 16)
+            defer { stream.deallocate() }
+            var go = [UInt8(ascii: "\n")]
             var received = 0
-            var buffer = [UInt8](repeating: 0, count: 1 << 16)
+            let start = DispatchTime.now().uptimeNanoseconds
+            try Self.writeAll(fd, &go)
             while true {
-                let count = try Self.readSome(fd, into: &buffer, timeout: 10)
+                guard received < capacity else { throw BaselineError.streamTooLong(received) }
+                let count = try Self.readSome(fd, into: stream + received,
+                                              count: capacity - received, timeout: 10)
+                let ended = memchr(stream + received, mark, count) != nil
                 received += count
-                let ended = buffer.withUnsafeBytes { memchr($0.baseAddress!, mark, count) != nil }
                 if ended { break }
             }
-            return (nanoseconds: DispatchTime.now().uptimeNanoseconds - start, bytes: received - 1)
+            let end = DispatchTime.now().uptimeNanoseconds
+            // Outside the clock from here.
+            let bytes = UnsafeRawBufferPointer(start: stream, count: received)
+            guard bytes.last == Self.endMark else { throw BaselineError.unexpectedByte(bytes.last ?? 0) }
+            var crs = 0, lfs = 0
+            for byte in bytes.dropLast() {
+                if byte == 13 { crs += 1 } else if byte == 10 { lfs += 1 }
+            }
+            return (end - start, received - 1, crs, lfs)
         }
-        // At least, not exactly, and ended on a mark rather than on a count. When
-        // the reader is slower than the child, the tty writes some newlines as
-        // CR CR LF instead of CR LF: measured as 1,476 of the 1,250,000 lines with
-        // the hub in the path, and none with the relay alone.
-        #expect(received.bytes >= total)
-        let seconds = Double(received.nanoseconds) / 1e9
-        let rate = Double(received.bytes) / 1_048_576 / seconds
+        #expect(result.lfs == lines, "expected \(lines) lines, \(result.lfs) arrived")
+        #expect(result.crs >= lines, "\(result.crs) carriage returns for \(lines) lines")
+        #expect(result.bytes - result.crs == payload,
+                "expected \(payload) payload bytes, \(result.bytes - result.crs) arrived")
+        let seconds = Double(result.nanoseconds) / 1e9
+        let rate = Double(result.bytes) / 1_048_576 / seconds
         print("BASELINE \(name) MiB/s=\(String(format: "%.1f", rate))")
     }
 
@@ -218,48 +272,85 @@ struct StreamBaselineTests {
         let fd = try openHelperSide(session: session)
         defer { Darwin.close(fd) }
         return try await Self.offMain {
+            var echo = Echo(fd: fd)
             // One untimed round first: it proves the echo works and absorbs
             // whatever the start of the stream costs. Then a newline, so the timed
             // rounds start on an empty line.
-            _ = try Self.echoRound(fd)
-            try Self.endLine(fd)
+            _ = try echo.round()
+            try echo.endLine()
             var samples: [UInt64] = []
             samples.reserveCapacity(Self.echoRounds)
             for round in 1...Self.echoRounds {
                 usleep(Self.echoPause)
-                samples.append(try Self.echoRound(fd))
-                if round % Self.echoRoundsPerLine == 0 { try Self.endLine(fd) }
+                samples.append(try echo.round())
+                if round % Self.echoRoundsPerLine == 0 { try echo.endLine() }
             }
             return samples
         }
     }
 
-    /// Sends one `x` and reads until exactly that byte comes back, in nanoseconds.
-    private static func echoRound(_ fd: Int32) throws -> UInt64 {
-        let start = DispatchTime.now().uptimeNanoseconds
-        try writeAll(fd, [UInt8(ascii: "x")])
-        var byte = [UInt8](repeating: 0, count: 1)
-        let count = try readSome(fd, into: &byte, timeout: 5)
-        let end = DispatchTime.now().uptimeNanoseconds
-        guard count == 1, byte[0] == UInt8(ascii: "x") else {
-            throw BaselineError.unexpectedByte(byte[0])
+    /// One echo session's state: the next letter, and the line `cat` holds.
+    private struct Echo {
+        let fd: Int32
+        private var next = UInt8(ascii: "a")
+        private var line: [UInt8] = []
+        private var out = [UInt8](repeating: 0, count: 1)
+        private var back = [UInt8](repeating: 0, count: 1)
+
+        init(fd: Int32) {
+            self.fd = fd
+            line.reserveCapacity(StreamBaselineTests.echoRoundsPerLine + 1)
         }
-        return end - start
+
+        /// Sends the next letter and reads exactly that letter back, in nanoseconds.
+        /// The clock covers the write, the wait and the read, nothing else.
+        mutating func round() throws -> UInt64 {
+            let letter = next
+            next = letter == UInt8(ascii: "z") ? UInt8(ascii: "a") : letter + 1
+            out[0] = letter
+            try StreamBaselineTests.requireQuiet(fd)
+            let start = DispatchTime.now().uptimeNanoseconds
+            try StreamBaselineTests.writeAll(fd, &out)
+            let count = try StreamBaselineTests.readSome(fd, into: &back, timeout: 5)
+            let end = DispatchTime.now().uptimeNanoseconds
+            guard count == 1, back[0] == letter else {
+                throw BaselineError.samplesInvalid(
+                    "sent \(Character(UnicodeScalar(letter))), read \(back[0]) back")
+            }
+            line.append(letter)
+            return end - start
+        }
+
+        /// Ends the line, and reads back exactly its echo (CR LF) and `cat`'s copy
+        /// of the letters it held, so the next round starts from a quiet stream.
+        mutating func endLine() throws {
+            var newline = [UInt8(ascii: "\n")]
+            try StreamBaselineTests.requireQuiet(fd)
+            try StreamBaselineTests.writeAll(fd, &newline)
+            let expected = [13, 10] + line + [13, 10]
+            var got: [UInt8] = []
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while got.count < expected.count {
+                let count = try StreamBaselineTests.readSome(fd, into: &buffer, timeout: 5)
+                got += buffer[0..<count]
+            }
+            guard got == expected else {
+                throw BaselineError.samplesInvalid("the line came back as \(got.count) bytes, not \(expected.count)")
+            }
+            line.removeAll(keepingCapacity: true)
+        }
     }
 
-    /// Ends the line, and reads until both its echo and `cat`'s copy of it are in,
-    /// so the next round starts from a quiet stream.
-    private static func endLine(_ fd: Int32) throws {
-        try writeAll(fd, [UInt8(ascii: "\n")])
-        var newlines = 0
-        var byte = [UInt8](repeating: 0, count: 1)
-        while newlines < 2 {
-            _ = try readSome(fd, into: &byte, timeout: 5)
-            if byte[0] == UInt8(ascii: "\n") { newlines += 1 }
+    /// Throws when anything is waiting to be read, which means an echo arrived late
+    /// and the rounds can no longer be told apart.
+    private static func requireQuiet(_ fd: Int32) throws {
+        var readable = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        if poll(&readable, 1, 0) > 0 {
+            throw BaselineError.samplesInvalid("bytes were waiting before a write")
         }
     }
 
-    private static func writeAll(_ fd: Int32, _ bytes: [UInt8]) throws {
+    private static func writeAll(_ fd: Int32, _ bytes: inout [UInt8]) throws {
         var offset = 0
         try bytes.withUnsafeBytes { raw in
             while offset < raw.count {
@@ -275,12 +366,19 @@ struct StreamBaselineTests {
     /// seconds for the first byte.
     private static func readSome(_ fd: Int32, into buffer: inout [UInt8],
                                  timeout: TimeInterval) throws -> Int {
+        try buffer.withUnsafeMutableBytes {
+            try readSome(fd, into: $0.baseAddress!, count: $0.count, timeout: timeout)
+        }
+    }
+
+    private static func readSome(_ fd: Int32, into pointer: UnsafeMutableRawPointer, count: Int,
+                                 timeout: TimeInterval) throws -> Int {
         var readable = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         let ready = poll(&readable, 1, Int32(timeout * 1000))
         guard ready > 0 else { throw BaselineError.timedOut }
-        let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress!, $0.count) }
-        guard count > 0 else { throw BaselineError.closed }
-        return count
+        let read = Darwin.read(fd, pointer, count)
+        guard read > 0 else { throw BaselineError.closed }
+        return read
     }
 
     /// Runs the blocking reads on a thread of their own, so they hold neither the
@@ -294,10 +392,13 @@ struct StreamBaselineTests {
         }
     }
 
+    /// Nearest rank percentiles: the value at index ceil(q * n) - 1 of the sorted
+    /// samples, so every reported number is one that was measured.
     private static func summary(_ samples: [UInt64]) -> String {
         let sorted = samples.sorted()
         func ms(_ quantile: Double) -> String {
-            let index = min(sorted.count - 1, Int((Double(sorted.count) * quantile).rounded(.down)))
+            let rank = Int((quantile * Double(sorted.count)).rounded(.up))
+            let index = min(max(rank - 1, 0), sorted.count - 1)
             return String(format: "%.3f", Double(sorted[index]) / 1e6)
         }
         return "median=\(ms(0.5)) p95=\(ms(0.95))"
@@ -316,4 +417,8 @@ private enum BaselineError: Error {
     case timedOut
     case closed
     case unexpectedByte(UInt8)
+    case streamTooLong(Int)
+    /// An echo arrived out of step, so the samples taken are not measurements of
+    /// the rounds they are recorded against.
+    case samplesInvalid(String)
 }

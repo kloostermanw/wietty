@@ -13,8 +13,9 @@
 # (StreamBaselineTests) is skipped unless WIETTY_STREAM_BASELINE=1 is set. Run
 # this before and after changing the route a terminal's bytes take, and compare.
 #
-# It opens no window, but Wietty itself must not be running: the test host is
-# the app, and a second instance contends for its ports.
+# No window of the test host was seen on screen during a run, but Wietty itself
+# must not be running: the test host is the app, and a second instance contends
+# for its ports.
 #
 # Usage: scripts/stream-baseline.sh
 
