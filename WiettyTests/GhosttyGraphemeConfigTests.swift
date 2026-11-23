@@ -14,7 +14,7 @@ import WiettyCore
 @MainActor
 @Suite struct GhosttyGraphemeConfigTests {
     private func config(_ contents: String) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
+        let url = TestScratch.root
             .appendingPathComponent("wietty-grapheme-\(UUID().uuidString).cfg")
         try contents.write(to: url, atomically: true, encoding: .utf8)
         return url
@@ -37,7 +37,7 @@ import WiettyCore
         let url = try config("font-size = 13\n")
         defer { try? FileManager.default.removeItem(at: url) }
         #expect(GhosttySurfaceHost.graphemeClustering(loading: url) == true)
-        let absent = FileManager.default.temporaryDirectory
+        let absent = TestScratch.root
             .appendingPathComponent("wietty-grapheme-absent-\(UUID().uuidString).cfg")
         #expect(GhosttySurfaceHost.graphemeClustering(loading: absent) == true)
     }

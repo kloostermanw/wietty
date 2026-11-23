@@ -44,7 +44,10 @@ fi
 xcodegen generate
 
 LOG="$(mktemp -t wietty-coexistence)"
-echo "Building with the address sanitizer and running the check. Full log: ${LOG}"
+# Keep the log only when the check failed: it is what the error message points at.
+KEEP_LOG=0
+trap '[ "${KEEP_LOG}" = 1 ] || rm -f "${LOG}"' EXIT
+echo "Building with the address sanitizer and running the check. Full log: ${LOG} (removed when the check passes)"
 
 # TEST_RUNNER_ is how xcodebuild passes a variable through to the test host.
 set +e
@@ -64,10 +67,12 @@ grep -E '^COEXISTENCE|^(✔|✘) |recorded an issue|disagree|lines differ|surfac
   | grep -v 'surface: surface closed' || true
 
 if [ "${STATUS}" -ne 0 ]; then
+  KEEP_LOG=1
   echo "The coexistence check FAILED (xcodebuild exited ${STATUS}). See ${LOG}" >&2
   exit "${STATUS}"
 fi
 if ! grep -q '^COEXISTENCE: .*address sanitizer ON' "${LOG}"; then
+  KEEP_LOG=1
   echo "The test did not report a sanitized run, so this proves nothing. See ${LOG}" >&2
   exit 1
 fi

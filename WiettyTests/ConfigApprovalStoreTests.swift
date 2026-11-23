@@ -12,7 +12,7 @@ import WiettyCore
     }
 
     private func folder(withConfig config: WorkspaceConfig) -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = TestScratch.root.appendingPathComponent(UUID().uuidString)
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         _ = try! ConfigFile.write(config, in: url)
         return url
@@ -133,7 +133,7 @@ import WiettyCore
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "s1", windowId: "w1")]
         let store = store(makeDefaults(), service: fake)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = TestScratch.root.appendingPathComponent(UUID().uuidString)
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         store.addProject(url: url)
         await store.openAgent(AgentDefinition(name: "Codex", command: "codex --model o3"),

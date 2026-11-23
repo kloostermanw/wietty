@@ -106,7 +106,7 @@ extension GhosttyOverrideFile {
     /// A file under a directory that does not exist yet, so a test covers the
     /// creating-it path the real first write takes.
     static func temporary() -> GhosttyOverrideFile {
-        GhosttyOverrideFile(url: FileManager.default.temporaryDirectory
+        GhosttyOverrideFile(url: TestScratch.root
             .appendingPathComponent("\(UUID().uuidString)/ghostty.cfg"))
     }
 }

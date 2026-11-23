@@ -57,7 +57,7 @@ import WiettyCore
     /// End to end through the real shell: a binary that exists only in a folder
     /// the prelude adds to PATH is found, which is the case `env` cannot express.
     @Test func shellInitPutsABinaryOnThePathForTheCommand() async throws {
-        let bin = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bin = TestScratch.root.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         let tool = bin.appendingPathComponent("only-here")
         try "#!/bin/sh\necho found-it\n".write(to: tool, atomically: true, encoding: .utf8)
@@ -83,7 +83,7 @@ import WiettyCore
     /// Without the prelude the same binary is not on PATH, which is what makes
     /// the test above prove the prelude did the work.
     @Test func withoutShellInitTheSameBinaryIsNotFound() async throws {
-        let bin = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bin = TestScratch.root.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         let tool = bin.appendingPathComponent("only-here-too")
         try "#!/bin/sh\necho found-it\n".write(to: tool, atomically: true, encoding: .utf8)
@@ -126,7 +126,7 @@ import WiettyCore
     /// moment `launch` throws, and a spawn that went through would leave it
     /// `.running` instead.
     @Test func aDefaultStoreLaunchesNothingFromAnAutoStartConfig() throws {
-        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let workspace = TestScratch.root.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         let marker = workspace.appendingPathComponent("spawned")
         _ = try ConfigFile.write(

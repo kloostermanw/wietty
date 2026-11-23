@@ -130,7 +130,7 @@ extension PromptTemplateFile {
     /// A store under a directory that does not exist yet, so a test covers the
     /// creating-it path the real first save takes.
     static func temporary() -> PromptTemplateFile {
-        PromptTemplateFile(directory: FileManager.default.temporaryDirectory
+        PromptTemplateFile(directory: TestScratch.root
             .appendingPathComponent("\(UUID().uuidString)/prompt_templates"))
     }
 }

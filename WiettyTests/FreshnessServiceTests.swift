@@ -256,7 +256,7 @@ import WiettyCore
     /// changes, which is the whole basis of "skip until the file changes", and a
     /// missing file hashes to nil so an unreadable watch falls back to running.
     @Test func hashFileContentsIsStableAndContentSensitive() throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let dir = TestScratch.root.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let file = dir.appendingPathComponent("composer.lock")

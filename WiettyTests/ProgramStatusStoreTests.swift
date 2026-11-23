@@ -37,7 +37,7 @@ import WiettyCore
                         TerminalHandle(sessionId: "sess-B", windowId: "win-1")]
         let clock = ManualClock()
         let store = ProjectStore(defaults: defaults ?? makeDefaults(), service: fake, now: { clock.now })
-        let folder = FileManager.default.temporaryDirectory
+        let folder = TestScratch.root
             .appendingPathComponent(UUID().uuidString).appendingPathComponent("proj")
         try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         store.addProject(url: folder)

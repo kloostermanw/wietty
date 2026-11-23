@@ -11,7 +11,7 @@ private func makeDefaults() -> UserDefaults {
 }
 
 private func makeTempFolder(named name: String) -> URL {
-    let base = FileManager.default.temporaryDirectory
+    let base = TestScratch.root
         .appendingPathComponent(UUID().uuidString)
     let url = base.appendingPathComponent(name)
     try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -269,7 +269,7 @@ private func makeTempFolder(named name: String) -> URL {
     /// Writes an wietty.json with one auto-start process into a temp dir and
     /// returns the folder URL.
     private func makeWorkspace(_ processes: [String: ProcessConfig]) throws -> URL {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let dir = TestScratch.root.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let config = WorkspaceConfig(name: nil, agents: [], terminals: [], processes: processes)
         _ = try ConfigFile.write(config, in: dir)

@@ -145,7 +145,7 @@ extension WiettyConfigFile {
     /// A file under a directory that does not exist yet, so a test covers the
     /// creating-it path the real first write takes.
     static func temporary() -> WiettyConfigFile {
-        WiettyConfigFile(url: FileManager.default.temporaryDirectory
+        WiettyConfigFile(url: TestScratch.root
             .appendingPathComponent("\(UUID().uuidString)/config"))
     }
 }

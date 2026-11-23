@@ -13,7 +13,7 @@ import WiettyCore
     private func makeDefaults() -> UserDefaults { UserDefaults(suiteName: "test.\(UUID().uuidString)")! }
 
     private func makeTempFolder() -> URL {
-        let url = FileManager.default.temporaryDirectory
+        let url = TestScratch.root
             .appendingPathComponent(UUID().uuidString).appendingPathComponent("ws")
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url

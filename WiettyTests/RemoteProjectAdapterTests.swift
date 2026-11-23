@@ -117,7 +117,7 @@ private final class RoundTripGitInfoProvider: GitInfoProviding, @unchecked Senda
     // `WorkspaceSerializer`'s emitted keys, and this fails loudly if they ever drift.
 
     @Test func roundTripsThroughSerializerAndPackageDecoder() async throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = TestScratch.root.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
         let provider = RoundTripGitInfoProvider(

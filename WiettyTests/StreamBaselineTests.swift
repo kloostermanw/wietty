@@ -185,7 +185,7 @@ struct StreamBaselineTests {
     /// clock, because a generator in the pipeline is itself the limit: `tr` alone
     /// manages about 28 MiB/s. The file is this test's to remove, whatever happens.
     @Test func throughputOneLine() async throws {
-        let file = FileManager.default.temporaryDirectory
+        let file = TestScratch.root
             .appendingPathComponent("wietty-baseline-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: file) }
         try Data(repeating: UInt8(ascii: "a"), count: Self.throughputBytes).write(to: file)
