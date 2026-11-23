@@ -61,26 +61,19 @@ private final class Finished: @unchecked Sendable {
         #expect(copy.paintFrame() == source.paintFrame())
     }
 
-    /// What a viewer is actually sent: its grid, and then one payload that starts
-    /// from a reset and ends with the cursor where the terminal has it. The size
-    /// leads because a viewer learns its grid from this message and from nothing
-    /// else on the socket.
-    @Test func paintMessagesAreTheGridThenAFrameThatStartsFromAReset() throws {
+    /// What a viewer being repainted is sent: the grid the frame was taken at, and
+    /// a frame that, behind the soft reset, ends with the cursor where the
+    /// terminal has it.
+    @Test func aRepaintFrameIsTheGridAndAFrameForBehindTheSoftReset() throws {
         let model = try model(cols: 20, rows: 4)
         write("ab\r\n\(Self.esc)[31mcd\(Self.esc)[0m", to: model)
-        let messages = model.paintMessages()
-        #expect(messages.count == 2)
-        #expect(messages.first == .resize(cols: 20, rows: 4))
-        guard case let .data(vt) = try #require(messages.last) else {
-            Issue.record("expected the frame")
-            return
-        }
-        #expect(vt.hasPrefix(TerminalPaint.reset))
+        let repaint = try #require(model.repaintFrame())
+        #expect(repaint.size == TerminalSize(cols: 20, rows: 4))
         // Coloured, which the frame this replaced could not be.
-        #expect(vt.contains("\(Self.esc)[38;5;1m"))
+        #expect(String(decoding: repaint.frame, as: UTF8.self).contains("\(Self.esc)[38;5;1m"))
 
         let viewer = try GhosttyVtTerminal(size: TerminalSize(cols: 20, rows: 4), scrollbackLines: 0)
-        viewer.write(Array(vt.utf8))
+        viewer.write(TerminalPaint.reset + repaint.frame)
         #expect(viewer.viewportLines() == ["ab", "cd"])
         #expect(viewer.cursor == (x: 2, y: 1))
     }
@@ -96,11 +89,8 @@ private final class Finished: @unchecked Sendable {
         let viewer = try GhosttyVtTerminal(size: TerminalSize(cols: 30, rows: 6), scrollbackLines: 0)
         viewer.write(Array("a much longer line than that\r\nand another\r\nand a third".utf8))
         viewer.write(Array("\(Self.esc)[2;4r\(Self.esc)[?6h\(Self.esc)[1;7mleft over".utf8))
-        guard case let .data(vt) = try #require(model.paintMessages().last) else {
-            Issue.record("expected the frame")
-            return
-        }
-        viewer.write(Array(vt.utf8))
+        let repaint = try #require(model.repaintFrame())
+        viewer.write(TerminalPaint.reset + repaint.frame)
 
         #expect(viewer.viewportLines() == ["short", "new"])
         #expect(viewer.cursor == (x: 3, y: 1))
@@ -109,10 +99,10 @@ private final class Finished: @unchecked Sendable {
         #expect(viewer.paintFrame() == model.paintFrame())
     }
 
-    /// A model with nothing to paint sends nothing, and the hub reads that as a
+    /// A model with nothing to paint gives no repaint, and the hub reads that as a
     /// paint that could not be built. Only a conformance that cannot format can
     /// produce it, so it is pinned on one.
-    @Test func noFrameIsNoMessages() {
+    @Test func noFrameIsNoRepaint() {
         final class Blank: TerminalScreenModel, @unchecked Sendable {
             func write(_ bytes: [UInt8]) {}
             func resize(to size: TerminalSize) {}
@@ -125,7 +115,7 @@ private final class Finished: @unchecked Sendable {
             var size: TerminalSize { TerminalSize(cols: 80, rows: 24) }
             var isAlternateScreen: Bool { false }
         }
-        #expect(Blank().paintMessages().isEmpty)
+        #expect(Blank().repaintFrame() == nil)
     }
 
     /// The hard reset is the two bytes `ESC c` and nothing else: the snapshot is

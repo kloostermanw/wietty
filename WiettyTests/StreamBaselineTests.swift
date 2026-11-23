@@ -50,7 +50,14 @@ struct StreamBaselineTests {
                                                  graphemeClustering: true)
             let shared = SharedTerminalState()
             let hub = PaneStreamHub(startTimer: true)
+            // Every hook `GhosttyStack` sets, set the same way. With no viewer only
+            // `onIngest` runs, but a hook left out here would be a difference from
+            // the app that nobody remembers when a viewer is added to this test.
             hub.onIngest = { session, bytes in shared.model(for: session)?.write(bytes) }
+            hub.onSnapshot = { session in GhosttyStack.snapshot(of: session, in: shared) }
+            hub.onRepaint = { session in shared.model(for: session)?.repaintFrame() }
+            hub.onAlternateScreen = { session in shared.model(for: session)?.isAlternateScreen ?? false }
+            hub.onInput = { session, bytes in GhosttyStack.input(bytes, for: session, in: shared) }
             self.hub = hub
             let pty: RawPTY
             do {
@@ -75,6 +82,7 @@ struct StreamBaselineTests {
                 throw error
             }
             shared.note(model: model, for: session)
+            shared.register(writer: { [weak pty] bytes in pty?.write(bytes) }, for: session)
             relay.start(onExit: { _ in })
         }
 

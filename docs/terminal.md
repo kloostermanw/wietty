@@ -102,14 +102,18 @@ meaningful, since the surface displays them: 64 for usage, 69 for a socket nobod
 
 - A key typed into the pane goes to `ghostty_surface_key`, libghostty writes it to the helper's tty,
   the helper copies it to the socket, and the relay writes it to the master.
-- A keystroke from a remote viewer arrives on `PaneStreamHub.onSend`, is yielded into an
-  `AsyncStream` with a single consumer, and reaches `GhosttyService.send`, which writes the master.
-- MCP and the sidebar reach the same `send`.
+- A keystroke from a remote viewer arrives as bytes on `PaneStreamHub.send(session:bytes:)`, and
+  `onInput` hands them, on that same thread, to the writer `GhosttyService.open` registered for the
+  session in `SharedTerminalState`: the pty's own `write`. The main actor is not on this path, so a
+  busy UI does not hold remote input back. A terminal whose child has exited has no writer, and its
+  input is logged and dropped.
+- MCP and the sidebar reach `GhosttyService.send`, which writes the same master.
 
 **No write to the master happens on the caller's thread.** `RawPTY.write` hands the bytes to that pty's
 own serial queue. A master write parks once the child stops reading and the queue fills, and
-`GhosttyService.send` is main actor code reached from the remote keystroke stream, from MCP and from the
-sidebar, so performing the write there froze the whole UI until the foreground program read its stdin,
+`GhosttyService.send` is main actor code reached from MCP and from the sidebar (and was, until phase 3
+of issue #84, from remote keystrokes too), so performing the write there froze the whole UI until the
+foreground program read its stdin,
 which it need never do: measured at 5.17 s for a paste into a `sleep 5`. Local keystrokes were never
 exposed to it, arriving on the relay's own queue, which is what made this look like a remote-only
 problem rather than a property of the write.
@@ -118,17 +122,17 @@ Two details, if you go probing. The block needs a completed line and not merely 
 `ptcwrite` parks when the queue is full and either the canonical queue is non-empty or the tty is
 non-canonical, so a paste of one enormous line into a canonical tty does not park at all. And the queue
 has to be serial: input order is as load bearing as output order, so a concurrent queue would scramble a
-paste that arrives as several chunks, which is the same thing the `AsyncStream` above protects upstream
-of it.
+paste that arrives as several chunks.
 
 **Where ordering is guaranteed, and why it is arranged that way.** Output order is the read source's:
 one serial `DispatchSourceRead` per pty, with both destinations written from inside its handler, so
 the hub and the surface see the same bytes in the same order. Terminal output delivered out of order
 is corrupt on screen, and a caller that fanned these chunks onto unstructured `Task`s would corrupt
-it, since two Tasks created in order can still run in either order. Input order is the pty master's,
-which is why remote keystrokes go through a single-consumer `AsyncStream` rather than a `Task` per
-keystroke: a paste arriving as several messages must not be reassembled scrambled. This is the same
-rule `TmuxStack.onSend` follows with its serial queue.
+it, since two Tasks created in order can still run in either order. Input order is the pty master's.
+A remote viewer's bytes are handed to the pty's writer on the thread that read them from the socket,
+one message after another, and the writer queues them on the pty's serial queue in that order, so a
+paste arriving as several messages cannot be reassembled scrambled. A `Task` per keystroke anywhere on
+that path would break it.
 
 Output produced before the helper connects is buffered, up to 1 MiB, oldest bytes dropped first. A
 surface is created after the shell is spawned, so a prompt or a shell startup notice printed in that
@@ -264,9 +268,10 @@ sources, which is not arbitrary:
 
 - **Titles and bells** come from libghostty's runtime action callback (`GHOSTTY_ACTION_SET_TITLE`,
   `GHOSTTY_ACTION_RING_BELL`), not from parsing the byte stream. The stream is available and
-  `PaneStreamHub` counts bells in the byte stream for the viewers it serves, but libghostty has already parsed both correctly,
+  `PaneStreamHub` can count bells in the byte stream, but libghostty has already parsed both correctly,
   and reading titles out of the stream would need OSC 0 and OSC 2 handling that `OSCStringTracker` does
-  not do. The hub's bell hook is therefore left unwired here.
+  not do. The hub's bell hook is therefore left unwired here, and while it is unwired the hub does not
+scan the stream for bells at all.
 - **Terminations** come from `GhosttyService`, because a child exiting is what a termination means here
   and the service is what reaps it.
 - **Job names** are polled, as above.
@@ -324,7 +329,7 @@ Every terminal has a second emulator beside the surface: a `TerminalScreenModel`
 libghostty-vt parsing the same bytes with no window, no renderer and no child. The surface can only
 say what is on a terminal's screen while that terminal is displayed, in plain text and with no cursor.
 The model answers for any terminal at any time, with colours, modes, the cursor and the scrollback.
-Two things read it: the paint a remote viewer is sent, and `readOutput`.
+Two things read it: the frames a remote viewer is sent, and `readOutput`.
 
 `GhosttyService.open` builds one model per terminal, at the grid the pty is spawned with and with
 grapheme clustering as the surface has it, and registers it in `SharedTerminalState` before the relay
@@ -342,7 +347,8 @@ no other callback either: the bell, the title and notifications are reported by 
 
 - The paint frame (`paintFrame()`): the visible viewport as VT, with colours, the cursor, modes, the
   scrolling region and the tab stops, for a terminal that has just had `TerminalPaint.reset` (a soft
-  reset, an erase and a home). What a viewer is painted with today, on attach and after a resize.
+  reset, an erase and a home). What a viewer that asked for repaints is sent after a resize
+  (`repaintFrame()` gives it with its grid).
 - The snapshot frame (`snapshotFrame()`): every row of history the model still holds, oldest first,
   then the active screen, then the same cursor, modes and the rest, as VT for a terminal that has just
   had `TerminalPaint.hardReset` (`ESC c`). It comes as one value, `TerminalSnapshotFrame`, with the grid
@@ -354,7 +360,7 @@ no other callback either: the bell, the title and notifications are reported by 
   as two lines, and the blank rows at the bottom of the screen are kept, so the history is neither a
   row short nor a row long. Measured at 120 columns with a full default scrollback of coloured log
   lines: about 630 KB in about 2 ms. At 100,000 lines: 6.4 MB in about 17 ms, in the debug test host.
-  Nothing sends it yet.
+  What a viewer is sent on attach and on a resync.
 - Whether the alternate screen is the active one (`isAlternateScreen`).
 - The plain text `readOutput` returns (`text(maxLines:)`), and the library's own binary snapshot
   (`snapshot()`), which is for restoring a terminal and not for painting one.
@@ -381,21 +387,27 @@ drawing and for left and right margins pass either way; they pin behaviour, not 
 Modes 3 (132 columns) and 40 (allow the switch) are tracked by the library, which really changes the
 grid and clears the screen. The library writes 3 before 40, so on a receiver just reset the 3 finds the
 switch not allowed and does nothing: the receiver keeps the grid it was told and is left allowing the
-switch, as the source is, but without mode 3 set.
+switch, as the source is, but without mode 3 set. Not every receiver turns 40 off on a reset (SwiftTerm
+keeps it, and honours mode 3), so the frame writes `?40l` in front of the 3 as well, and the library's
+own 40 still follows it.
 
 A frame that cannot be cut is a bug and says so. When any formatter pass fails (a failed pass is never
 mistaken for an empty row), when the library's output does not have the expected shape, or when the
-part in front holds a sequence the cut does not understand, an assertion fails, which stops a debug
-build and the test host. A release build sends the library's single pass with mode 2027 stated in
-front of it, which is wrong only for a mode that changes how content is laid down. No test reaches that
-branch: it cannot be reached without a seam in the code, and none was added.
+part in front holds a sequence the cut does not understand, the fault is logged as an error and the
+frame is the library's single pass with mode 2027 stated in front of it, which is wrong only for a mode
+that changes how content is laid down. Only the test host stops there, on an assertion
+(`TerminalFrameFault`): a Debug build is what the app is run as day to day, and a terminal state nobody
+foresaw must not take it down. Every failed formatter pass is logged too, wherever it happens, because
+the empty paint or text it falls back to looks like a terminal with nothing to show. No test reaches
+the fallback itself: it cannot be reached without a seam in the code, and none was added. The policy
+(log always, stop only the test host) is tested on its own.
 
 Two limits of the snapshot frame are known and not handled here:
 
 - A frame taken on the alternate screen leaves the receiver's primary screen empty, and its saved
-  cursor wherever the receiver had it. When the program exits, the receiver shows an empty primary
-  screen until the shell prints again. Sending a fresh snapshot when the terminal leaves the alternate
-  screen is a later step.
+  cursor wherever the receiver had it. The hub answers that by sending a fresh snapshot when the
+  terminal leaves the alternate screen (see "Serving a remote viewer"), which is the only remedy: the
+  formatter has no documented way to write the screen that is not active.
 - A cursor in the pending wrap state (a line written to the last column, nothing after it yet) is not
   restored, so on the receiver the next character overwrites the last column instead of wrapping. The
   paint frame has the same limit.
@@ -448,76 +460,113 @@ they agree in one process, under the address sanitizer, with a real surface; `CL
 ## Serving a remote viewer
 
 The producer is `TerminalRelay` writing into `PaneStreamHub.write`, so the bytes on the wire are the
-child's own. `docs/remote-access.md` is the protocol reference. The things worth stating here follow.
+child's own, exactly: the hub delivers `StreamMessage` values (from `wietty-shared`) and a `data`
+message carries the bytes as they were read, with nothing decoded, replaced or held back. A viewer's
+terminal decodes them, as it would from any pty. `docs/remote-access.md` is the protocol reference. The
+things worth stating here follow.
 
-**The first paint is exact and coloured.** It is the model's paint frame: the visible viewport with
-each cell's colours and attributes, the modes a program set, the scrolling region, the tab stops and
-the real cursor position, sent behind a `resize` carrying the grid it was taken at. The wire shape is
-what it always was, a `resize` and a `data`, so a client needs no change to show it. Three things are
-deliberately not in it:
+**A viewer is first sent the grid and a snapshot.** On attach the hub sends a `resize` with the grid,
+then a `snapshot`: `TerminalPaint.hardReset` (`ESC c`) and the model's snapshot frame, which is the
+history the model holds, the screen, the cursor, the modes, the scrolling region and the tab stops.
+The reset is the hub's and appears once; the frame carries none of its own. Two things are deliberately
+not in it:
 
 - The palette. The formatter can restore all 256 entries with `OSC 4`, but what it would write is the
   model's own table, which nothing configures: the library's default colours, not the theme the
   surface draws with and not the theme of the viewer. Sent, it would replace the viewer's colours with
   a third set. Left out, a viewer draws indexed colours with its own theme, as it does for the stream.
-- The scrollback. A viewer gets the viewport and builds its own history from the stream after it.
-- The screen underneath an alternate screen. A viewer attaching while a full screen program runs sees
-  that program, and an empty primary screen once it exits, until the shell prints again.
+- The screen underneath an alternate screen. A viewer attaching while a full screen program runs gets
+  that program's screen. The hub remembers such a viewer, and sends it a fresh snapshot when the
+  terminal leaves the alternate screen (see below).
 
-The frame is prefixed with a soft reset, an erase and a home (`TerminalPaint.reset`). The frame itself
-erases nothing, and a repaint lands on a viewer that already shows something. It is not a hard reset,
-which would also throw away the scrollback a viewer has built up, on every notch of a window drag.
+**A grid that moves** is told to every viewer with a `resize`. What else a viewer gets depends on the
+mode it attached with (`ResizeMode`). A `repaint` viewer is also sent a `repaint`: the model's paint
+frame of the visible screen behind `TerminalPaint.reset`, a soft reset, an erase and a home, because the
+frame itself erases nothing and it lands on a viewer that already shows something. It is not a hard
+reset, which would also throw away the viewer's history, on every notch of a window drag. A `reflow`
+viewer reflows by itself and gets nothing more.
 
-**The paint and the stream meet at one byte.** An exact paint only helps if the stream picks up at
-the very byte the paint stops at. One chunk early and a build log shows lines twice; one chunk late and
-lines are missing. So the hub is the single place that knows the offset, and it holds one lock per
+**A viewer that lost its place is resynchronised.** `resync(connectionId:onUnavailable:)` makes the
+same join as an attach for one viewer that is already there: the other viewers get the outstanding
+bytes, and this one gets a `resize` and a `snapshot`. It is what a `ViewerQueue` asks for when it
+overflows. It is always answered: either the snapshot comes, or `onUnavailable` is called, when the
+viewer or its session is gone or no snapshot could be built. The answer comes later, on the delivery
+queue, because the request comes from inside a delivery to that very viewer, while the bytes of that
+delivery are still on their way to the viewers after it. Run on the spot, the join would hand those
+viewers the next bytes before the current ones.
+
+**The alternate screen rule.** A viewer whose last snapshot was taken on the alternate screen holds an
+empty primary screen underneath it. While such a viewer exists, the hub asks the model after each
+write, under the session's lock, whether the alternate screen is still active (`onAlternateScreen`). When
+it is not, every viewer it remembered is resynchronised and forgotten. A viewer that attached on the
+primary screen already has the screen underneath and is never resynchronised by this. There is no
+documented way to have the formatter write the screen that is not active, so a fresh snapshot once the
+program has left is the design, not a stopgap.
+
+**The frames and the stream meet at one byte.** An exact snapshot only helps if the stream picks up at
+the very byte the snapshot stops at. One chunk early and a build log shows lines twice; one chunk late
+and lines are missing. So the hub is the single place that knows the offset, and it holds one lock per
 session to keep it:
 
 - `write` appends a chunk to the session's buffer and writes it into the model (`onIngest`) under
   that lock, as one step. Whenever the lock is free, what the model has parsed and what the hub has
   accepted for delivery are the same bytes.
 - `attach` takes the lock and does three things before releasing it: it takes what is buffered, asks
-  for the paint (`onPaint`), and registers the viewer. The bytes taken go to the viewers that were
-  already there and not to the new one, whose paint already shows them. Everything accepted afterwards
-  goes to all of them.
-- A repaint after a resize makes the same join: what was accepted before the paint is delivered ahead
-  of it, and everything after follows it.
+  for the snapshot (`onSnapshot`), and registers the viewer. The bytes taken go to the viewers that were
+  already there and not to the new one, whose snapshot already holds them. Everything accepted
+  afterwards goes to all of them.
+- A resync makes the same join for one viewer, and a resize the same join for the repaint: what was
+  accepted before the frame is delivered ahead of it, and everything after follows it.
+
+Nothing is delivered under a lock. What a join or a flush takes under the session's lock is handed to
+the viewers after the lock is released, on one serial delivery queue for the whole hub: the flush
+timer, a quiet flush, an attach, a resync, a resize and an ending each take bytes and then hand them to
+viewers, and two of those running at once could take in one order and deliver in the other. `attach`
+runs on that queue synchronously, which is what puts a viewer's snapshot ahead of its first stream
+bytes. A viewer's `onMessage` is therefore always called on that queue with no lock of the hub held, so
+it may ask for a resync; it must not call `attach` or `flush`, which wait for the queue.
 
 The lock is per session because a parse runs under it, and one terminal printing a build log must not
-hold up the bytes of the terminal next to it. For the same reason the flush timer never waits for a
-session's lock: a session whose model is busy (a reflow after a resize can hold a write for a long
-time) is skipped for that tick and its bytes go out on the next one, so the viewers of every other
-terminal keep receiving. Delivery is a separate matter and has one serial queue
-for the whole hub: the flush timer, an attach, a repaint and an ending each take bytes and then hand
-them to viewers, and two of those running at once could take in one order and deliver in the other.
-`attach` therefore runs on that queue synchronously, which is also what puts a viewer's paint ahead
-of its first stream bytes.
+hold up the bytes of the terminal next to it. For the same reason the flush is cheap under it, a swap
+of the buffer and the list of viewers and nothing else, and the flush timer never waits for a session's
+lock: a session whose model is busy (a reflow after a resize can hold a write for a long time) is
+skipped for that tick and its bytes go out on the next one, so the viewers of every other terminal keep
+receiving. Until phase 3 of issue #84 the flush also decoded the bytes into text under that lock, byte
+by byte, and that alone capped a terminal at about 3 MiB/s.
 
-Two things keep the join honest at its edges. The UTF-8 chunker belongs to the session and is never
-reset while the session lives, so a character split across the moment of an attach reaches the new
-viewer whole: the model has not drawn it, so the paint does not hold it, and the chunker delivers all
-of its bytes together. An escape sequence split across that moment is not protected in the same way:
-the model has consumed its first half, and the viewer receives the second half as text. It takes an
-attach landing between two reads that cut a sequence, and the next redraw corrects it.
+**Coalescing, and a quiet terminal.** Output is delivered on an 8 ms timer, so a burst coalesces into
+one message. A write into an empty buffer when the session's last flush is more than 8 ms old is
+delivered at once instead, so the echo of a keystroke on a quiet terminal does not wait for the next
+tick. A steady stream still goes out on the timer.
+
+Two things keep the join honest at its edges. A character cut by the moment of a join reaches the
+viewer whole: the model has its first bytes and has drawn nothing of it, so the frame does not hold it,
+and the rest arrives in the stream after the frame. So the hub keeps the last bytes of the stream when
+they start a character that has not finished (at most three, found from the last four bytes of each
+write) and puts them behind a snapshot or a repaint. An escape sequence cut by that moment is not
+protected in the same way: the model has consumed its first half, and the viewer receives the second
+half as text. It takes a join landing between two reads that cut a sequence, and the next redraw
+corrects it.
 
 `PaneStreamJoinTests` races a writer against an attach and against repaints, plays everything the
 viewer was sent into a terminal of its own, and asserts every numbered line is there exactly once.
+`PaneStreamResyncTests` covers the resync, the alternate screen rule, the quiet flush and input.
 
 **A viewer is also told when the grid moves**, which takes wiring here rather than coming for free. A
-viewer learns its size in the paint it receives on attach and from nothing else on the socket, so a
-window resize would otherwise leave every already attached viewer rendering reflowed bytes against the
-old grid until it reattached. The report comes from the surface, so `GhosttyService`'s resize handler
-carries it into `PaneStreamHub.noteSize`. Two details are load bearing. The hub deduplicates on the
-last size it saw, because libghostty reports a grid on events that need not have moved it (a font
-metric change, a re-parent). And the service resizes the model *before* it reports the size, because
-the report is what makes the hub repaint and the repaint is taken from the model: reported first, it
-would paint the screen as it was before the reflow and then be contradicted by the bytes the reflow
-produced.
+viewer learns its size on attach and from nothing else on the socket, so a window resize would
+otherwise leave every already attached viewer rendering reflowed bytes against the old grid until it
+reattached. The report comes from the surface, so `GhosttyService`'s resize handler carries it into
+`PaneStreamHub.noteSize`. Two details are load bearing. The hub deduplicates on the last size it saw,
+because libghostty reports a grid on events that need not have moved it (a font metric change, a
+re-parent). And the service resizes the model *before* it reports the size, because the report is what
+makes the hub repaint and the repaint is taken from the model: reported first, it would paint the screen
+as it was before the reflow and then be contradicted by the bytes the reflow produced.
 
 The direction of these hooks matters as much as their order. The resize report runs on the main actor
-and hands the size to a lock guarded hub. The census, the model feed and the paint are asked by the hub
-from the relay's queue and from its own, and answer from `SharedTerminalState` and the model, both
-lock guarded. Nothing on a hub queue reaches back into the main actor isolated service.
+and hands the size to a lock guarded hub. The census, the model feed, the frames and the input writer
+are asked by the hub from the relay's queue, from its own, and from the thread a viewer's input
+arrived on, and answer from `SharedTerminalState` and the model, both lock guarded. Nothing on a hub
+queue reaches back into the main actor isolated service.
 
 **A viewer is told when the terminal ends**, and that also takes wiring here. The census answers an
 attach that has not happened yet; a browser or an iPad already watching a session has nothing else to
@@ -528,8 +577,9 @@ buffered are delivered ahead of the ending. Without the hook a viewer went silen
 indistinguishable from an idle terminal and is exactly the state the census exists to prevent for a
 viewer arriving later.
 
-An empty paint means a paint that could not be built, never an empty screen: a session whose model is
-gone returns nothing, the hub logs it, and on a repaint the viewer is sent the bare `resize`.
+A frame that could not be built is never an empty screen: a session whose model is gone gives no
+snapshot and no repaint, and the hub logs it. A new viewer then starts from the stream alone, a resync
+answers `onUnavailable`, and on a resize the viewer is sent the bare `resize`.
 
 ## Reading a terminal's output
 
@@ -722,10 +772,11 @@ a socket that then stays silent forever.
   right one. A program that changes the palette itself with `OSC 4` reaches a viewer attached at the
   time, through the stream, and not one that attaches later.
 - **An escape sequence cut exactly at the moment a viewer attaches shows its second half as text.**
-  The model has consumed the first half, so the paint cannot hold it, and the new viewer's stream
+  The model has consumed the first half, so the snapshot cannot hold it, and the new viewer's stream
   starts in the middle of the sequence. It takes an attach landing between the two reads that cut a
   sequence, it affects only the viewer that attached, and the next redraw corrects it. A character
-  split the same way is protected, by the session's UTF-8 chunker. An escape sequence is not.
+  split the same way is protected: the hub puts its first bytes behind the snapshot. An escape
+  sequence is not.
 - **A column change reflows the whole scrollback under the model's lock**, so the output of the
   terminal being resized waits behind it, on each notch of a window drag once its scrollback is full.
   Other terminals are not held: the lock is per session and the flush timer skips a busy one. The cost

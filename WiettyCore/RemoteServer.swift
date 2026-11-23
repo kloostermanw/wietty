@@ -5,6 +5,7 @@ import HummingbirdWebSocket
 import Logging
 import NIOCore
 import os
+import WiettyShared
 
 /// Logging for the LAN server.
 ///
@@ -114,18 +115,21 @@ package final class RemoteServer {
                 // them (a VT byte stream is order critical). Funnel them through
                 // one AsyncStream drained by a single sequential writer rather
                 // than spawning a Task per message, which would not preserve order.
-                let (stream, continuation) = AsyncStream.makeStream(of: RemoteMessage.self)
-                let connectionId = streamer.attach(session: session) { message in continuation.yield(message) }
+                let (stream, continuation) = AsyncStream.makeStream(of: StreamMessage.self)
+                let connectionId = streamer.attach(session: session, resize: .repaint) { message in
+                    continuation.yield(message)
+                }
                 let writer = Task {
                     for await message in stream { await sink.send(message) }
                 }
                 do {
                     for try await frame in inbound.messages(maxSize: 1 << 20) {
-                        if case let .text(text) = frame,
-                           let data = text.data(using: .utf8),
-                           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                           let input = obj["data"] as? String {
-                            streamer.send(session: session, text: input)
+                        let decoded: StreamMessage? = switch frame {
+                        case let .text(text): StreamCodec.message(from: .text(text))
+                        case let .binary(buffer): StreamCodec.message(from: .binary(Array(buffer.readableBytesView)))
+                        }
+                        if case let .data(bytes) = decoded {
+                            streamer.send(session: session, bytes: bytes)
                         }
                     }
                 } catch {}
@@ -383,21 +387,15 @@ package final class RemoteServer {
     }
 }
 
-/// Serializes outbound WebSocket writes and maps `RemoteMessage` to the wire
-/// JSON the web client expects.
+/// Serializes outbound WebSocket writes, framed by `StreamCodec`.
 private actor WebSocketSink {
     private let outbound: WebSocketOutboundWriter
     init(outbound: WebSocketOutboundWriter) { self.outbound = outbound }
 
-    package func send(_ message: RemoteMessage) async {
-        let object: [String: Any]
-        switch message {
-        case let .resize(cols, rows): object = ["type": "resize", "cols": cols, "rows": rows]
-        case let .data(vt): object = ["type": "data", "vt": vt]
-        case .ended: object = ["type": "ended"]
+    func send(_ message: StreamMessage) async {
+        switch StreamCodec.webSocketFrame(for: message) {
+        case let .text(text): try? await outbound.write(.text(text))
+        case let .binary(bytes): try? await outbound.write(.binary(ByteBuffer(bytes: bytes)))
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: object),
-              let text = String(data: data, encoding: .utf8) else { return }
-        try? await outbound.write(.text(text))
     }
 }

@@ -64,8 +64,9 @@ that are already open take the new value.
 The default is on, measured against the linked libghostty rather than assumed, so the
 overwhelmingly common case of no config file at all notifies normally.
 
-`PaneStreamHub` also counts `0x07` in a session's byte stream, for the viewers it
-serves, and that is deliberately not the same code: telling a real bell from a
+`PaneStreamHub` can also count `0x07` in a session's byte stream, when its bell
+hook is set (it is not in the app, so it does not look), and that is deliberately
+not the same code: telling a real bell from a
 `0x07` inside an OSC string needs the escape state only whoever parses the stream
 has. Nothing in the byte stream path parses `OSC 9`. It does parse `OSC 7501`,
 because libghostty does not (see "Program status" below and `terminal.md`).

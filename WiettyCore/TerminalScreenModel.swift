@@ -62,23 +62,19 @@ package protocol TerminalScreenModel: AnyObject, Sendable {
 }
 
 extension TerminalScreenModel {
-    /// What a viewer is sent to show this terminal as it is now: its grid, then
-    /// the VT that paints it.
-    ///
-    /// The same two messages a viewer has always been painted with, so nothing
-    /// about the protocol moves; there are simply colours, modes and a real cursor
-    /// inside the second one. The size comes first because a viewer learns its
-    /// grid from this and from nothing else.
+    /// What a viewer that asked for repaints is sent after the grid moved: the
+    /// grid, and the paint frame for behind `TerminalPaint.reset`. Nil when no
+    /// frame could be built, which the hub reads as a paint that failed rather
+    /// than as an empty screen.
     ///
     /// The frame paints a terminal that has just been reset, and a viewer being
-    /// repainted after a resize is not one, so the payload starts by making it
-    /// close enough to one: see `TerminalPaint.reset`.
-    package func paintMessages() -> [RemoteMessage] {
+    /// repainted after a resize is not one, so the hub puts the soft reset in
+    /// front of it: see `TerminalPaint.reset`.
+    package func repaintFrame() -> (size: TerminalSize, frame: [UInt8])? {
         let size = self.size
         let frame = paintFrame()
-        guard !frame.isEmpty else { return [] }
-        return [.resize(cols: size.cols, rows: size.rows),
-                .data(TerminalPaint.reset + String(decoding: frame, as: UTF8.self))]
+        guard !frame.isEmpty else { return nil }
+        return (size, frame)
     }
 }
 
@@ -118,7 +114,7 @@ package enum TerminalPaint {
     /// on it is there because the terminal is, the frame puts it there again
     /// anyway, and leaving first would aim the erase at the primary screen the
     /// viewer is keeping underneath.
-    package static let reset = "\u{1B}[!p\u{1B}[2J\u{1B}[H"
+    package static let reset: [UInt8] = Array("\u{1B}[!p\u{1B}[2J\u{1B}[H".utf8)
 
     /// What a snapshot frame is prefixed with: a full reset (RIS, `ESC c`).
     ///

@@ -430,6 +430,40 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         }
     }
 
+    /// Opening a terminal registers its pty's writer, which is how a remote
+    /// viewer's input reaches the master without the main actor, and closing the
+    /// row takes it away with the model.
+    @Test func aTerminalsWriterIsRegisteredWhileItIsOpen() async throws {
+        let seen = SessionSink()
+        let service = service(FakeSurfaceHost(), onOutput: { session, bytes in
+            seen.append(bytes, for: session)
+        })
+        defer { service.closeAll() }
+        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                            existingWindowId: nil, command: "cat", badge: nil)
+        let writer = try #require(service.shared.writer(for: handle.sessionId))
+        // A pty echoes what is written to its master, so the marker comes back
+        // whether or not `cat` has started reading.
+        writer(Array("written-direct\n".utf8))
+        try await waitUntil { seen.text(for: handle.sessionId).contains("written-direct") }
+
+        try await service.close(sessionId: handle.sessionId)
+        #expect(service.shared.writer(for: handle.sessionId) == nil)
+    }
+
+    /// A terminal whose child exited keeps its model and its row, but not its
+    /// writer: its master is closed, and input for it is refused, as `send` refuses
+    /// it, rather than handed to a pty that drops it without a word.
+    @Test func anExitedTerminalHasNoWriter() async throws {
+        let service = service(FakeSurfaceHost())
+        defer { service.closeAll() }
+        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                            existingWindowId: nil, command: "exit 0", badge: nil)
+        try await waitUntil { service.liveSessions.isEmpty }
+        #expect(service.shared.writer(for: handle.sessionId) == nil)
+        #expect(service.screenModel(for: handle.sessionId) != nil)
+    }
+
     /// A session id the service does not hold is not found, and reports no job
     /// rather than a wrong one.
     @Test func focusingAnUnknownSessionIsNotFound() async throws {
