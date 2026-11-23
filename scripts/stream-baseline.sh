@@ -5,7 +5,8 @@
 # Measures typing delay and throughput on the terminal byte path, from where
 # wietty-pty stands: the echo of one keystroke on a quiet terminal, the same
 # while the main thread is busy for 50 ms out of every 60, and how fast 100 MB
-# of output reaches the far end. Each prints one line starting with BASELINE.
+# of output reaches the far end, once as one endless line and once as ordinary
+# 80 character lines. Each prints one line starting with BASELINE.
 #
 # The normal suite cannot do this. The measurement takes tens of seconds and
 # means nothing beside a parallel run, so the test this runs
@@ -49,8 +50,8 @@ if [ "${STATUS}" -ne 0 ]; then
   echo "The stream baseline FAILED (xcodebuild exited ${STATUS}). See ${LOG}" >&2
   exit "${STATUS}"
 fi
-if [ "$(grep -c '^BASELINE' "${LOG}")" -ne 3 ]; then
-  echo "The run did not print three BASELINE lines, so it measured nothing. See ${LOG}" >&2
+if [ "$(grep -c '^BASELINE' "${LOG}")" -ne 4 ]; then
+  echo "The run did not print four BASELINE lines, so it measured nothing. See ${LOG}" >&2
   exit 1
 fi
 echo "The stream baseline finished."

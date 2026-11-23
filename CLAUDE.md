@@ -127,9 +127,11 @@ test run the suite is counted and reported as skipped.
 
 `StreamBaselineTests` measures the terminal byte path from where `wietty-pty` stands, with the
 relay, `PaneStreamHub` and the libghostty-vt screen model in the path as the app has them. It prints
-three lines starting with `BASELINE`: the echo of one keystroke on a quiet terminal, the same while
-the main thread is busy for 50 ms out of every 60, and how fast 100 MB of output arrives. The normal
-suite skips it. Run it before and after any change to the byte path, and compare:
+four lines starting with `BASELINE`: the echo of one keystroke on a quiet terminal, the same while
+the main thread is busy for 50 ms out of every 60, and how fast 100 MB of output arrives, once as one
+endless line (`throughput-oneline`) and once as ordinary 80 character lines (`throughput-lines`). It
+runs in the Debug build the test target uses, so its throughput is lower than a release build's. The
+normal suite skips it. Run it before and after any change to the byte path, and compare:
 
 ```sh
 scripts/stream-baseline.sh
@@ -138,8 +140,9 @@ scripts/stream-baseline.sh
 Quit Wietty first. It opens no window, but the test host is the app. Compare each number only with
 itself before and after a change, never the two echo numbers with each other: the busy one comes out
 several times lower than the quiet one, most likely because a spinning main thread keeps the CPU out
-of its idle states while the quiet run's pauses let it sleep. A run that comes out shifted as a
-whole happens now and then, so run it three times.
+of its idle states while the quiet run's pauses let it sleep. Run it three times. Now and then one
+run comes out shifted as a whole, more than about 20 % away from the other two on some number; when
+that happens, run a second set of three and keep both.
 
 ## Documentation
 The `docs/` folder must stay in sync with the code it describes. Whenever you change

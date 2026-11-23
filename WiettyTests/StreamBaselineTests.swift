@@ -12,7 +12,7 @@ import WiettyCore
 /// can be changed with a number on each side of the change.
 ///
 /// **Everything that knows the route is in `Session` and `openHelperSide(session:)`.**
-/// The three measurements see a connected descriptor and nothing else, so the same
+/// The measurements see a connected descriptor and nothing else, so the same
 /// tests rerun unchanged against a different route by replacing those two.
 ///
 /// **This does not run in the normal suite, by design.** It takes tens of seconds,
@@ -139,41 +139,78 @@ struct StreamBaselineTests {
     }
 
     private static let throughputBytes = 100_000_000
-    /// The payload is the brief's `head | tr`. It waits for one line of input first,
-    /// because the route may drop output that arrives before the helper side is
-    /// connected (the relay keeps the newest megabyte), and a count of exactly this
-    /// many bytes would then never complete. Echo goes off first so the line costs
-    /// no output, and one `R` says it has. The clock starts with the line.
-    private static let throughputCommand =
-        "stty -echo; printf R; read go; head -c \(throughputBytes) /dev/zero | tr '\\0' a"
+    /// Every throughput command waits for one line of input first, because the
+    /// route may drop output that arrives before the helper side is connected (the
+    /// relay keeps the newest megabyte). Echo goes off first so the line costs no
+    /// output, and one `R` says it has. The clock starts with the line.
+    private static let handshake = "stty -echo; printf R; read go; "
 
-    @Test func throughput() async throws {
-        let session = try Session(command: Self.throughputCommand)
+    /// One endless line: 100,000,000 bytes of `a` with no newline, so the screen
+    /// model wraps it every row for the whole run.
+    ///
+    /// Made into a file before the handshake and `cat` after it, because the
+    /// brief's `head | tr` pipeline is itself the limit: `tr` alone manages about
+    /// 28 MiB/s, which is what the relay alone measured with it in the clock.
+    @Test func throughputOneLine() async throws {
+        let file = "${TMPDIR:-/tmp}/wietty-baseline-$$"
+        try await measureThroughput(
+            name: "throughput-oneline",
+            command: "head -c \(Self.throughputBytes) /dev/zero | LC_ALL=C tr '\\0' a > \(file); "
+                + Self.handshake + "cat \(file); rm -f \(file)",
+            expecting: Self.throughputBytes)
+    }
+
+    /// Ordinary output: 100,000,000 bytes of 80 character lines, 79 characters and a
+    /// newline each. The tty turns every newline into CR LF, as it does for any
+    /// program, so 1,250,000 more bytes arrive than were written.
+    @Test func throughputLines() async throws {
+        let line = String(repeating: "abcdefghij", count: 8).prefix(79)
+        try await measureThroughput(
+            name: "throughput-lines",
+            command: Self.handshake + "yes \(line) | head -c \(Self.throughputBytes)",
+            expecting: Self.throughputBytes + Self.throughputBytes / 80)
+    }
+
+    // MARK: Helpers, ignorant of the route
+
+    /// Printed after the payload, and found in neither payload.
+    private static let endMark: Character = "Z"
+
+    private func measureThroughput(name: String, command: String, expecting total: Int) async throws {
+        // The child stays alive after the mark, so the end of the stream is never a
+        // race with the terminal closing.
+        let session = try Session(command: command + "; printf \(Self.endMark); exec sleep 120")
         defer { session.close() }
         let fd = try openHelperSide(session: session)
         defer { Darwin.close(fd) }
-        let elapsed = try await Self.offMain {
+        let mark = Int32(Self.endMark.asciiValue!)
+        let received = try await Self.offMain {
             // Echo must be off before the line is sent, or the newline is echoed
             // into the count.
             var ready = [UInt8](repeating: 0, count: 1)
-            _ = try Self.readSome(fd, into: &ready, timeout: 10)
+            _ = try Self.readSome(fd, into: &ready, timeout: 30)
             guard ready[0] == UInt8(ascii: "R") else { throw BaselineError.unexpectedByte(ready[0]) }
             let start = DispatchTime.now().uptimeNanoseconds
             try Self.writeAll(fd, [UInt8(ascii: "\n")])
             var received = 0
             var buffer = [UInt8](repeating: 0, count: 1 << 16)
-            while received < Self.throughputBytes {
-                received += try Self.readSome(fd, into: &buffer, timeout: 10)
+            while true {
+                let count = try Self.readSome(fd, into: &buffer, timeout: 10)
+                received += count
+                let ended = buffer.withUnsafeBytes { memchr($0.baseAddress!, mark, count) != nil }
+                if ended { break }
             }
-            return (DispatchTime.now().uptimeNanoseconds - start, received)
+            return (nanoseconds: DispatchTime.now().uptimeNanoseconds - start, bytes: received - 1)
         }
-        #expect(elapsed.1 == Self.throughputBytes)
-        let seconds = Double(elapsed.0) / 1e9
-        let rate = Double(Self.throughputBytes) / 1_048_576 / seconds
-        print("BASELINE throughput MiB/s=\(String(format: "%.1f", rate))")
+        // At least, not exactly, and ended on a mark rather than on a count. When
+        // the reader is slower than the child, the tty writes some newlines as
+        // CR CR LF instead of CR LF: measured as 1,476 of the 1,250,000 lines with
+        // the hub in the path, and none with the relay alone.
+        #expect(received.bytes >= total)
+        let seconds = Double(received.nanoseconds) / 1e9
+        let rate = Double(received.bytes) / 1_048_576 / seconds
+        print("BASELINE \(name) MiB/s=\(String(format: "%.1f", rate))")
     }
-
-    // MARK: Helpers, ignorant of the route
 
     private func measureEcho() async throws -> [UInt64] {
         let session = try Session(command: Self.echoCommand)
