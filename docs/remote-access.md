@@ -45,19 +45,19 @@ port.
 ### Architecture
 
 Terminals and Claude sessions are pseudo-terminals Wietty spawned itself and
-libghostty renders; see `docs/terminal.md`. **The wire format has not
-changed** across the substrates this app used to ship: the browser client, the
-JSON/WebSocket shapes, and `WS /attach`/`WS /control` are the same, so an existing
-browser tab or iPadOS client needs no update. A session
-id on the wire is whatever the serving Mac calls a terminal, and is opaque to every
-client.
+libghostty renders; see `docs/terminal.md`. `WS /control` and the REST routes kept
+their shapes across the substrates this app used to ship. `WS /attach` did not: it
+speaks version 2 of the terminal stream protocol, described below, and a client
+that does not ask for it is told to update. A session id on the wire is whatever
+the serving Mac calls a terminal, and is opaque to every client.
 
 The path from the browser back to the terminal, in order:
 
 - **Browser (xterm.js).** `remote_index.html` bundles xterm.js. It fetches
-  `GET /api/sessions` for the session list, then opens
-  `WS /attach?session=<id>&token=<t>`. It writes incoming VT bytes to the
-  terminal and forwards each keystroke as `{"data":"<bytes>"}`.
+  `GET /api/sessions` for the session list, then opens `WS /attach`. The page
+  still speaks version 1 (no `protocol` parameter, input as `{"data":"<bytes>"}`
+  text) until it is moved to version 2, so for now it is answered with the old
+  client notice below and its input is ignored.
 - **`RemoteServer.swift`.** A Hummingbird HTTP plus WebSocket server bound to
   `0.0.0.0` on the remote port (7434 by default), separate from the loopback
   MCP server. It serves the web client, the token gated session and workspace
@@ -66,11 +66,12 @@ The path from the browser back to the terminal, in order:
 - **`ScreenStreaming`.** The protocol `RemoteServer` is built against. It
   declares only `attach`, `detach`, `send`, `resync`, and `stop`, so the server
   does not know what is behind it, which is what lets a test back the server
-  with a fake. It speaks `StreamMessage` from `wietty-shared`. Until the attach
-  route is moved to protocol version 2 (phase 3 of issue #84), the route frames
-  those messages with `StreamCodec` with no version check and no `hello`, and
-  reads input only from binary `data` frames, so the browser client of this
-  document is out of step with it in the meantime.
+  with a fake. It speaks `StreamMessage` from `wietty-shared`, which the route
+  frames with `StreamCodec`.
+- **`AttachedViewer` and `ViewerQueue`.** Between the hub and one socket: the
+  viewer's bounded queue, its registration with the streamer, and the rate
+  limited resync that answers an overflow. See "The terminal stream (protocol
+  version 2)" below.
 - **`PaneStreamHub.swift`.** The one producer. A session id on the wire is a `gt:`
   id the app minted. `TerminalRelay` writes every chunk of the child's own output
   into the hub, which coalesces on an 8 ms timer (a shell echoing a typed line
@@ -152,8 +153,99 @@ viewer is told its size on attach and by nothing else on the socket, so
 handler calls it with the grid it just read from the surface. Every viewer
 receives a fresh `resize`; one that attached asking for repaints also receives a
 `repaint` of the reflowed screen, and one that reflows by itself nothing more. The
-attach route asks for repaints. A report that did not move the grid is
+attach route asks for what the query says (`resize=repaint` or `resize=reflow`),
+and for repaints when it says neither. A report that did not move the grid is
 deduplicated rather than delivered.
+
+### The terminal stream (protocol version 2)
+
+This is the reference for `WS /attach` in all three repositories. The messages and
+their codec are defined once, in `wietty-shared` (`StreamMessage`, `StreamCodec`,
+`StreamProtocol`); the route is `RemoteServer`, and `TerminalStreamConnection` in
+the package is the client the Mac and the iPad use. The protocol version is the
+integer 2 (`StreamProtocol.version`).
+
+**Connecting.** The version and the resize mode travel in the query:
+
+```
+WS /attach?session=<id>&token=<t>&protocol=2&resize=repaint
+```
+
+- `token` is checked at the upgrade, as on every route. A wrong or missing one is
+  not upgraded (Hummingbird answers 405, see "Live state" below).
+- `protocol` missing: the client is an old one, recognised at the upgrade with no
+  timer. The upgrade succeeds, and the server sends exactly two version 1 text
+  frames and closes: `{"type":"data","vt":"<text>"}`, whose text is a red line
+  (between a CR LF before and after) reading "This app is too old for this Mac.
+  Update Wietty on this device.", then `{"type":"ended"}`. A version 1 client
+  shows the line and the session as ended. These two frames, built by hand in the
+  route, are the only version 1 code left. Nothing is attached.
+- `protocol` present and not `2`: one `error` with code `protocol`, then the
+  server closes. Nothing is attached.
+- `session` missing: the server closes without sending anything.
+- `resize` is `repaint` or `reflow` (see "Snapshot and repaint" below); missing or
+  unknown means `repaint`.
+
+**Messages.**
+
+| direction | message | frame | fields | meaning |
+|---|---|---|---|---|
+| server to viewer | `hello` | JSON | `protocol` | accepted; always the first frame |
+| server to viewer | `error` | JSON | `code`, `message` | refused; the server closes after it |
+| server to viewer | `resize` | JSON | `cols`, `rows`, `own` | the grid in force; `own` is always false in this version of the server |
+| server to viewer | `snapshot` | binary | VT bytes | a full reset (`ESC c`), then history and screen |
+| server to viewer | `repaint` | binary | VT bytes | the visible screen again, history untouched |
+| server to viewer | `data` | binary | raw bytes | the child's output, byte exact |
+| server to viewer | `ended` | JSON | none | the terminal has stopped; the server closes after it |
+| viewer to server | `data` | binary | raw bytes | input, byte exact |
+| viewer to server | `resize` | JSON | `cols`, `rows` | "I am active, this is my grid" |
+
+**Frames.** A JSON message is a text frame holding one object with a `type`
+(`hello`, `error`, `resize`, `ended`) and the fields above, for example
+`{"protocol":2,"type":"hello"}` or `{"cols":80,"own":false,"rows":24,"type":"resize"}`.
+A JSON payload over 64 KiB is no message. A binary message is a binary frame whose
+first byte is its type and whose remaining bytes are the payload: `0x02` `data`,
+`0x03` `snapshot`, `0x04` `repaint`. (`0x01` is a JSON message, which on the
+WebSocket travels as text; the codec reads it in a binary frame too.) A frame of a
+type a side does not know is skipped, which is how a newer peer can say something
+an older one does not need. The codec also defines a framing for a Unix socket
+(four byte big endian length, type byte, payload); no route uses it yet.
+
+**Order.** `hello`, then `resize` and `snapshot`, then live `data`. A session
+that names no live terminal gets `hello` and `ended`. Every frame after the hello
+is written by one writer per socket, in the order the hub delivered it.
+
+**Sizes.** Outbound frames are written whole, whatever their size: a snapshot of
+a full history is one binary frame of up to about 11 MB, and a client should
+accept messages up to `StreamProtocol.maxMessageSize` (64 MiB).
+`TerminalStreamConnection` does. Inbound, a frame and a message may each be up to
+1 MiB (`RemoteServer.maxInboundMessage`); the WebSocket library's default of
+16 KiB per frame used to close the socket on any paste larger than that. A
+message larger than 1 MiB makes the server close the socket with 1009 (message
+too big), so a client should send a larger paste as several `data` messages.
+
+**The bound per viewer.** The server holds at most 4 MiB (`4 << 20` bytes) of
+`data` and `repaint` payload for one WebSocket viewer, in that viewer's
+`ViewerQueue`. A viewer that reads slower than the terminal writes overflows it:
+everything queued for it except the control messages is dropped, and the server
+resynchronises it with a fresh `resize` and `snapshot`, which replaces everything
+the viewer holds. Until that snapshot comes, further output for that viewer is
+dropped, and an `ended` waits behind it. When no snapshot can be built, the
+viewer's stream carries on from where it is.
+
+**The resync is rate limited**, at most one per viewer per 250 ms
+(`ResyncThrottle`). Each resync formats the terminal's whole history on the hub's
+one delivery queue, so a viewer overflowing again and again would otherwise stall
+the viewers of every other terminal. An overflow sooner than 250 ms after the last
+resync is answered when the 250 ms are over, as one resync however many overflows
+came in between. A viewer that disconnects before then gets none.
+
+**A viewer's `resize`** is accepted and not yet acted on: the server parses it
+and ignores it, and answers nothing. Claiming the grid is the next part of
+phase 3 of issue #84.
+
+**Ending.** After `ended` or `error` the server closes the socket. When the
+viewer closes, or its socket fails, the server detaches it from the hub.
 
 ## Controlling side: connecting to another instance
 
@@ -324,8 +416,9 @@ The server (`RemoteServer.swift`) exposes, all token gated:
 - `POST /api/sessions/{sid}/close`: closes the tracked session with that
   session id.
 - `WS /control`: the push channel described above.
-- `WS /attach`: the pre-existing live terminal stream (see "Served side"
-  above), now also consumed by the native client, described next.
+- `WS /attach`: the live terminal stream, protocol version 2 (see "The
+  terminal stream (protocol version 2)" above), also consumed by the native
+  client, described next.
 
 ### Where an attached session is drawn
 
