@@ -203,6 +203,28 @@ private final class Client: @unchecked Sendable {
         #expect(running.streamer.attaches.isEmpty)
     }
 
+    /// The old client does not ask for its next frame at once: it hops to the main
+    /// actor between two receives. The server's close must not cost it the `ended`
+    /// that was sent before the close, or it reports a lost connection instead.
+    @Test func anOldClientThatReadsSlowlyStillGetsBothFrames() async throws {
+        let running = try await start()
+        defer { running.stop() }
+        let client = Client(url: running.url("&session=gt:1"))
+        defer { client.close() }
+
+        // What the terminal view sends on its own while the notice is on its way.
+        for _ in 0..<20 {
+            client.task.send(.string(#"{"data":"x"}"#)) { _ in }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let first = try #require(jsonObject(try await client.text()))
+        #expect(first["type"] as? String == "data")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let second = try #require(jsonObject(try await client.text()))
+        #expect(second["type"] as? String == "ended")
+    }
+
     /// The two frames themselves, byte for byte as the route builds them.
     @Test func theOldClientNoticeIsTwoVersionOneFrames() throws {
         let frames = RemoteServer.oldClientNotice
