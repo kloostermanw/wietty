@@ -131,11 +131,13 @@ struct StreamBaselineTests {
     /// would otherwise be read by the next round as its own, in microseconds, and
     /// every sample after it would be shifted with no error.
     private static let echoCommand = "exec /bin/cat"
-    /// The pause is well past the hub's 8 ms quiet interval, as a person's typing is,
-    /// so every round's echo finds a quiet session and measures the flush after quiet.
-    /// At 5 ms each echo was flushed by a timer tick less than one round before the
-    /// next, and the rounds after the first measured the timer instead. 750 rounds of
-    /// 20 ms keep a run at about 15 s, a multiple of `echoRoundsPerLine`.
+    /// The pause is well past the hub's 8 ms quiet interval, as a person's typing is.
+    /// It matters once a viewer is in the path (the own pane, from step 4 of phase 3):
+    /// every round's echo then finds a quiet session and measures the flush after
+    /// quiet, where at 5 ms the rounds after the first would measure the timer. With no
+    /// viewer attached, as in this harness today, the quiet rule does not apply and the
+    /// echo is read at the helper socket, which never waits for the hub's flush. 750
+    /// rounds of 20 ms keep a run at about 15 s, a multiple of `echoRoundsPerLine`.
     private static let echoRounds = 750
     private static let echoPause: useconds_t = 20_000
     /// The canonical queue holds 1,024 bytes (`MAX_CANON`), and a full one rings the
