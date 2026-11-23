@@ -179,10 +179,13 @@ WS /attach?session=<id>&token=<t>&protocol=2&resize=repaint
   not upgraded (Hummingbird answers 405, see "Live state" below).
 - `protocol` missing: the client is an old one, recognised at the upgrade with no
   timer. The upgrade succeeds, and the server sends exactly two version 1 text
-  frames and closes: `{"type":"data","vt":"<text>"}`, whose text is a red line
-  (between a CR LF before and after) reading "This app is too old for this Mac.
-  Update Wietty on this device.", then `{"type":"ended"}`. A version 1 client
-  shows the line and the session as ended. These two frames, built by hand in the
+  frames and closes: `{"type":"data","vt":"<text>"}`, then `{"type":"ended"}`,
+  each with its keys sorted. The text is exactly these bytes: CR LF, `ESC [31m`,
+  `This app is too old for this Mac. Update Wietty on this device.`, `ESC [0m`,
+  CR LF, where ESC is `0x1B`. As a Swift literal it is
+  `"\r\n\u{1B}[31mThis app is too old for this Mac. Update Wietty on this device.\u{1B}[0m\r\n"`,
+  and in the JSON the ESC appears as `\u001b`. A version 1 client shows the line
+  in red and the session as ended. These two frames, built by hand in the
   route, are the only version 1 code left. Nothing is attached.
 - `protocol` present and not `2`: one `error` with code `protocol`, then the
   server closes. Nothing is attached.
@@ -202,7 +205,7 @@ WS /attach?session=<id>&token=<t>&protocol=2&resize=repaint
 | server to viewer | `data` | binary | raw bytes | the child's output, byte exact |
 | server to viewer | `ended` | JSON | none | the terminal has stopped; the server closes after it |
 | viewer to server | `data` | binary | raw bytes | input, byte exact |
-| viewer to server | `resize` | JSON | `cols`, `rows` | "I am active, this is my grid" |
+| viewer to server | `resize` | JSON | `cols`, `rows`, `own` | "I am active, this is my grid" |
 
 **Frames.** A JSON message is a text frame holding one object with a `type`
 (`hello`, `error`, `resize`, `ended`) and the fields above, for example
@@ -212,7 +215,10 @@ first byte is its type and whose remaining bytes are the payload: `0x02` `data`,
 `0x03` `snapshot`, `0x04` `repaint`. (`0x01` is a JSON message, which on the
 WebSocket travels as text; the codec reads it in a binary frame too.) A frame of a
 type a side does not know is skipped, which is how a newer peer can say something
-an older one does not need. The codec also defines a framing for a Unix socket
+an older one does not need. A `resize` in either direction carries `own` as the
+codec writes it, always present; a viewer sends `false`, and a reader takes a
+missing `own` as `false`. A `resize` whose `cols` or `rows` is outside 1 to
+10,000 is no message, and is skipped like an unknown one. The codec also defines a framing for a Unix socket
 (four byte big endian length, type byte, payload); no route uses it yet.
 
 **Order.** `hello`, then `resize` and `snapshot`, then live `data`. A session
@@ -226,7 +232,9 @@ accept messages up to `StreamProtocol.maxMessageSize` (64 MiB).
 1 MiB (`RemoteServer.maxInboundMessage`); the WebSocket library's default of
 16 KiB per frame used to close the socket on any paste larger than that. A
 message larger than 1 MiB makes the server close the socket with 1009 (message
-too big), so a client should send a larger paste as several `data` messages.
+too big). **A client sends input in `data` messages of at most 64 KiB of
+payload**, splitting a larger paste into several in order; the browser page and
+`TerminalStreamConnection` both do.
 
 **The bound per viewer.** The server holds at most 4 MiB (`4 << 20` bytes) of
 `data` and `repaint` payload for one WebSocket viewer, in that viewer's
@@ -234,8 +242,12 @@ too big), so a client should send a larger paste as several `data` messages.
 everything queued for it except the control messages is dropped, and the server
 resynchronises it with a fresh `resize` and `snapshot`, which replaces everything
 the viewer holds. Until that snapshot comes, further output for that viewer is
-dropped, and an `ended` waits behind it. When no snapshot can be built, the
-viewer's stream carries on from where it is.
+dropped, and an `ended` waits behind it. Output dropped by an overflow, or while
+its resync was pending, is never sent again: the snapshot replaces it, since it
+holds the screen and history the dropped bytes produced. When no snapshot can be
+built, the viewer's stream carries on with the output that comes next, and the
+dropped output is simply missing from that viewer's screen until something
+redraws it.
 
 **The resync is rate limited**, at most one per viewer per 250 ms
 (`ResyncThrottle`). Each resync formats the terminal's whole history on the hub's
@@ -249,7 +261,11 @@ and ignores it, and answers nothing. Claiming the grid is the next part of
 phase 3 of issue #84.
 
 **Ending.** After `ended` or `error` the server closes the socket. When the
-viewer closes, or its socket fails, the server detaches it from the hub.
+viewer closes, or its socket fails, the server detaches it from the hub, and so
+it does when the server stops. The server pings every viewer every 30 seconds; a
+viewer that has not answered a ping by the time the next one is due is closed with
+1001 (going away) and detached. The 30 seconds are set explicitly in
+`RemoteServer`, not left to the WebSocket library's default.
 
 ## Controlling side: connecting to another instance
 

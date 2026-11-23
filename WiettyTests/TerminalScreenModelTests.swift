@@ -285,10 +285,15 @@ private final class Finished: @unchecked Sendable {
             group.addTask {
                 var taken: [(size: TerminalSize, frame: [UInt8])] = []
                 var smallCount = 0
-                while min(smallCount, taken.count - smallCount) < 100 && taken.count < 50_000 {
-                    guard let repaint = model.repaintFrame() else { continue }
-                    if repaint.size == small { smallCount += 1 }
-                    taken.append(repaint)
+                var attempts = 0
+                while min(smallCount, taken.count - smallCount) < 100 && attempts < 50_000 {
+                    // A nil counts toward the cap too, so a model that never paints
+                    // ends the loop (and fails the counts below) instead of spinning.
+                    attempts += 1
+                    if let repaint = model.repaintFrame() {
+                        if repaint.size == small { smallCount += 1 }
+                        taken.append(repaint)
+                    }
                     await Task.yield()
                 }
                 finished.set()

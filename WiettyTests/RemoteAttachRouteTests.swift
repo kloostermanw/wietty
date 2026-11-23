@@ -402,7 +402,23 @@ private final class Client: @unchecked Sendable {
         let client = Client(url: running.url("&session=gt:1&protocol=2", token: "wrong"))
         defer { client.close() }
         await #expect(throws: (any Error).self) { try await client.receive() }
+        // Refused by the server, not given up on by the watchdog.
+        #expect(!client.timedOut)
         #expect(running.streamer.attaches.isEmpty)
+    }
+
+    /// The server stopping with a viewer attached detaches that viewer.
+    @Test func stoppingTheServerDetachesAnAttachedViewer() async throws {
+        let running = try await start()
+        defer { running.stop() }
+        let client = Client(url: running.url("&session=gt:1&protocol=2"))
+        defer { client.close() }
+        for _ in 0..<3 { _ = try await client.message() }
+        let id = try #require(running.streamer.attaches.first?.id)
+
+        running.server.stop()
+        #expect(try await eventually { running.streamer.detached == [id] })
+        #expect(running.server.boundPort == nil)
     }
 
     /// No session: closed with nothing sent, as before version 2.
