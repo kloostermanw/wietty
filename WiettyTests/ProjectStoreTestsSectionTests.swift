@@ -36,7 +36,7 @@ import WiettyCore
             gitProvider: StubGit(fingerprint: "fp-A", uncommitted: 10, sync: Self.developSync),
             testSupervisor: testSup
         )
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = TestScratch.root.appendingPathComponent(UUID().uuidString)
         try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         store.addProject(url: folder)
         let pid = store.projects[0].id

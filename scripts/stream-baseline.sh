@@ -33,7 +33,10 @@ fi
 xcodegen generate
 
 LOG="$(mktemp -t wietty-stream-baseline)"
-echo "Building and running the stream baseline. Full log: ${LOG}"
+# Keep the log only when the run failed: it is what the error message points at.
+KEEP_LOG=0
+trap '[ "${KEEP_LOG}" = 1 ] || rm -f "${LOG}"' EXIT
+echo "Building and running the stream baseline. Full log: ${LOG} (removed when the run passes)"
 
 # TEST_RUNNER_ is how xcodebuild passes a variable through to the test host.
 set +e
@@ -48,10 +51,12 @@ set -e
 grep -E '^BASELINE|^(✔|✘) |recorded an issue|\*\* TEST' "${LOG}" || true
 
 if [ "${STATUS}" -ne 0 ]; then
+  KEEP_LOG=1
   echo "The stream baseline FAILED (xcodebuild exited ${STATUS}). See ${LOG}" >&2
   exit "${STATUS}"
 fi
 if [ "$(grep -c '^BASELINE' "${LOG}")" -ne 4 ]; then
+  KEEP_LOG=1
   echo "The run did not print four BASELINE lines, so it measured nothing. See ${LOG}" >&2
   exit 1
 fi

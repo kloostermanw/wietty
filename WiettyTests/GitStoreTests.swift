@@ -30,7 +30,7 @@ final class FakeGitInfoProvider: GitInfoProviding, @unchecked Sendable {
     }
 
     private func makeTempFolder(named name: String) -> URL {
-        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let base = TestScratch.root.appendingPathComponent(UUID().uuidString)
         let url = base.appendingPathComponent(name)
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url

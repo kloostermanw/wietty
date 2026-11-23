@@ -12,7 +12,7 @@ import WiettyCore
 @MainActor
 @Suite struct WorkspaceRenameTests {
     private func tempFolder(named name: String) -> URL {
-        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+        let url = TestScratch.root
             .appendingPathComponent("rename-\(UUID().uuidString)")
             .appendingPathComponent(name)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

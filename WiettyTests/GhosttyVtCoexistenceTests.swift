@@ -44,7 +44,7 @@ import WiettyCore
     }
 
     @Test func aLiveSurfaceAndAVtTerminalAgreeOnTheSameBytes() async throws {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = TestScratch.root
             .appendingPathComponent("wietty-coexistence-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }

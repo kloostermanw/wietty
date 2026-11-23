@@ -221,7 +221,7 @@ import WiettyCore
     private func fixture() async throws -> (store: ProjectStore, selection: TerminalSelection,
                                             stack: GhosttyStack, router: PaneRouter,
                                             sessions: [String]) {
-        let folder = FileManager.default.temporaryDirectory
+        let folder = TestScratch.root
             .appendingPathComponent("pane-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 

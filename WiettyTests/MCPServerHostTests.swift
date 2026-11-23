@@ -13,7 +13,7 @@ import WiettyCore
         let store = ProjectStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
                                  service: FakeTerminalService())
         for name in projectNames {
-            let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let base = TestScratch.root.appendingPathComponent(UUID().uuidString)
             let url = base.appendingPathComponent(name)
             try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             store.addProject(url: url)

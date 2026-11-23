@@ -38,7 +38,7 @@ import Foundation
     /// Written into a temporary folder rather than read from the real one, so the
     /// assertion does not depend on which sounds a given macOS ships.
     @Test func theInstalledSoundsFollowSortedAndWithoutTheirExtension() throws {
-        let folder = FileManager.default.temporaryDirectory
+        let folder = TestScratch.root
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         for name in ["Submarine.aiff", "Blow.aiff", "read-me.txt"] {

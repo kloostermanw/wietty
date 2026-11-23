@@ -41,7 +41,7 @@ import WiettyCore
     }
 
     @Test func theConfigFileIsWrittenWithExactlyTheseLinesInThisOrder() throws {
-        let root = FileManager.default.temporaryDirectory
+        let root = TestScratch.root
             .appendingPathComponent("characterisation-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let alpha = root.appendingPathComponent("alpha")
@@ -132,7 +132,7 @@ import WiettyCore
 @Suite struct SettingsLaunchPreservationTests {
     @Test func aLaunchThatClearsDeadSessionsKeepsTheMovedSettings() throws {
         let config = WiettyConfigFile.temporary()
-        let folder = FileManager.default.temporaryDirectory
+        let folder = TestScratch.root
             .appendingPathComponent("launch-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 

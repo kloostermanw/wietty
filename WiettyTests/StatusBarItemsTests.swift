@@ -21,7 +21,7 @@ import WiettyCore
 
     private func addWorkspace(to store: ProjectStore, processes: [String: ProcessConfig],
                               tests: [String: TestConfig] = [:]) -> Project {
-        let url = FileManager.default.temporaryDirectory
+        let url = TestScratch.root
             .appendingPathComponent(UUID().uuidString).appendingPathComponent("ws")
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         store.addProject(url: url)
@@ -81,7 +81,7 @@ import WiettyCore
                         TerminalHandle(sessionId: "sess-B", windowId: "w3")]
         let store = ProjectStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
                                  service: fake)
-        let url = FileManager.default.temporaryDirectory
+        let url = TestScratch.root
             .appendingPathComponent(UUID().uuidString).appendingPathComponent("ws")
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         store.addProject(url: url)

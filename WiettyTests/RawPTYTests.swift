@@ -178,7 +178,7 @@ import WiettyCore
         #expect(fcntl(pty.masterFd, F_GETFD) == -1, "the master should be closed after EOF")
 
         // Put an innocent file on precisely the descriptor number the terminal used.
-        let path = FileManager.default.temporaryDirectory
+        let path = TestScratch.root
             .appendingPathComponent("raw-pty-recycled-\(UUID().uuidString)").path
         let scratch = open(path, O_CREAT | O_RDWR, 0o600)
         #expect(scratch >= 0)

@@ -13,7 +13,7 @@ import WiettyCore
     }
 
     private func makeTempFolder() -> URL {
-        let url = FileManager.default.temporaryDirectory
+        let url = TestScratch.root
             .appendingPathComponent(UUID().uuidString)
             .appendingPathComponent("workspace")
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
