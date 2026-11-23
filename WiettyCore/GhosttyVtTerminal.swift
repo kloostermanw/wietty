@@ -224,8 +224,11 @@ package final class GhosttyVtTerminal {
     /// 1. grapheme clustering, stated outright, because it decides how many
     ///    cells a joined emoji takes and a reset puts back the receiver's
     ///    default, not this terminal's;
-    /// 2. the switch to the alternate screen, if this terminal is on it, so the
-    ///    content lands there;
+    /// 2. the modes that have to be in force before content, in the order the
+    ///    library wrote them: the switch to the alternate screen, so the
+    ///    content lands there, and the column modes 3 and 40, because a
+    ///    receiver that acted on them would clear its screen and change its
+    ///    width, which must not happen after the content is down;
     /// 3. the content, formatted with no extras;
     /// 4. the other modes and then the tab stops, as the library wrote them;
     /// 5. everything the library writes behind the content, as it wrote it.
@@ -233,10 +236,15 @@ package final class GhosttyVtTerminal {
     /// Parts 2, 4 and 5 are cut out of the library's own output for the last row
     /// alone, which costs three passes over one row: the row with no extras, the
     /// row with only the extras written in front, and the row with all of them.
-    /// Should a later release put that row anywhere else in its output, or write
-    /// a different front for the two, the cut does not match and the frame falls
-    /// back to the library's single pass, which is correct for everything but a
-    /// mode that changes how content is laid down.
+    ///
+    /// **A frame that cannot be cut is a bug, and says so.** If any pass fails,
+    /// if a later release puts the row anywhere else in its output or writes a
+    /// different front for the two passes, or if the front holds a sequence
+    /// this type does not understand, the frame is the library's single pass
+    /// with grapheme clustering stated in front of it, and an assertion fails.
+    /// A debug build, the test host among them, stops there. A release build
+    /// still sends a frame, which is wrong only for a mode that changes how
+    /// content is laid down, autowrap off above all.
     ///
     /// On the alternate screen this is that screen and nothing else: the
     /// alternate screen has no history, and the formatter only reads the active
@@ -253,10 +261,11 @@ package final class GhosttyVtTerminal {
                                     lastRow: total - 1, cols: size.cols),
               let lastRow = selection(tag: GHOSTTY_POINT_TAG_SCREEN, firstRow: total - 1,
                                       lastRow: total - 1, cols: size.cols) else { return [] }
-        func vt(_ extras: GhosttyFormatterExtras, _ selection: GhosttySelection) -> [UInt8] {
-            format(emit: GHOSTTY_FORMATTER_FORMAT_VT, extras: extras, trim: false, unwrap: true,
-                   selection: selection)
+        func vt(_ extras: GhosttyFormatterExtras, _ selection: GhosttySelection) -> [UInt8]? {
+            formatted(emit: GHOSTTY_FORMATTER_FORMAT_VT, extras: extras, trim: false, unwrap: true,
+                      selection: selection)
         }
+        let clustering = Array("\u{1B}[?2027\(isModeSet(2027) ? "h" : "l")".utf8)
 
         // The row bare, the row behind what goes in front of it, and the row with
         // everything. The last is cut by the second rather than by the row: what
@@ -264,20 +273,28 @@ package final class GhosttyVtTerminal {
         // (the cursor comes relative to the scrolling region when it has written
         // origin mode, and absolute when it has not), so the part behind is taken
         // from a pass that wrote both, exactly as the single pass would have it.
-        let row = vt(GHOSTTY_FORMATTER_EXTRAS_NONE, lastRow)
-        let infront = vt(Self.extrasInFront, lastRow)
-        let everything = vt(Self.paintExtras, lastRow)
-        guard infront.count >= row.count, infront.suffix(row.count).elementsEqual(row),
-              everything.count >= infront.count, everything.prefix(infront.count).elementsEqual(infront) else {
-            return vt(Self.paintExtras, whole)
+        //
+        // A pass that failed is nil and never an empty row: an empty row is a
+        // suffix of anything, so a failed bare pass would pass the check below
+        // and leave the last row's content in the front, to be printed again
+        // over the top of the screen.
+        guard let row = vt(GHOSTTY_FORMATTER_EXTRAS_NONE, lastRow),
+              let infront = vt(Self.extrasInFront, lastRow),
+              let everything = vt(Self.paintExtras, lastRow),
+              infront.count >= row.count, infront.suffix(row.count).elementsEqual(row),
+              everything.count >= infront.count, everything.prefix(infront.count).elementsEqual(infront),
+              let prefix = SnapshotPrefix(infront.dropLast(row.count)),
+              let content = vt(GHOSTTY_FORMATTER_EXTRAS_NONE, whole) else {
+            assertionFailure("snapshot frame: the library's output could not be cut into front, content and tail")
+            guard let single = vt(Self.paintExtras, whole) else { return [] }
+            return clustering + single
         }
-        let prefix = SnapshotPrefix(infront.dropLast(row.count))
 
-        var bytes = Array("\u{1B}[?2027\(isModeSet(2027) ? "h" : "l")".utf8)
-        bytes += prefix.screenSwitches
-        bytes += vt(GHOSTTY_FORMATTER_EXTRAS_NONE, whole)
-        bytes += prefix.otherModes
-        bytes += prefix.rest
+        var bytes = clustering
+        bytes += prefix.beforeContent
+        bytes += content
+        bytes += prefix.afterContent
+        bytes += prefix.tabStops
         bytes += everything.dropFirst(infront.count)
         return bytes
     }
@@ -287,34 +304,49 @@ package final class GhosttyVtTerminal {
         GHOSTTY_FORMATTER_EXTRA_MODES | GHOSTTY_FORMATTER_EXTRA_TABSTOPS
 
     /// What the library writes in front of the content, taken apart: the leading
-    /// run of mode sets and resets (`CSI ? n h`, `CSI n l` and so on), one per
-    /// sequence, and whatever follows them, the tab stops, kept as it is.
+    /// run of mode sets and resets (`CSI ? n h`, `CSI n l`, with one parameter or
+    /// several), rewritten one mode per sequence, and then the tab stops, kept
+    /// as they are.
     private struct SnapshotPrefix {
-        /// The alternate screen modes, which have to be in force before content.
-        var screenSwitches: [UInt8] = []
+        /// The modes that have to be in force before content: the alternate
+        /// screen switches and the column modes. In the library's order.
+        private(set) var beforeContent: [UInt8] = []
         /// Every other mode, grapheme clustering excepted because the frame
         /// states it itself.
-        var otherModes: [UInt8] = []
-        var rest: [UInt8] = []
+        private(set) var afterContent: [UInt8] = []
+        /// `CSI 3 g` and what follows it, or nothing.
+        private(set) var tabStops: [UInt8] = []
 
-        private static let screenModes: Set<Int> = [47, 1047, 1049]
+        /// Alternate screen (47, 1047, 1049) and columns (3, DECCOLM, and 40,
+        /// which allows it). All DEC private.
+        private static let beforeContentModes: Set<Int> = [3, 40, 47, 1047, 1049]
+        private static let clearTabStops = Array("\u{1B}[3g".utf8)
 
-        init(_ bytes: ArraySlice<UInt8>) {
+        /// Nil for a front this type does not understand: anything after the run
+        /// of modes that is not the tab stops.
+        init?(_ bytes: ArraySlice<UInt8>) {
             var index = bytes.startIndex
-            while let (sequence, number, isPrivate, end) = Self.mode(in: bytes, at: index) {
-                if isPrivate && Self.screenModes.contains(number) {
-                    screenSwitches += sequence
-                } else if !(isPrivate && number == 2027) {
-                    otherModes += sequence
+            while let (numbers, isPrivate, final, end) = Self.mode(in: bytes, at: index) {
+                for number in numbers {
+                    let sequence = Array("\u{1B}[\(isPrivate ? "?" : "")\(number)".utf8) + [final]
+                    if isPrivate && Self.beforeContentModes.contains(number) {
+                        beforeContent += sequence
+                    } else if !(isPrivate && number == 2027) {
+                        afterContent += sequence
+                    }
                 }
                 index = end
             }
-            rest = Array(bytes[index...])
+            let rest = bytes[index...]
+            guard rest.isEmpty || rest.starts(with: Self.clearTabStops) else { return nil }
+            tabStops = Array(rest)
         }
 
-        /// One `ESC [ ? n h` or `ESC [ n l` starting at `start`, or nil.
+        /// One `ESC [ ? n ; n h` or `ESC [ n l` starting at `start`: its mode
+        /// numbers, whether it is DEC private, its final byte and where it ends.
+        /// Nil for anything else.
         private static func mode(in bytes: ArraySlice<UInt8>, at start: Int)
-            -> (ArraySlice<UInt8>, Int, Bool, Int)? {
+            -> ([Int], Bool, UInt8, Int)? {
             var index = start
             func next() -> UInt8? {
                 guard index < bytes.endIndex else { return nil }
@@ -323,19 +355,28 @@ package final class GhosttyVtTerminal {
             }
             guard next() == 0x1B, next() == UInt8(ascii: "[") else { return nil }
             var isPrivate = false
+            var numbers: [Int] = []
             var number = 0
             var digits = 0
+            var first = true
             while let byte = next() {
+                defer { first = false }
                 switch byte {
-                case UInt8(ascii: "?") where digits == 0 && !isPrivate:
+                case UInt8(ascii: "?") where first:
                     isPrivate = true
                 case UInt8(ascii: "0")...UInt8(ascii: "9"):
                     number = number * 10 + Int(byte - UInt8(ascii: "0"))
                     digits += 1
                     guard digits <= 5 else { return nil }
+                case UInt8(ascii: ";"):
+                    guard digits > 0 else { return nil }
+                    numbers.append(number)
+                    number = 0
+                    digits = 0
                 case UInt8(ascii: "h"), UInt8(ascii: "l"):
                     guard digits > 0 else { return nil }
-                    return (bytes[start..<index], number, isPrivate, index)
+                    numbers.append(number)
+                    return (numbers, isPrivate, byte, index)
                 default:
                     return nil
                 }
@@ -483,14 +524,28 @@ package final class GhosttyVtTerminal {
         return selection
     }
 
+    /// `formatted`, with a failure read as nothing to show. For the reads where
+    /// that is the right answer: a paint or a text read that fails has nothing
+    /// better to return.
     private func format(emit: GhosttyFormatterFormat,
                         extras: GhosttyFormatterExtras,
                         trim: Bool,
                         unwrap: Bool,
                         selection: GhosttySelection) -> [UInt8] {
+        formatted(emit: emit, extras: extras, trim: trim, unwrap: unwrap, selection: selection) ?? []
+    }
+
+    /// One format call. Nil when any library call failed, and an empty array
+    /// only when the output really was empty, which the library reports as
+    /// success with no buffer.
+    private func formatted(emit: GhosttyFormatterFormat,
+                           extras: GhosttyFormatterExtras,
+                           trim: Bool,
+                           unwrap: Bool,
+                           selection: GhosttySelection) -> [UInt8]? {
         var formatter: GhosttyFormatter?
         guard ghostty_formatter_terminal_new(nil, &formatter, terminal) == GHOSTTY_SUCCESS,
-              let formatter else { return [] }
+              let formatter else { return nil }
         defer { ghostty_formatter_free(formatter) }
 
         var emit = emit
@@ -498,16 +553,19 @@ package final class GhosttyVtTerminal {
         var trim = trim
         var unwrap = unwrap
         var selection = selection
-        ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EMIT, &emit)
-        ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EXTRAS, &extras)
-        ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_TRIM, &trim)
-        ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap)
-        ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_SELECTION, &selection)
+        guard ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EMIT, &emit) == GHOSTTY_SUCCESS,
+              ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EXTRAS, &extras) == GHOSTTY_SUCCESS,
+              ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_TRIM, &trim) == GHOSTTY_SUCCESS,
+              ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap) == GHOSTTY_SUCCESS,
+              ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS
+        else { return nil }
 
         var pointer: UnsafeMutablePointer<UInt8>?
         var length: size_t = 0
-        guard ghostty_formatter_format_alloc(formatter, nil, &pointer, &length) == GHOSTTY_SUCCESS,
-              let pointer else { return [] }
+        guard ghostty_formatter_format_alloc(formatter, nil, &pointer, &length) == GHOSTTY_SUCCESS else {
+            return nil
+        }
+        guard let pointer else { return [] }
         defer { ghostty_free(nil, pointer, length) }
         return Array(UnsafeBufferPointer(start: pointer, count: length))
     }

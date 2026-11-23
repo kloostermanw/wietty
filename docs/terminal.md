@@ -365,12 +365,30 @@ cursor, the pen, the keyboard protocols and the character sets behind it. In fro
 viewport, but it does to wrapped history: with autowrap off on the source, every joined line would be
 cut at the last column. So the frame is assembled from parts: grapheme clustering (mode 2027) stated
 outright, because it decides how many cells a joined emoji takes and the reset puts back the
-receiver's default rather than the source's; then the switch to the alternate screen if the source is
-on it; then the content with no extras; then the other modes and the tab stops; then everything the
-library writes behind the content. The parts in front of and behind the content are cut out of the
-library's output for the last row alone. If a later release changes its order so that the cut does not
-match, the frame falls back to the library's single pass. A scrolling region, origin mode, left and
-right margins and the DEC line drawing set on the source are covered by tests as well as autowrap.
+receiver's default rather than the source's; then the modes that must be in force before the content,
+in the library's order (the switch to the alternate screen, and the column modes 3 and 40); then the
+content with no extras; then the other modes and the tab stops; then everything the library writes
+behind the content. The parts in front of and behind the content are cut out of the library's output
+for the last row alone, and the part behind is taken from a pass that also wrote the modes, because
+the cursor position the library writes is relative to the scrolling region only when that same pass
+wrote origin mode.
+
+Two tests guard this construction. The autowrap test is the only one that fails against the library's
+single pass. The scrolling region test guards the cut: it fails when the part behind the content comes
+from a pass that did not write the modes, since the cursor then lands two rows low. The tests for line
+drawing and for left and right margins pass either way; they pin behaviour, not the order.
+
+Modes 3 (132 columns) and 40 (allow the switch) are tracked by the library, which really changes the
+grid and clears the screen. The library writes 3 before 40, so on a receiver just reset the 3 finds the
+switch not allowed and does nothing: the receiver keeps the grid it was told and is left allowing the
+switch, as the source is, but without mode 3 set.
+
+A frame that cannot be cut is a bug and says so. When any formatter pass fails (a failed pass is never
+mistaken for an empty row), when the library's output does not have the expected shape, or when the
+part in front holds a sequence the cut does not understand, an assertion fails, which stops a debug
+build and the test host. A release build sends the library's single pass with mode 2027 stated in
+front of it, which is wrong only for a mode that changes how content is laid down. No test reaches that
+branch: it cannot be reached without a seam in the code, and none was added.
 
 Two limits of the snapshot frame are known and not handled here:
 
