@@ -464,6 +464,9 @@ package final class ProjectStore: SettingsPairSource {
     /// same address, so an address-derived path would let one test read the file
     /// another test left behind. A stored id is unique per suite and stable for as
     /// long as that suite exists.
+    ///
+    /// Under a test host the directory lives in `TestHost.sandbox`, which is emptied as
+    /// each run starts, so these do not pile up in the temporary directory.
     private static func defaultConfig(for defaults: UserDefaults) -> WiettyConfigFile {
         guard defaults !== TestHost.defaults else { return WiettyConfigFile() }
         let markerKey = "wietty.isolatedConfigDir"
@@ -472,8 +475,15 @@ package final class ProjectStore: SettingsPairSource {
             defaults.set(fresh, forKey: markerKey)
             return fresh
         }()
-        return WiettyConfigFile(url: FileManager.default.temporaryDirectory
-            .appendingPathComponent("wietty-settings-\(id)/config"))
+        // Under a test host the directory goes inside the sandbox, which is emptied as
+        // each run starts. Directly in the temporary directory nothing removed them:
+        // about 380 per run, 65,000 entries over time. Outside a test host a
+        // non standard `defaults` is still possible (a caller handing its own suite), so
+        // that case keeps the temporary directory.
+        let base = TestHost.isActive
+            ? TestHost.sandbox.appendingPathComponent("settings-\(id)")
+            : FileManager.default.temporaryDirectory.appendingPathComponent("wietty-settings-\(id)")
+        return WiettyConfigFile(url: base.appendingPathComponent("config"))
     }
 
     package init(
