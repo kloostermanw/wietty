@@ -202,6 +202,9 @@ package final class GhosttyVtScreenModel: TerminalScreenModel, @unchecked Sendab
         return terminal.paintFrame()
     }
 
+    /// The grid, the flag and the bytes in one critical section. That is what
+    /// guarantees they describe the same moment; no test can catch a version
+    /// that took two, because the gap between them is too small to hit.
     package func snapshotFrame() -> TerminalSnapshotFrame {
         lock.lock(); defer { lock.unlock() }
         return terminal.snapshotFrame()

@@ -159,7 +159,8 @@ private final class Finished: @unchecked Sendable {
         let lines = viewer.text(maxLines: 20_000).components(separatedBy: "\n")
         #expect(lines.count <= 1_040)
         // The library prunes a page at a time, so the model keeps between its
-        // limit and about one page under it: 856 lines here, screen included.
+        // limit and about one page under it, which at 80 columns is some 600
+        // rows, so the floor here is well under the limit.
         #expect(lines.count > 400, "\(lines.count) lines")
         #expect(lines.last == "line 5000")
         #expect(viewer.text(maxLines: 20_000) == model.text(maxLines: 20_000))
@@ -195,11 +196,15 @@ private final class Finished: @unchecked Sendable {
         #expect(lines.last == "line 12000")
     }
 
-    /// The flag and the bytes are taken in one call under one lock. With one
-    /// thread switching screens as fast as it can and another taking frames,
-    /// every frame's flag is what its own bytes do to a receiver: a frame whose
-    /// flag and bytes were read on either side of a write would disagree.
-    @Test func aSnapshotFrameFlagAgreesWithItsBytesUnderConcurrentWrites() async throws {
+    /// Across many frames taken while another task switches screens, every
+    /// frame's flag is what its own bytes do to a receiver.
+    ///
+    /// What this shows is agreement, not the single lock that guarantees it: a
+    /// version reading the flag and the bytes under two acquisitions was tried
+    /// and passed too, because the gap between them is too small to land in by
+    /// chance. The one critical section in `GhosttyVtScreenModel.snapshotFrame()`
+    /// is what makes a disagreement impossible.
+    @Test func aSnapshotFrameFlagAgreesWithItsBytesWhileAnotherTaskSwitchesScreens() async throws {
         let model = try GhosttyVtScreenModel(size: TerminalSize(cols: 40, rows: 10), scrollbackLines: 1_000)
         for line in 1...50 { write("history \(line)\r\n", to: model) }
         let finished = Finished()
@@ -214,6 +219,7 @@ private final class Finished: @unchecked Sendable {
                     round += 1
                     model.write(Array("\u{1b}[?1049h\(round) on the alternate screen".utf8))
                     model.write(Array("\u{1b}[?1049l\(round) on the primary\r\n".utf8))
+                    await Task.yield()
                 }
                 return []
             }
@@ -247,10 +253,10 @@ private final class Finished: @unchecked Sendable {
         #expect(frames.filter { !$0.alternate }.count >= 100)
     }
 
-    /// A snapshot frame of a full default scrollback at 120 columns: within loose
+    /// One snapshot frame of a full default scrollback at 120 columns: within loose
     /// bounds of size and rows, so a change that made it quadratic or dropped the
     /// history would show. The numbers in `docs/terminal.md` come from this.
-    @Test func aSnapshotFrameOfAFullScrollbackIsLinearInSize() throws {
+    @Test func aSnapshotFrameOfAFullDefaultScrollbackStaysWithinBounds() throws {
         let model = try GhosttyVtScreenModel(size: TerminalSize(cols: 120, rows: 40))
         var chunk: [UInt8] = []
         for line in 1...12_000 {

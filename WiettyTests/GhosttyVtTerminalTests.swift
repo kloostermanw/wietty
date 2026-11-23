@@ -467,6 +467,71 @@ import WiettyCore
         #expect(terminal.snapshotFrame().alternate)
     }
 
+    /// The control for the dirty terminal test's last check: kitty keyboard flags
+    /// pushed on the alternate screen are still there after leaving it and
+    /// entering it again, with each of the three ways in. So flags found gone on
+    /// the alternate screen after a hard reset were removed by the reset, not by
+    /// the act of entering the screen to look.
+    @Test(arguments: ["\u{1b}[?1049", "\u{1b}[?1047", "\u{1b}[?47"])
+    func kittyFlagsOnTheAlternateScreenSurviveLeavingAndEnteringIt(mode: String) throws {
+        let terminal = try terminal()
+        write(mode + "h\(Self.esc)[>3u", to: terminal)
+        #expect(terminal.kittyKeyboardFlags == 3)
+        write(mode + "l", to: terminal)
+        #expect(terminal.kittyKeyboardFlags == 0)
+        write(mode + "h", to: terminal)
+        #expect(terminal.kittyKeyboardFlags == 3)
+    }
+
+    /// A last row that is blank, with modes that go behind the content: the bare
+    /// row is empty, which is a suffix of anything, and must be read as an
+    /// empty row and not as a failed pass or a front that swallowed something.
+    @Test func aSnapshotWhoseLastRowIsBlankKeepsEveryRow() throws {
+        let source = try terminal(cols: 40, rows: 10)
+        fillWithWrappedLetters(source)
+        write("\(Self.esc)[H\(Self.esc)[2Jtop\r\nsecond\(Self.esc)[?7l\(Self.esc)[3;8r\(Self.esc)[?6h\(Self.esc)[2;5H", to: source)
+        #expect(source.viewportLines().count < source.size.rows)
+
+        let copy = try rebuild(source)
+        #expect(!copy.isModeSet(7))
+        #expect(copy.isModeSet(6))
+        #expect(copy.viewportLines() == source.viewportLines())
+    }
+
+    /// DECCOLM (mode 3) with mode 40, which allows it. The library tracks both
+    /// and acts on them: the source really goes to 132 columns and clears its
+    /// screen. Both go in front of the content, in the order the library writes
+    /// them, which is 3 before 40. On a receiver after a hard reset the 3 then
+    /// finds 40 off and does nothing, so the receiver keeps the grid it was told
+    /// and its screen, and is left allowing the switch as the source is. That
+    /// holds even when the source was resized after the switch, which is the
+    /// case where acting on 3 would be wrong.
+    @Test func aSnapshotOfASourceThatSwitchedTo132ColumnsKeepsItsHistory() throws {
+        let source = try terminal(cols: 40, rows: 10)
+        fillWithWrappedLetters(source)
+        write("\(Self.esc)[?40h\(Self.esc)[?3h", to: source)
+        #expect(source.size.cols == 132)
+        #expect(source.isModeSet(3) && source.isModeSet(40))
+        for line in 1...15 { write("wide \(line) " + String(repeating: "w", count: 140) + "\r\n", to: source) }
+        source.resize(to: TerminalSize(cols: 100, rows: 10))
+        write("at 100", to: source)
+
+        let frame = source.snapshotFrame()
+        #expect(frame.size == TerminalSize(cols: 100, rows: 10))
+        let copy = try terminal(cols: frame.size.cols, rows: frame.size.rows)
+        copy.write(TerminalPaint.hardReset + frame.bytes)
+        #expect(copy.size == frame.size)
+        #expect(copy.scrollbackRows == source.scrollbackRows)
+        #expect(copy.text(maxLines: 500) == source.text(maxLines: 500))
+        #expect(copy.viewportLines() == source.viewportLines())
+        #expect(copy.cursor == source.cursor)
+        #expect(copy.isModeSet(40))
+        // Not set on the receiver, and with no effect on it: see above. It is
+        // also why the paint frames are not compared here: the source's states
+        // mode 3 and the copy's does not.
+        #expect(!copy.isModeSet(3))
+    }
+
     @Test func theAlternateScreenFlagFollowsTheMode() throws {
         let terminal = try terminal()
         #expect(!terminal.isAlternateScreen)
