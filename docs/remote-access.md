@@ -271,6 +271,17 @@ viewer that has not answered a ping by the time the next one is due is closed wi
 1001 (going away) and detached. The 30 seconds are set explicitly in
 `RemoteServer`, not left to the WebSocket library's default.
 
+A snapshot is one message, however large, and a ping is written behind the
+message being written, so the viewer can answer it only once the whole snapshot has
+reached it. A link too slow to carry a snapshot within the 30 second ping period is
+therefore closed in the middle of the snapshot, and a client that reconnects is sent
+the same snapshot and closed again. At the default 10,000 lines of history (about
+0.63 MB) that takes a link under roughly 170 kbit/s; at 100,000 lines (6 to 11 MB)
+one of 1.7 to 3 Mbit/s, which a VPN over a mobile link can be. Nothing on the server
+caps a snapshot either, while a client accepts messages of at most 64 MiB
+(`StreamProtocol.maxMessageSize`): a larger snapshot fails at the client, which
+sees a lost connection.
+
 ## Controlling side: connecting to another instance
 
 Any Wietty instance can add one or more other instances as remote
