@@ -117,7 +117,9 @@ private final class Finished: @unchecked Sendable {
             func write(_ bytes: [UInt8]) {}
             func resize(to size: TerminalSize) {}
             func paintFrame() -> [UInt8] { [] }
-            func snapshotFrame() -> [UInt8] { [] }
+            func snapshotFrame() -> TerminalSnapshotFrame {
+                TerminalSnapshotFrame(size: size, bytes: [], alternate: false)
+            }
             func snapshot() -> Data { Data() }
             func text(maxLines: Int) -> String { "" }
             var size: TerminalSize { TerminalSize(cols: 80, rows: 24) }
@@ -152,13 +154,13 @@ private final class Finished: @unchecked Sendable {
         for line in 1...5_000 { write("line \(line)\r\n", to: model) }
 
         let viewer = try GhosttyVtTerminal(size: TerminalSize(cols: 80, rows: 40), scrollbackLines: 20_000)
-        viewer.write(TerminalPaint.hardReset + model.snapshotFrame())
+        viewer.write(TerminalPaint.hardReset + model.snapshotFrame().bytes)
 
         let lines = viewer.text(maxLines: 20_000).components(separatedBy: "\n")
         #expect(lines.count <= 1_040)
-        // The library prunes a page at a time, so the model keeps somewhat under
-        // its limit: 856 lines here, screen included.
-        #expect(lines.count > 800, "\(lines.count) lines")
+        // The library prunes a page at a time, so the model keeps between its
+        // limit and about one page under it: 856 lines here, screen included.
+        #expect(lines.count > 400, "\(lines.count) lines")
         #expect(lines.last == "line 5000")
         #expect(viewer.text(maxLines: 20_000) == model.text(maxLines: 20_000))
     }
@@ -191,6 +193,83 @@ private final class Finished: @unchecked Sendable {
         #expect(lines.count > 8_000)
         #expect(lines.count <= TerminalScrollback.defaultLines + 10)
         #expect(lines.last == "line 12000")
+    }
+
+    /// The flag and the bytes are taken in one call under one lock. With one
+    /// thread switching screens as fast as it can and another taking frames,
+    /// every frame's flag is what its own bytes do to a receiver: a frame whose
+    /// flag and bytes were read on either side of a write would disagree.
+    @Test func aSnapshotFrameFlagAgreesWithItsBytesUnderConcurrentWrites() async throws {
+        let model = try GhosttyVtScreenModel(size: TerminalSize(cols: 40, rows: 10), scrollbackLines: 1_000)
+        for line in 1...50 { write("history \(line)\r\n", to: model) }
+        let finished = Finished()
+
+        // Bounded by the frames taken rather than by the writes: frames are taken
+        // until each screen has been caught a hundred times, so the test neither
+        // ends before the writer is under way nor runs for as long as it can.
+        let frames = await withTaskGroup(of: [TerminalSnapshotFrame].self) { group in
+            group.addTask {
+                var round = 0
+                while !finished.isSet {
+                    round += 1
+                    model.write(Array("\u{1b}[?1049h\(round) on the alternate screen".utf8))
+                    model.write(Array("\u{1b}[?1049l\(round) on the primary\r\n".utf8))
+                }
+                return []
+            }
+            group.addTask {
+                var taken: [TerminalSnapshotFrame] = []
+                var alternate = 0
+                while min(alternate, taken.count - alternate) < 100 && taken.count < 50_000 {
+                    let frame = model.snapshotFrame()
+                    if frame.alternate { alternate += 1 }
+                    taken.append(frame)
+                    await Task.yield()
+                }
+                finished.set()
+                return taken
+            }
+            var all: [TerminalSnapshotFrame] = []
+            for await batch in group { all += batch }
+            return all
+        }
+
+        #expect(!frames.isEmpty)
+        var disagreements = 0
+        for frame in frames {
+            let receiver = try GhosttyVtTerminal(size: frame.size, scrollbackLines: 1_000)
+            receiver.write(TerminalPaint.hardReset + frame.bytes)
+            if receiver.isAlternateScreen != frame.alternate { disagreements += 1 }
+        }
+        #expect(disagreements == 0)
+        // Both screens were caught, or the test showed nothing.
+        #expect(frames.filter(\.alternate).count >= 100)
+        #expect(frames.filter { !$0.alternate }.count >= 100)
+    }
+
+    /// A snapshot frame of a full default scrollback at 120 columns: within loose
+    /// bounds of size and rows, so a change that made it quadratic or dropped the
+    /// history would show. The numbers in `docs/terminal.md` come from this.
+    @Test func aSnapshotFrameOfAFullScrollbackIsLinearInSize() throws {
+        let model = try GhosttyVtScreenModel(size: TerminalSize(cols: 120, rows: 40))
+        var chunk: [UInt8] = []
+        for line in 1...12_000 {
+            chunk += Array("\u{1b}[3\(line % 8)mline \(line)\u{1b}[0m of some reasonably long log output\r\n".utf8)
+            if chunk.count > 65_536 { model.write(chunk); chunk = [] }
+        }
+        model.write(chunk)
+        let rows = model.text(maxLines: 20_000).components(separatedBy: "\n").count
+        let start = Date()
+        let frame = model.snapshotFrame()
+        let elapsed = Date().timeIntervalSince(start)
+        // Between the limit and about one page (some 400 rows at 120 columns)
+        // under it, plus the screen.
+        #expect(rows > TerminalScrollback.defaultLines - 500)
+        #expect(rows <= TerminalScrollback.defaultLines + 40)
+        // About 65 bytes a row for these lines: 633 KB measured.
+        #expect(frame.bytes.count > 400_000)
+        #expect(frame.bytes.count < 1_500_000)
+        #expect(elapsed < 1.0, "\(elapsed) s")
     }
 
     /// The three callers the model really has, at once: the relay's queue writing,

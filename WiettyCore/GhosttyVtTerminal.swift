@@ -41,9 +41,11 @@ package final class GhosttyVtTerminal {
 
     /// - Parameter size: the grid to start with.
     /// - Parameter scrollbackLines: how many rows of history to keep, at most. Zero
-    ///   keeps none. The library prunes history a page at a time, so a full
-    ///   scrollback holds somewhat fewer rows than asked rather than exactly that
-    ///   many: 10,000 gives about 9,665 at 120 columns, 1,000 about 953.
+    ///   keeps none. The library prunes history a whole page at a time, so a
+    ///   full scrollback holds between the limit and about one page under it,
+    ///   depending on where in a page the last line fell: measured with short
+    ///   log lines, 9,605 to 10,000 rows for 10,000 at 120 columns, 605 to 1,000
+    ///   for 1,000, and 409 to 1,000 for 1,000 at 80 columns.
     /// - Parameter graphemeClustering: whether mode 2027 starts on, and comes back
     ///   on after a full reset. True is what a surface does under Ghostty's default
     ///   configuration; pass what the surface this terminal mirrors resolved.
@@ -135,6 +137,29 @@ package final class GhosttyVtTerminal {
         (Int(uint16(GHOSTTY_TERMINAL_DATA_CURSOR_X)), Int(uint16(GHOSTTY_TERMINAL_DATA_CURSOR_Y)))
     }
 
+    /// Whether a mode is set right now. `ansi` false is a DEC private mode
+    /// (`CSI ? n h`), true an ANSI one (`CSI n h`).
+    package func isModeSet(_ number: UInt16, ansi: Bool = false) -> Bool {
+        var config = GhosttyTerminalModeConfig(mode: Self.mode(number, ansi: ansi), value: false)
+        guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &config) == GHOSTTY_SUCCESS else {
+            return false
+        }
+        return config.value
+    }
+
+    /// The kitty keyboard protocol flags in force on the active screen.
+    package var kittyKeyboardFlags: UInt8 {
+        var flags: UInt8 = 0
+        ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS, &flags)
+        return flags
+    }
+
+    /// `ghostty_mode_new`, which Swift does not see: the mode number in the low
+    /// fifteen bits and the top bit set for an ANSI mode.
+    private static func mode(_ number: UInt16, ansi: Bool) -> GhosttyMode {
+        GhosttyMode((number & 0x7FFF) | (ansi ? 0x8000 : 0))
+    }
+
     /// How many rows of history are held above the active screen right now.
     package var scrollbackRows: Int {
         count(GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
@@ -169,14 +194,15 @@ package final class GhosttyVtTerminal {
     /// row of history the terminal still holds, oldest first, then the active
     /// screen, then the cursor, the modes, the scrolling region, the tab stops and
     /// the rest of what `paintFrame()` carries, the palette excepted for the same
-    /// reason (see `paintExtras`).
+    /// reason (see `paintExtras`). With the grid and the screen it was taken on,
+    /// read in the same call so the three always describe the same moment.
     ///
-    /// One selection over the whole of the active screen's rows, in the `screen`
-    /// coordinate space that `text(maxLines:)` reads, from the first row of
-    /// history to the last row of the active area, and one format call over it.
-    /// The formatter walks the pages once and writes into one growing buffer, so
-    /// the cost is linear in the rows held. Measured at 120 columns with 9,981
-    /// rows of coloured log lines: 633 KB in under 2 ms.
+    /// The rows are one selection over the whole of the active screen, in the
+    /// `screen` coordinate space that `text(maxLines:)` reads, from the first row
+    /// of history to the last row of the active area, formatted once. The cost
+    /// is linear in the rows held. Measured at 120 columns: about 630 KB and 2 ms
+    /// for a full default scrollback of coloured log lines, 6.4 MB and 17 ms for
+    /// 100,000 lines.
     ///
     /// Not trimmed, so the blank rows at the bottom of the screen are written and
     /// a receiver of the same grid ends with as many history rows as this
@@ -188,21 +214,134 @@ package final class GhosttyVtTerminal {
     /// unwrap, so a line wrapped on a painted viewer looks right but is two
     /// lines to that viewer's copy and reflow.
     ///
+    /// **The content is laid down with default modes, and the modes come after
+    /// it.** The library writes the modes and the tab stops in front of the
+    /// content, and the scrolling region, cursor, pen, keyboard protocols and
+    /// character sets behind it. In front is harmless for a viewport, but not
+    /// for wrapped history: with autowrap off the joined lines would be cut at
+    /// the last column. So the frame is assembled from parts, in this order:
+    ///
+    /// 1. grapheme clustering, stated outright, because it decides how many
+    ///    cells a joined emoji takes and a reset puts back the receiver's
+    ///    default, not this terminal's;
+    /// 2. the switch to the alternate screen, if this terminal is on it, so the
+    ///    content lands there;
+    /// 3. the content, formatted with no extras;
+    /// 4. the other modes and then the tab stops, as the library wrote them;
+    /// 5. everything the library writes behind the content, as it wrote it.
+    ///
+    /// Parts 2, 4 and 5 are cut out of the library's own output for the last row
+    /// alone, which costs three passes over one row: the row with no extras, the
+    /// row with only the extras written in front, and the row with all of them.
+    /// Should a later release put that row anywhere else in its output, or write
+    /// a different front for the two, the cut does not match and the frame falls
+    /// back to the library's single pass, which is correct for everything but a
+    /// mode that changes how content is laid down.
+    ///
     /// On the alternate screen this is that screen and nothing else: the
     /// alternate screen has no history, and the formatter only reads the active
     /// screen, so the primary screen underneath is not in it.
-    package func snapshotFrame() -> [UInt8] {
+    package func snapshotFrame() -> TerminalSnapshotFrame {
         let size = self.size
+        let alternate = isAlternateScreen
+        return TerminalSnapshotFrame(size: size, bytes: snapshotBytes(size: size), alternate: alternate)
+    }
+
+    private func snapshotBytes(size: TerminalSize) -> [UInt8] {
         let total = count(GHOSTTY_TERMINAL_DATA_TOTAL_ROWS)
-        guard let selection = selection(tag: GHOSTTY_POINT_TAG_SCREEN,
-                                        firstRow: 0,
-                                        lastRow: total - 1,
-                                        cols: size.cols) else { return [] }
-        return format(emit: GHOSTTY_FORMATTER_FORMAT_VT,
-                      extras: Self.paintExtras,
-                      trim: false,
-                      unwrap: true,
-                      selection: selection)
+        guard let whole = selection(tag: GHOSTTY_POINT_TAG_SCREEN, firstRow: 0,
+                                    lastRow: total - 1, cols: size.cols),
+              let lastRow = selection(tag: GHOSTTY_POINT_TAG_SCREEN, firstRow: total - 1,
+                                      lastRow: total - 1, cols: size.cols) else { return [] }
+        func vt(_ extras: GhosttyFormatterExtras, _ selection: GhosttySelection) -> [UInt8] {
+            format(emit: GHOSTTY_FORMATTER_FORMAT_VT, extras: extras, trim: false, unwrap: true,
+                   selection: selection)
+        }
+
+        // The row bare, the row behind what goes in front of it, and the row with
+        // everything. The last is cut by the second rather than by the row: what
+        // the library writes behind the content depends on what it wrote in front
+        // (the cursor comes relative to the scrolling region when it has written
+        // origin mode, and absolute when it has not), so the part behind is taken
+        // from a pass that wrote both, exactly as the single pass would have it.
+        let row = vt(GHOSTTY_FORMATTER_EXTRAS_NONE, lastRow)
+        let infront = vt(Self.extrasInFront, lastRow)
+        let everything = vt(Self.paintExtras, lastRow)
+        guard infront.count >= row.count, infront.suffix(row.count).elementsEqual(row),
+              everything.count >= infront.count, everything.prefix(infront.count).elementsEqual(infront) else {
+            return vt(Self.paintExtras, whole)
+        }
+        let prefix = SnapshotPrefix(infront.dropLast(row.count))
+
+        var bytes = Array("\u{1B}[?2027\(isModeSet(2027) ? "h" : "l")".utf8)
+        bytes += prefix.screenSwitches
+        bytes += vt(GHOSTTY_FORMATTER_EXTRAS_NONE, whole)
+        bytes += prefix.otherModes
+        bytes += prefix.rest
+        bytes += everything.dropFirst(infront.count)
+        return bytes
+    }
+
+    /// The extras the library writes in front of the content.
+    private static let extrasInFront: GhosttyFormatterExtras =
+        GHOSTTY_FORMATTER_EXTRA_MODES | GHOSTTY_FORMATTER_EXTRA_TABSTOPS
+
+    /// What the library writes in front of the content, taken apart: the leading
+    /// run of mode sets and resets (`CSI ? n h`, `CSI n l` and so on), one per
+    /// sequence, and whatever follows them, the tab stops, kept as it is.
+    private struct SnapshotPrefix {
+        /// The alternate screen modes, which have to be in force before content.
+        var screenSwitches: [UInt8] = []
+        /// Every other mode, grapheme clustering excepted because the frame
+        /// states it itself.
+        var otherModes: [UInt8] = []
+        var rest: [UInt8] = []
+
+        private static let screenModes: Set<Int> = [47, 1047, 1049]
+
+        init(_ bytes: ArraySlice<UInt8>) {
+            var index = bytes.startIndex
+            while let (sequence, number, isPrivate, end) = Self.mode(in: bytes, at: index) {
+                if isPrivate && Self.screenModes.contains(number) {
+                    screenSwitches += sequence
+                } else if !(isPrivate && number == 2027) {
+                    otherModes += sequence
+                }
+                index = end
+            }
+            rest = Array(bytes[index...])
+        }
+
+        /// One `ESC [ ? n h` or `ESC [ n l` starting at `start`, or nil.
+        private static func mode(in bytes: ArraySlice<UInt8>, at start: Int)
+            -> (ArraySlice<UInt8>, Int, Bool, Int)? {
+            var index = start
+            func next() -> UInt8? {
+                guard index < bytes.endIndex else { return nil }
+                defer { index += 1 }
+                return bytes[index]
+            }
+            guard next() == 0x1B, next() == UInt8(ascii: "[") else { return nil }
+            var isPrivate = false
+            var number = 0
+            var digits = 0
+            while let byte = next() {
+                switch byte {
+                case UInt8(ascii: "?") where digits == 0 && !isPrivate:
+                    isPrivate = true
+                case UInt8(ascii: "0")...UInt8(ascii: "9"):
+                    number = number * 10 + Int(byte - UInt8(ascii: "0"))
+                    digits += 1
+                    guard digits <= 5 else { return nil }
+                case UInt8(ascii: "h"), UInt8(ascii: "l"):
+                    guard digits > 0 else { return nil }
+                    return (bytes[start..<index], number, isPrivate, index)
+                default:
+                    return nil
+                }
+            }
+            return nil
+        }
     }
 
     /// Whether the alternate screen is the active one, as the library has it.

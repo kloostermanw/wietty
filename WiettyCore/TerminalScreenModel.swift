@@ -29,6 +29,8 @@ package protocol TerminalScreenModel: AnyObject, Sendable {
 
     /// History up to the scrollback limit, then the visible screen with modes and cursor,
     /// as VT. Without a reset: `TerminalPaint.hardReset` goes in front of it.
+    /// The grid and the screen it describes are read under the same lock as the
+    /// bytes, so the three always belong together.
     ///
     /// What a viewer attaching now is sent so that it has the history as well as
     /// the screen. The active screen only: on the alternate screen it is that
@@ -36,7 +38,7 @@ package protocol TerminalScreenModel: AnyObject, Sendable {
     /// frame by the whole history, up to about a megabyte at 10,000 lines, and
     /// taken under the same lock as a write, so it is for an attach and never per
     /// frame.
-    func snapshotFrame() -> [UInt8]
+    func snapshotFrame() -> TerminalSnapshotFrame
 
     /// Whether the alternate screen is the active one.
     var isAlternateScreen: Bool { get }
@@ -80,6 +82,26 @@ extension TerminalScreenModel {
     }
 }
 
+/// A snapshot frame and what it was taken with, all read in one call.
+///
+/// A viewer is told the grid before the bytes, and a later step decides what to
+/// do on the alternate screen from the flag. Read separately, a write could land
+/// between the reads and the flag would describe a screen the bytes do not.
+package struct TerminalSnapshotFrame: Sendable, Equatable {
+    /// The grid the bytes were laid out for.
+    package let size: TerminalSize
+    /// `TerminalScreenModel.snapshotFrame()`'s VT, for behind `TerminalPaint.hardReset`.
+    package let bytes: [UInt8]
+    /// Whether the bytes leave the receiver on the alternate screen.
+    package let alternate: Bool
+
+    package init(size: TerminalSize, bytes: [UInt8], alternate: Bool) {
+        self.size = size
+        self.bytes = bytes
+        self.alternate = alternate
+    }
+}
+
 package enum TerminalPaint {
     /// What a paint frame is prefixed with: a soft reset (DECSTR), erase the
     /// screen, home.
@@ -118,8 +140,8 @@ package enum TerminalPaint {
 /// when a terminal opens: a model is built with its limit and keeps it.
 package enum TerminalScrollback {
     /// Lines of history per terminal when nothing says otherwise. The library
-    /// prunes a page at a time, so a full scrollback holds somewhat fewer rows
-    /// than its limit, never more.
+    /// prunes a whole page at a time, so a full scrollback holds between its
+    /// limit and about one page under it, never more.
     package static let defaultLines = 10_000
 
     /// What the setting may be.
@@ -180,7 +202,7 @@ package final class GhosttyVtScreenModel: TerminalScreenModel, @unchecked Sendab
         return terminal.paintFrame()
     }
 
-    package func snapshotFrame() -> [UInt8] {
+    package func snapshotFrame() -> TerminalSnapshotFrame {
         lock.lock(); defer { lock.unlock() }
         return terminal.snapshotFrame()
     }

@@ -243,7 +243,7 @@ import WiettyCore
         fillWithHistory(source, lines: 300)
 
         let copy = try terminal(cols: 80, rows: 40)
-        copy.write(TerminalPaint.hardReset + source.snapshotFrame())
+        copy.write(TerminalPaint.hardReset + source.snapshotFrame().bytes)
 
         #expect(copy.text(maxLines: 300) == source.text(maxLines: 300))
         #expect(copy.text(maxLines: 300).hasPrefix("line "))
@@ -273,7 +273,7 @@ import WiettyCore
         write("\(Self.esc)[H\(Self.esc)[2Jtop\(Self.esc)[4;6Hmiddle", to: source)
 
         let copy = try terminal(cols: 20, rows: 8)
-        copy.write(TerminalPaint.hardReset + source.snapshotFrame())
+        copy.write(TerminalPaint.hardReset + source.snapshotFrame().bytes)
 
         #expect(copy.scrollbackRows == source.scrollbackRows)
         #expect(copy.text(maxLines: 100) == source.text(maxLines: 100))
@@ -296,11 +296,15 @@ import WiettyCore
 
         let viewer = try terminal(cols: 80, rows: 40)
         for line in 1...200 { write("stale \(line) of the viewer\r\n", to: viewer) }
-        write("\(Self.esc)[?1049h\(Self.esc)[?1000h\(Self.esc)[5;10r\(Self.esc)[>1u", to: viewer)
+        // Kitty keyboard flags live on a stack per screen, so they are pushed on
+        // both: once on the primary screen, and again once on the alternate one.
+        write("\(Self.esc)[>1u", to: viewer)
+        write("\(Self.esc)[?1049h\(Self.esc)[?1000h\(Self.esc)[5;10r\(Self.esc)[>3u", to: viewer)
         write("\(Self.esc)[7;3Hfull screen program", to: viewer)
         #expect(viewer.isAlternateScreen)
+        #expect(viewer.kittyKeyboardFlags == 3)
 
-        viewer.write(TerminalPaint.hardReset + source.snapshotFrame())
+        viewer.write(TerminalPaint.hardReset + source.snapshotFrame().bytes)
 
         #expect(viewer.text(maxLines: 300) == source.text(maxLines: 300))
         #expect(viewer.cursor == source.cursor)
@@ -312,6 +316,13 @@ import WiettyCore
         // frame carries all three, so equal frames mean none of the viewer's own
         // survived.
         #expect(viewer.paintFrame() == source.paintFrame())
+        #expect(!viewer.isModeSet(1000))
+        // The flags pushed on each screen are gone from both: the primary is the
+        // active one now, and the alternate one is checked by entering it.
+        #expect(viewer.kittyKeyboardFlags == 0)
+        write("\(Self.esc)[?1049h", to: viewer)
+        #expect(viewer.isAlternateScreen)
+        #expect(viewer.kittyKeyboardFlags == 0)
     }
 
     /// The frame paints the active screen. A source on its alternate screen gives a
@@ -322,12 +333,138 @@ import WiettyCore
         write("\(Self.esc)[?1049h\(Self.esc)[H\(Self.esc)[2Jeditor top\(Self.esc)[10;5Hcursor here", to: source)
 
         let viewer = try terminal(cols: 80, rows: 24)
-        viewer.write(TerminalPaint.hardReset + source.snapshotFrame())
+        viewer.write(TerminalPaint.hardReset + source.snapshotFrame().bytes)
 
         #expect(viewer.isAlternateScreen)
         #expect(viewer.viewportLines() == source.viewportLines())
         #expect(viewer.cursor == source.cursor)
         #expect(viewer.paintFrame() == source.paintFrame())
+    }
+
+    // MARK: - The snapshot frame on a source with modes of its own
+
+    /// History with lines wider than the 40 column grid, so they wrapped, written
+    /// in letters that the DEC line drawing set would turn into box characters.
+    private func fillWithWrappedLetters(_ terminal: GhosttyVtTerminal) {
+        for line in 1...60 {
+            if line % 7 == 0 {
+                write("long \(line) " + String(repeating: "lqkxjm abc ", count: 6) + "\r\n", to: terminal)
+            } else {
+                write("letters lqkxjm \(line)\r\n", to: terminal)
+            }
+        }
+    }
+
+    /// Feeds `source`'s snapshot behind a hard reset into a fresh terminal of the
+    /// same grid and checks the rows, the text, the cursor and the paint frame.
+    @discardableResult
+    private func rebuild(_ source: GhosttyVtTerminal,
+                         sourceLocation: SourceLocation = #_sourceLocation) throws -> GhosttyVtTerminal {
+        let copy = try terminal(cols: source.size.cols, rows: source.size.rows)
+        copy.write(TerminalPaint.hardReset + source.snapshotFrame().bytes)
+        #expect(copy.scrollbackRows == source.scrollbackRows, sourceLocation: sourceLocation)
+        #expect(copy.text(maxLines: 500) == source.text(maxLines: 500), sourceLocation: sourceLocation)
+        #expect(copy.cursor == source.cursor, sourceLocation: sourceLocation)
+        #expect(copy.paintFrame() == source.paintFrame(), sourceLocation: sourceLocation)
+        return copy
+    }
+
+    /// Autowrap off on the source: if the frame turned it off before laying down
+    /// the history, every wrapped line would be cut at the last column.
+    @Test func aSnapshotOfASourceWithAutowrapOffKeepsItsWrappedHistory() throws {
+        let source = try terminal(cols: 40, rows: 10)
+        fillWithWrappedLetters(source)
+        write("\(Self.esc)[?7lafter", to: source)
+        #expect(!source.isModeSet(7))
+
+        let copy = try rebuild(source)
+        #expect(!copy.isModeSet(7))
+    }
+
+    /// A scrolling region and origin mode on the source: applied before the
+    /// history, the rows would scroll inside the region and never reach it.
+    @Test func aSnapshotOfASourceWithARegionAndOriginModeKeepsItsHistory() throws {
+        let source = try terminal(cols: 40, rows: 10)
+        fillWithWrappedLetters(source)
+        write("\(Self.esc)[3;8r\(Self.esc)[?6h\(Self.esc)[2;3Hin region", to: source)
+        #expect(source.isModeSet(6))
+
+        let copy = try rebuild(source)
+        #expect(copy.isModeSet(6))
+        // The region itself: a line feed at its bottom scrolls only inside it.
+        write("\(Self.esc)[6;1H\n\n\nscrolled", to: source)
+        write("\(Self.esc)[6;1H\n\n\nscrolled", to: copy)
+        #expect(copy.viewportLines() == source.viewportLines())
+        #expect(copy.scrollbackRows == source.scrollbackRows)
+    }
+
+    /// DEC line drawing as G0 on the source: designated before the history, the
+    /// letters in it would come back as box characters.
+    @Test func aSnapshotOfASourceUsingLineDrawingKeepsItsLetters() throws {
+        let source = try terminal(cols: 40, rows: 10)
+        fillWithWrappedLetters(source)
+        write("\(Self.esc)(0lqqk", to: source)
+
+        let copy = try rebuild(source)
+        #expect(copy.text(maxLines: 500).contains("letters lqkxjm 1"))
+        // And the receiver is left drawing lines, as the source is.
+        write("lqk", to: source)
+        write("lqk", to: copy)
+        #expect(copy.viewportLines() == source.viewportLines())
+    }
+
+    /// Left and right margins (DECLRMM, then DECSLRM): applied before the history,
+    /// every row would be laid down between columns 5 and 30.
+    @Test func aSnapshotOfASourceWithLeftAndRightMarginsKeepsItsHistory() throws {
+        let source = try terminal(cols: 40, rows: 10)
+        fillWithWrappedLetters(source)
+        write("\(Self.esc)[?69h\(Self.esc)[5;30s", to: source)
+        #expect(source.isModeSet(69))
+
+        let copy = try rebuild(source)
+        #expect(copy.isModeSet(69))
+        write("\(Self.esc)[1;1H" + String(repeating: "m", count: 35), to: source)
+        write("\(Self.esc)[1;1H" + String(repeating: "m", count: 35), to: copy)
+        #expect(copy.viewportLines() == source.viewportLines())
+    }
+
+    /// Grapheme clustering (mode 2027) is a default each terminal is built with,
+    /// and a hard reset puts the receiver's own back. A source and a receiver that
+    /// disagree about it would lay out a joined emoji in a different number of
+    /// cells, so the frame states the source's value before any content, both
+    /// ways round.
+    @Test(arguments: [true, false])
+    func aSnapshotStatesGraphemeClusteringBeforeItsContent(sourceClusters: Bool) throws {
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"
+        let source = try GhosttyVtTerminal(size: TerminalSize(cols: 20, rows: 6), scrollbackLines: 1_000,
+                                           graphemeClustering: sourceClusters)
+        for line in 1...12 {
+            write(String(repeating: "e", count: 14 + line % 4) + family + " tail \(line)\r\n", to: source)
+        }
+        write("prompt " + family, to: source)
+        #expect(source.isModeSet(2027) == sourceClusters)
+
+        let receiver = try GhosttyVtTerminal(size: TerminalSize(cols: 20, rows: 6), scrollbackLines: 1_000,
+                                             graphemeClustering: !sourceClusters)
+        let frame = source.snapshotFrame()
+        let stated = Array("\(Self.esc)[?2027\(sourceClusters ? "h" : "l")".utf8)
+        #expect(Array(frame.bytes.prefix(stated.count)) == stated)
+        receiver.write(TerminalPaint.hardReset + frame.bytes)
+
+        #expect(receiver.isModeSet(2027) == sourceClusters)
+        #expect(receiver.scrollbackRows == source.scrollbackRows)
+        #expect(receiver.text(maxLines: 100) == source.text(maxLines: 100))
+        #expect(receiver.cursor == source.cursor)
+    }
+
+    /// The frame carries the grid and the flag it was taken with, read in the same
+    /// call as its bytes.
+    @Test func aSnapshotFrameCarriesItsGridAndFlag() throws {
+        let terminal = try terminal(cols: 33, rows: 11)
+        #expect(terminal.snapshotFrame().size == TerminalSize(cols: 33, rows: 11))
+        #expect(!terminal.snapshotFrame().alternate)
+        write("\(Self.esc)[?1049h", to: terminal)
+        #expect(terminal.snapshotFrame().alternate)
     }
 
     @Test func theAlternateScreenFlagFollowsTheMode() throws {
