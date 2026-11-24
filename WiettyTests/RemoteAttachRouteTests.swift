@@ -41,6 +41,15 @@ private final class RouteStreamer: ScreenStreaming, @unchecked Sendable {
         for message in initial { onMessage(message) }
         return id
     }
+    private var localAttachList: [Attach] = []
+    /// Every local attach made, in order. The route never makes one.
+    var localAttaches: [Attach] { lock.lock(); defer { lock.unlock() }; return localAttachList }
+    func attachLocal(session: String, resize: ResizeMode,
+                     write: @escaping @Sendable (StreamMessage) -> Void) -> UUID {
+        let id = UUID()
+        lock.lock(); localAttachList.append(Attach(session: session, resize: resize, id: id)); lock.unlock()
+        return id
+    }
     func detach(connectionId: UUID) {
         lock.lock(); detachedList.append(connectionId); sinks[connectionId] = nil; lock.unlock()
     }

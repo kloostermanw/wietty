@@ -539,14 +539,23 @@ it may ask for a resync; it must not call `attach` or `flush`, which wait for th
 
 The lock is per session because a parse runs under it, and one terminal printing a build log must not
 hold up the bytes of the terminal next to it. For the same reason the flush is cheap under it, a swap
-of the buffer and the list of viewers and nothing else, and the flush timer never waits for a session's
-lock: a session whose model is busy (a reflow after a resize can hold a write for a long time) is
-skipped for that tick and its bytes go out on the next one, so the viewers of every other terminal keep
-receiving. Until phase 3 of issue #84 the flush also decoded the bytes into text under that lock, byte
+of the buffer and the list of viewers and nothing else, and the flush timer does not simply wait for a
+session's lock: a session whose model is busy (a reflow after a resize can hold a write for a long time)
+is skipped for that tick and its bytes go out on a later one, so the viewers of every other terminal
+keep receiving. Skipped, but not without limit. A writer parsing a flood holds the lock chunk after
+chunk, and `NSLock` is not fair: a thread waiting for it loses to the thread that unlocks and locks
+again, so a timer that only tried the lock could miss such a session for as long as the flood lasted.
+After three ticks in a row on which the lock was held, the flush asks the session's writer to stand
+aside at the start of its next write (`Stream.standAsideForAFlush`) and tries for the lock for up to
+4 ms. A session that is merely busy is flushed then; one still stuck after 4 ms is skipped again, at a
+cost of those 4 ms per tick to everyone else rather than a delivery queue parked for as long as it is
+stuck. Until phase 3 of issue #84 the flush also decoded the bytes into text under that lock, byte
 by byte, and that alone capped a terminal at about 3 MiB/s.
 
 **Coalescing, and a quiet terminal.** Output is delivered on an 8 ms timer, so a burst coalesces into
-one message. A write into an empty buffer when the session's last flush is more than 8 ms old is
+one message, of at most 256 KiB: a larger batch, which a flood can build in one interval, goes out as
+several `data` messages in order, because a single message over the 4 MiB a `ViewerQueue` holds would
+overflow it even when it was empty. A write into an empty buffer when the session's last flush is more than 8 ms old is
 delivered at once instead, so the echo of a keystroke on a quiet terminal does not wait for the next
 tick. A steady stream still goes out on the timer. The rule applies only to a session with a viewer:
 a write nobody watches would be flushed to nobody, so it stays in the buffer for the next tick, which
@@ -560,6 +569,47 @@ write) and puts them behind a snapshot or a repaint. An escape sequence cut by t
 protected in the same way: the model has consumed its first half, and the viewer receives the second
 half as text. It takes a join landing between two reads that cut a sequence, and the next redraw
 corrects it.
+
+**A second kind of viewer, written on the writer's thread.** Everything above is about a queued
+viewer, the kind the WebSocket route attaches: its output is batched, handed over on the delivery
+queue, and dropped and resynchronised when it falls behind. `PaneStreamHub.attachLocal(session:resize:write:)`
+attaches the other kind, a local viewer, which is what the Mac's own pane becomes once it reads the hub
+over a local socket. Nothing attaches one yet, so the pane still gets its bytes from the relay, which
+writes each chunk to the pane's helper with a blocking write on the thread that reads the pty. A local
+viewer keeps exactly that property. Its attach is the same join as any viewer's (a `resize`, a
+`snapshot` with the started half of a character behind it, then the stream), and after that each
+chunk is written to it by the thread that called `write(session:bytes:)`, before that call returns: no
+8 ms batch and no hop to the delivery queue. `write` may block, and while it does the pty's read thread
+waits with it, so the child waits on a full pty as it would behind a slow terminal. Nothing is ever
+dropped, so it is never resynchronised: the alternate screen rule does not apply to it, and a `resync`
+asked for its id answers `onUnavailable`. A session whose only viewers are local keeps nothing in its
+buffer and schedules no quiet flush. `onLocalViewerAttached` is called once per session, when its first
+local viewer has been sent its snapshot.
+
+The messages for one local viewer come from two threads: output from the writer's, and the attach, a
+`resize`, a `repaint`, a claim's answer and `ended` from the delivery queue. One order between them is
+kept by a write lock per local viewer, and by one rule: whoever has a message for it takes the session's
+lock, takes the viewer's write lock while still holding it, releases the session's lock, calls
+`write`, and releases the write lock. So the messages reach the viewer in the order the session's lock
+was held for them, which is the stream's: a repaint taken from a model that has parsed a chunk cannot
+be written ahead of that chunk, because the writer took the write lock for the chunk before it let go
+of the session's lock. Nothing asks for a session's lock while holding a write lock, the hub's own lock
+and the model's lock are never held across `write`, and several local viewers of one session have their
+write locks taken in the order of their ids. `detach` of a local viewer takes neither its session's lock
+nor its write lock, since a thread waiting for a blocked `write` may hold the one and the blocked call
+holds the other: it marks the viewer gone, and once it has returned no call to `write` starts, except
+the one call that had already been checked when it ran, which is left to finish when its owner shuts
+the transport down.
+
+The cost was accepted knowingly. While a local viewer's `write` blocks, everything on the delivery
+queue that has a message for that session waits for it (a resize, a claim, an ending, another viewer's
+attach), and because the queue is shared, every other session's deliveries wait behind those. A queued
+viewer of the same session may wait too, and catches up once the local viewer reads again. With no such
+message pending, the other sessions are not held: the timer flushes them, and the blocked session's
+queued viewers as well, because the writer holds no session lock while it is inside `write`.
+`PaneStreamLocalViewerTests` covers the thread, the backpressure, the order under a race with an attach
+and with grid changes into a slow viewer, ending, a detach while a write is blocked, a claim, and the
+two bounds above.
 
 `PaneStreamJoinTests` races a writer against an attach and against repaints, plays everything the
 viewer was sent into a terminal of its own, and asserts every numbered line is there exactly once.

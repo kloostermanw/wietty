@@ -9,6 +9,11 @@ package protocol ScreenStreaming: AnyObject, Sendable {
     @discardableResult
     func attach(session: String, resize: ResizeMode,
                 onMessage: @escaping @Sendable (StreamMessage) -> Void) -> UUID
+    /// Attaches a viewer that is never dropped. `write` is called with each message in
+    /// order and may block: while it does, the thread that reads the pty waits.
+    @discardableResult
+    func attachLocal(session: String, resize: ResizeMode,
+                     write: @escaping @Sendable (StreamMessage) -> Void) -> UUID
     func detach(connectionId: UUID)
     /// Input, byte exact. Never touches the main actor.
     func send(session: String, bytes: [UInt8])
