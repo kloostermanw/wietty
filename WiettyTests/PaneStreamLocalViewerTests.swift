@@ -494,6 +494,44 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         #expect(log.messages == [.data(bytes("x"))])
     }
 
+    /// Two local viewers of one session, reserved together by the writer, which
+    /// blocks writing to the first: a detach of the second does not wait for the
+    /// first's pane, and nothing is written to the second afterwards.
+    @Test func aDetachDoesNotWaitForAnotherViewersBlockedWrite() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        let holder = Box<Int?>(nil)
+        let logs = [LocalLog(), LocalLog()]
+        var ids: [UUID] = []
+        for index in 0..<2 {
+            ids.append(hub.attachLocal(session: Self.session, resize: .reflow) { message in
+                logs[index].add(message)
+                guard isData(message) else { return }
+                var first = false
+                if holder.value == nil {
+                    holder.value = index
+                    first = true
+                }
+                if first { gate.hold() }
+            })
+        }
+        let writer = onThread { hub.write(session: Self.session, bytes: bytes("x")) }
+        #expect(gate.waitUntilHeld())
+        guard let blocked = holder.value else { return }
+        let other = 1 - blocked
+        let otherId = ids[other]
+        let detached = onThread { hub.detach(connectionId: otherId) }
+        #expect(detached.wait(timeout: .now() + 1) == .success, "detach waited for another viewer's pane")
+        gate.open()
+        #expect(writer.wait(timeout: .now() + 5) == .success)
+        hub.write(session: Self.session, bytes: bytes("y"))
+        #expect(settled(hub))
+        #expect(logs[other].messages.isEmpty)
+        #expect(logs[blocked].dataBytes == bytes("xy"))
+    }
+
     /// A viewer may detach itself from inside its own `write`: that returns at once,
     /// and the call in progress is the last.
     @Test func aDetachFromInsideTheViewersOwnWriteReturnsAtOnce() {

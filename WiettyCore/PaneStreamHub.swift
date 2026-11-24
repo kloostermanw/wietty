@@ -70,8 +70,14 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         private let onEnded: @Sendable () -> Void
         private let state = NSCondition()
         private var gone = false
+        /// Reserved by a writer: what orders the messages. Set when a writer is
+        /// chosen, which for several local viewers of one session is before it
+        /// writes to any of them.
         private var busy = false
-        /// The thread that made the viewer busy, as `currentThread()` gives it.
+        /// Inside a call to `write` now, and on which thread (`currentThread()`).
+        /// What `detach` waits for: a reserved viewer whose writer is still busy
+        /// with another viewer is not waited for.
+        private var calling = false
         private var writer: UInt64 = 0
         private var pending: [StreamMessage] = []
 
@@ -100,8 +106,10 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         /// left pending, then `messages`. Nil when there is nothing more to do: the
         /// viewer is gone, or it is busy and the messages were left pending.
         ///
-        /// - Parameter waitIfBusy: true for the pty's thread, which waits for a busy
-        ///   viewer (the backpressure); false for `delivery`, which never does.
+        /// - Parameter waitIfBusy: true for the pty's thread, which waits until the
+        ///   viewer is no longer reserved by another writer or has been marked gone
+        ///   (`detach` and `stop` wake it at once): the backpressure. False for
+        ///   `delivery`, which never waits.
         func offer(_ messages: [StreamMessage], waitIfBusy: Bool) -> [StreamMessage]? {
             state.lock()
             defer { state.unlock() }
@@ -112,7 +120,6 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
                 return nil
             }
             busy = true
-            writer = Self.currentThread()
             let batch = pending + messages
             pending = []
             return batch
@@ -153,8 +160,19 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
             var ended = false
             while true {
                 for message in batch {
-                    guard !isGone else { break }
+                    // The check and the mark are one step under `state`, so a
+                    // `detach` either sees the call coming or stops it.
+                    state.lock()
+                    if gone { state.unlock(); break }
+                    calling = true
+                    writer = Self.currentThread()
+                    state.unlock()
                     write(message)
+                    state.lock()
+                    calling = false
+                    writer = 0
+                    state.broadcast()
+                    state.unlock()
                     if case .ended = message {
                         state.lock(); gone = true; state.unlock()
                         ended = true
@@ -166,7 +184,6 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
                 if pending.isEmpty || !drainingAll {
                     let leftover = !pending.isEmpty
                     busy = false
-                    writer = 0
                     state.broadcast()
                     state.unlock()
                     if ended { onEnded() }
@@ -178,15 +195,19 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
             }
         }
 
-        /// Marks the viewer gone and waits until no call to `write` is running,
+        /// Marks the viewer gone and waits until no call to its `write` is running,
         /// unless the call running is this thread's own (a detach from inside
-        /// `write`). Waits for nothing else.
+        /// `write`). Waits for nothing else: not for a reservation, so a writer
+        /// blocked on another viewer of the session does not hold this up. The
+        /// broadcast wakes a pty thread waiting in `offer` for this viewer, which
+        /// then finds it gone.
         func detach() {
             state.lock()
             gone = true
             pending = []
+            state.broadcast()
             let me = Self.currentThread()
-            while busy, writer != me { state.wait() }
+            while calling, writer != me { state.wait() }
             state.unlock()
         }
 
@@ -196,6 +217,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
             state.lock()
             gone = true
             pending = []
+            state.broadcast()
             state.unlock()
         }
     }
@@ -640,17 +662,25 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Calls never overlap, they come in stream order, and no lock of the hub's is
     /// held across one. See `LocalViewer`.
     ///
-    /// **The cost, exactly.** While this viewer's `write` blocks (its pane does not
-    /// read), that terminal's pty read waits and so does its child, the terminal's
-    /// other local viewers get nothing, and whatever `delivery` had for this viewer
-    /// meanwhile is written when it reads again. Nothing else waits: `delivery`
-    /// leaves its messages and goes on, so every other session, the queued viewers
-    /// of this one, attaches, resyncs, claims and endings all carry on. The one way
-    /// `delivery` itself can wait on a pane is a write it makes to an idle viewer
-    /// (the snapshot of an attach, a resize, a claim's answer, an ending, or what
-    /// was left for it while it was busy) that
-    /// blocks because the pane stops reading in the middle of it; while that lasts
-    /// everything on `delivery` waits, every session's queued viewers included.
+    /// **The cost, in two cases.** When the pane stops reading while output is
+    /// being written to it (the usual case, the pty's thread is the writer): that
+    /// terminal's pty read waits and so does its child; its other local viewers
+    /// get nothing until it reads; a `resize`, a claim's answer and an `ended` for
+    /// its local viewers are left with the viewer and delivered when it reads;
+    /// nothing else waits. `detach` of that viewer waits for the blocked write, so
+    /// its owner shuts the socket down first.
+    ///
+    /// When `delivery` itself is the writer (the snapshot on attach, or a `resize`,
+    /// a claim's answer, an `ended` or a drain sent to a viewer that was idle) and
+    /// the pane stops reading in the middle of that write: `delivery` is parked
+    /// until the pane reads or the owner shuts the socket down. While it is parked
+    /// no queued viewer of any terminal receives anything, nobody can attach,
+    /// other terminals' buffers grow, and their WebSocket viewers are
+    /// resynchronised afterwards. Apart from a pane that stops in the middle of its
+    /// first snapshot, this takes a transport that refuses a message of a few
+    /// dozen bytes: a socket buffer already full on a terminal that is producing
+    /// nothing. The transport's owner should give the socket a send buffer large
+    /// enough for control messages.
     ///
     /// **What `write` may call.** `claim`, `resync`, `send`, and `detach` of this
     /// viewer itself, which then returns at once. Not `write(session:bytes:)`,
@@ -661,9 +691,11 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// **What the transport may not do.** The thread that drains this viewer's
     /// transport (reads the socket `write` writes into, at its other end) must never
     /// wait on the hub: no `attach`, no `attachLocal`, no `detach` of a queued
-    /// viewer, nothing that waits for `delivery` or a session's lock, neither
-    /// directly nor through the main actor or the cooperative pool. Those can be
-    /// waiting for a `write` that only that thread's reading lets return.
+    /// viewer, no `detach` of this local viewer either (it waits for a write in
+    /// progress), nothing that waits for `delivery` or a session's lock, neither
+    /// directly nor through anything it waits for: the main actor, the cooperative
+    /// pool, another thread. Those can be waiting for a `write` that only that
+    /// thread's reading lets return.
     ///
     /// **Detaching.** After `detach(connectionId:)` returns, this viewer's `write` is
     /// not running and will never be called again, unless `detach` was called from
