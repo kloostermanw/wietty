@@ -67,6 +67,14 @@ private final class ScriptedStreamer: ScreenStreaming, @unchecked Sendable {
         duringAttach?(onMessage)
         return id
     }
+    /// Every local attach made, in order, with the id it was given.
+    private(set) var localAttaches: [(session: String, id: UUID)] = []
+    func attachLocal(session: String, resize: ResizeMode,
+                     write: @escaping @Sendable (StreamMessage) -> Void) -> UUID {
+        let id = UUID()
+        lock.lock(); localAttaches.append((session, id)); lock.unlock()
+        return id
+    }
     func detach(connectionId: UUID) { lock.lock(); detached.append(connectionId); lock.unlock() }
     func send(session: String, bytes: [UInt8]) {}
     func resync(connectionId: UUID, onUnavailable: @escaping @Sendable () -> Void) {

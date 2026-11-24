@@ -21,6 +21,15 @@ private final class FakeStreamer: ScreenStreaming, @unchecked Sendable {
         onMessage(.resize(cols: 80, rows: 24, own: false))
         return UUID()
     }
+    /// Every local attach made, in order, with the id it was given.
+    private(set) var localAttaches: [(session: String, id: UUID)] = []
+    @discardableResult
+    func attachLocal(session: String, resize: ResizeMode,
+                     write: @escaping @Sendable (StreamMessage) -> Void) -> UUID {
+        let id = UUID()
+        lock.lock(); localAttaches.append((session, id)); lock.unlock()
+        return id
+    }
     func detach(connectionId: UUID) { lock.lock(); detached += 1; lock.unlock() }
     func send(session: String, bytes: [UInt8]) { lock.lock(); sent.append(bytes); lock.unlock() }
     func resync(connectionId: UUID, onUnavailable: @escaping @Sendable () -> Void) {

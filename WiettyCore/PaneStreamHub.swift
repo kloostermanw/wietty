@@ -13,12 +13,73 @@ import WiettyShared
 /// each one directly would put a message on the wire for every keystroke. A write
 /// into a quiet session that has a viewer is the exception: it goes out at once, so
 /// the echo of a keystroke does not wait for the timer.
+///
+/// That is for a queued viewer, the kind the WebSocket route attaches. A local
+/// viewer (`attachLocal`) is the other kind: it is written to on the writer's own
+/// thread, one write per chunk, with a call that may block and so holds the writer
+/// back, and it is never dropped. Nothing attaches one yet.
 package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private typealias Sink = @Sendable (StreamMessage) -> Void
 
+    /// A queued viewer: handed its messages on `delivery`, after the bytes were
+    /// batched. What the WebSocket route attaches.
     private struct Viewer {
         let sink: Sink
         let resize: ResizeMode
+    }
+
+    /// A local viewer: written to directly, by whichever thread has a message for
+    /// it, with a call that may block. What the Mac's own pane attaches.
+    ///
+    /// **The locking rule.** Every message for it is written under `writeLock`, and
+    /// that lock is only ever taken while the session's lock is held: whoever has a
+    /// message takes the session's lock, takes `writeLock`, releases the session's
+    /// lock, calls `write`, and releases `writeLock`. So the order in which messages
+    /// reach the viewer is the order in which the session's lock was held for them,
+    /// which is the order of the stream. Nothing asks for a session's lock while
+    /// holding a `writeLock`, and neither the hub's `lock` nor the model's lock is
+    /// held across `write`. Several local viewers of one session have their write
+    /// locks taken in the order of their ids.
+    ///
+    /// `@unchecked Sendable`: `write` and `resize` are immutable, `writeLock` is a
+    /// lock, and `gone` is read and written under `stateLock`.
+    private final class LocalViewer: @unchecked Sendable {
+        let id: UUID
+        let resize: ResizeMode
+        private let write: Sink
+        let writeLock = NSLock()
+        /// A leaf lock: held for a read or a write of `gone` and nothing else.
+        private let stateLock = NSLock()
+        private var gone = false
+
+        init(id: UUID, resize: ResizeMode, write: @escaping Sink) {
+            self.id = id
+            self.resize = resize
+            self.write = write
+        }
+
+        /// Detached, ended or dropped by `stop()`: no further call to `write` starts.
+        var isGone: Bool {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return gone
+        }
+
+        func markGone() {
+            stateLock.lock()
+            gone = true
+            stateLock.unlock()
+        }
+
+        /// Writes `messages` in order. Call holding `writeLock`. Checks before each
+        /// message whether the viewer is gone, so after `markGone()` returns at most
+        /// the one call that had already passed this check is still to come.
+        func send(_ messages: [StreamMessage]) {
+            for message in messages {
+                guard !isGone else { return }
+                write(message)
+            }
+        }
     }
 
     /// Everything the hub holds for one session, behind that session's own lock.
@@ -32,19 +93,39 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// been taken, and whoever is registered at that moment receives exactly the
     /// bytes after them.
     ///
-    /// Nothing is delivered under it: what is taken is handed to the viewers after
-    /// it is released, on `delivery`, which is what orders deliveries.
+    /// Nothing is delivered under it: what is taken is handed to the queued
+    /// viewers after it is released, on `delivery`, which is what orders their
+    /// deliveries. A local viewer's write lock is taken under it instead, and the
+    /// write made after it is released: see `LocalViewer`.
     ///
     /// Per session rather than one for the hub, because a parse runs under it: a
     /// terminal printing a build log must not hold up the bytes of the terminal
     /// next to it.
     ///
-    /// `@unchecked Sendable` because every field is read and written under `lock`.
+    /// `@unchecked Sendable` because every field is read and written under `lock`,
+    /// except `skippedFlushes`, which only `delivery` touches, and `flushWanted`,
+    /// which is guarded by `flushTurn`.
     private final class Stream: @unchecked Sendable {
         let lock = NSLock()
+        /// What has been accepted and not yet delivered to the queued viewers. A
+        /// local viewer has been given every byte already, so a session whose only
+        /// viewers are local keeps nothing here.
         var buffer: [UInt8] = []
         var tracker = OSCStringTracker()
+        /// The queued viewers.
         var viewers: [UUID: Viewer] = [:]
+        /// The local viewers. One that is gone stays here until the next holder of
+        /// the lock drops it, because `detach` does not take this lock.
+        var locals: [UUID: LocalViewer] = [:]
+        /// Whether `onLocalViewerAttached` has been called for this session.
+        var localAttachReported = false
+        /// Ticks in a row on which a flush found this session's lock held. Only
+        /// `delivery` reads or writes it.
+        var skippedFlushes = 0
+        /// Set by a flush that has skipped this session too often, so the writer
+        /// stands aside at the start of its next write. Guarded by `flushTurn`.
+        let flushTurn = NSCondition()
+        var flushWanted = false
         /// The viewers whose last snapshot was taken on the alternate screen, and
         /// so hold an empty primary screen underneath it.
         var onAlternateScreen: Set<UUID> = []
@@ -66,6 +147,50 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
             buffer = []
             return bytes
         }
+
+        /// The local viewers still attached, in the order of their ids, which is
+        /// the order their write locks are taken in. Drops the ones that are gone.
+        /// Call under `lock`.
+        func liveLocals() -> [LocalViewer] {
+            guard !locals.isEmpty else { return [] }
+            var live = locals.values.filter { !$0.isGone }
+            if live.count != locals.count { locals = locals.filter { !$0.value.isGone } }
+            if live.count > 1 { live.sort { $0.id.uuidString < $1.id.uuidString } }
+            return live
+        }
+
+        /// Called by the writer before it takes `lock`: while a flush is waiting for
+        /// its turn, the writer waits for it, up to `limit` seconds. Without this a
+        /// writer holding the lock back to back (a flood parsed chunk after chunk)
+        /// is never caught with it free: `NSLock` is not fair, and a waiter loses
+        /// to a thread that unlocks and locks again.
+        func standAsideForAFlush(limit: TimeInterval) {
+            flushTurn.lock()
+            if flushWanted {
+                let deadline = Date(timeIntervalSinceNow: limit)
+                while flushWanted, flushTurn.wait(until: deadline) {}
+            }
+            flushTurn.unlock()
+        }
+
+        /// Asks the writer to stand aside and tries for `lock` until `limit`
+        /// seconds have passed. Whether it got the lock. Call on `delivery`.
+        func lockWithTheWritersHelp(limit: TimeInterval) -> Bool {
+            flushTurn.lock()
+            flushWanted = true
+            flushTurn.unlock()
+            let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(limit * 1e9)
+            var locked = lock.try()
+            while !locked, DispatchTime.now().uptimeNanoseconds < deadline {
+                usleep(50)
+                locked = lock.try()
+            }
+            flushTurn.lock()
+            flushWanted = false
+            flushTurn.broadcast()
+            flushTurn.unlock()
+            return locked
+        }
     }
 
     /// Guards the registry below and the hooks. Held for a lookup and never while
@@ -73,7 +198,11 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// wrong.
     private let lock = NSLock()
     private var streams: [String: Stream] = [:]
+    /// The session of every viewer, queued or local.
     private var sessionForViewer: [UUID: String] = [:]
+    /// The local viewers by id, so `detach` can mark one gone without taking its
+    /// session's lock.
+    private var localViewers: [UUID: LocalViewer] = [:]
     /// The grid in force for a session: the last one either reported by the surface
     /// through `noteSize` or claimed by a viewer through `claim`, whichever came
     /// last. libghostty reports a size on events that need not have moved it (a font
@@ -82,7 +211,8 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private var sizeForPane: [String: TerminalSize] = [:]
     private var timer: DispatchSourceTimer?
     /// Where everything that delivers to a viewer runs: the flush timer, a quiet
-    /// flush, an attach, a resync, a resize and an ending.
+    /// flush, an attach, a resync, a resize and an ending. The one exception is
+    /// output for a local viewer, written on the writer's thread.
     ///
     /// Serial, and shared by all of them, because each takes bytes from a session
     /// and then hands them to its viewers, and two of those running at once could
@@ -144,6 +274,12 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Called on `delivery` with no lock of the hub's held, because it takes the
     /// model's lock and signals the child. It must not call back into the hub.
     package var onClaim: (@Sendable (_ session: String, _ size: TerminalSize) -> Void)?
+    /// Called once per session, when its first local viewer has been sent its
+    /// snapshot (or, with no snapshot to send, whatever its attach was sent).
+    ///
+    /// Called on `delivery` with no lock of the hub's held, before that viewer's
+    /// `attachLocal` returns. It must not call `attach`, `attachLocal` or `flush`.
+    package var onLocalViewerAttached: (@Sendable (_ session: String) -> Void)?
 
     /// Interval chosen so typing feels immediate while a burst of output still
     /// coalesces into one message.
@@ -151,6 +287,38 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// The same interval, for the quiet rule: a write into an empty buffer of a session
     /// that has a viewer goes out at once when the last flush is older than this.
     private static let quietNanoseconds: UInt64 = 8_000_000
+    /// The largest `data` message a queued viewer is handed. A larger take, which a
+    /// flood can build in one interval, goes out as several, in order: one message
+    /// over the 4 MiB a `ViewerQueue` holds would overflow it even when empty.
+    private static let maxDataMessage = 256 * 1024
+    /// Ticks in a row a flush skips a session whose lock is held before it asks
+    /// the writer to stand aside and waits for its turn.
+    private static let skipsBeforeWaiting = 3
+    /// How long a flush that waits for its turn waits, at most, before it skips
+    /// the session for this tick after all. Bounded so a session stuck under its
+    /// lock (a model reflowing a full scrollback) costs every other session this
+    /// much per tick, rather than parking `delivery` for as long as it is stuck.
+    private static let flushWaitLimit: TimeInterval = 0.004
+    /// How long a writer stands aside for a flush, at most. Longer than the flush
+    /// waits, so the writer is never the one that gives up first.
+    private static let writerYieldLimit: TimeInterval = 0.02
+
+    /// `bytes` as `data` messages of at most `maxDataMessage` bytes each.
+    private static func dataMessages(_ bytes: [UInt8]) -> [StreamMessage] {
+        guard bytes.count > maxDataMessage else { return bytes.isEmpty ? [] : [.data(bytes)] }
+        return stride(from: 0, to: bytes.count, by: maxDataMessage).map {
+            .data(Array(bytes[$0..<min($0 + maxDataMessage, bytes.count)]))
+        }
+    }
+
+    /// Hands `bytes` to each sink, as `data` messages of at most `maxDataMessage`.
+    private static func deliver(_ bytes: [UInt8], to sinks: [Sink]) {
+        guard !bytes.isEmpty, !sinks.isEmpty else { return }
+        let messages = dataMessages(bytes)
+        for sink in sinks {
+            for message in messages { sink(message) }
+        }
+    }
 
     package init(startTimer: Bool = false) {
         if startTimer { startFlushTimer() }
@@ -201,6 +369,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private func endViewersNow(_ panes: Set<String>) {
         lock.lock()
         let ending = panes.compactMap { streams.removeValue(forKey: $0) }
+        for (id, session) in sessionForViewer where panes.contains(session) { localViewers[id] = nil }
         sessionForViewer = sessionForViewer.filter { !panes.contains($0.value) }
         for pane in panes { sizeForPane[pane] = nil }
         lock.unlock()
@@ -213,9 +382,19 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
             let sinks = stream.viewers.values.map(\.sink)
             stream.viewers = [:]
             stream.onAlternateScreen = []
+            // A local viewer has every byte already; its write lock, taken here,
+            // waits for the write of the last of them to finish.
+            let locals = stream.liveLocals()
+            stream.locals = [:]
+            for local in locals { local.writeLock.lock() }
             stream.lock.unlock()
+            for local in locals {
+                local.send([.ended])
+                local.markGone()
+                local.writeLock.unlock()
+            }
             for sink in sinks {
-                if !bytes.isEmpty { sink(.data(bytes)) }
+                for message in Self.dataMessages(bytes) { sink(message) }
                 sink(.ended)
             }
         }
@@ -300,6 +479,113 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         }
     }
 
+    /// Attaches a viewer that is never dropped. `write` is called with each message in
+    /// order and may block: while it does, the thread that reads the pty waits.
+    ///
+    /// The attach itself is the join `attach` makes, with the same messages: a
+    /// `resize` and a `snapshot`, the started half of a character behind the
+    /// snapshot, and every byte accepted afterwards in the stream. What differs is
+    /// how the stream reaches it.
+    ///
+    /// **Where `write` is called.** Output is written on the thread that calls
+    /// `write(session:bytes:)`, the pty's read thread, before that call returns: no
+    /// batching and no hop to `delivery`. Every other message (the attach's, a
+    /// `resize`, a `repaint` for `.repaint`, a claim's answer, `ended`) is written
+    /// on `delivery`. Each call is made under this viewer's write lock and with no
+    /// other lock of the hub's held, so two calls never overlap and they come in
+    /// stream order. While `write` blocks, the writer's next chunk for this session
+    /// waits, and so does anything on `delivery` that has a message for this
+    /// session: a resize, a claim, an ending, the attach of another viewer, and
+    /// behind those every other session's deliveries. That is the cost of a viewer
+    /// that is never dropped.
+    ///
+    /// **What `write` may call.** `claim`, `resync`, `send`, and `detach` of a local
+    /// viewer, its own included. Not `write(session:bytes:)`, `attach`,
+    /// `attachLocal`, `flush`, `waitForPendingDeliveries`, or `detach` of a queued
+    /// viewer: each of those waits for a session's lock or for `delivery`, and the
+    /// holder may be waiting for this very call.
+    ///
+    /// **Detaching.** `detach(connectionId:)` never waits for `write`: it marks the
+    /// viewer gone and returns, even while a call is blocked. Once it has returned,
+    /// no call to `write` starts except the one that had already passed its check
+    /// when `detach` marked the viewer, which may still be running (blocked, say)
+    /// and is the last. Unblocking that call is the owner's part, by shutting its
+    /// transport down; until the call has returned, the owner must not hand on to
+    /// anything else a resource `write` uses (shut a descriptor down rather than
+    /// close it while a call may be in progress). An ending, `endViewers`, makes
+    /// `ended` the last message instead.
+    ///
+    /// Never resynchronised and never dropped: `resync` for its id answers
+    /// `onUnavailable`, and the alternate screen rule does not apply to it, because
+    /// it attaches when the terminal opens and is given every byte after that.
+    ///
+    /// Runs on `delivery`, synchronously, as `attach` does. Not to be called from a
+    /// viewer's sink or `write`.
+    @discardableResult
+    package func attachLocal(session: String, resize: ResizeMode,
+                             write: @escaping @Sendable (StreamMessage) -> Void) -> UUID {
+        let viewer = LocalViewer(id: UUID(), resize: resize, write: write)
+        delivery.sync { attachLocalNow(viewer, session: session) }
+        return viewer.id
+    }
+
+    private func attachLocalNow(_ viewer: LocalViewer, session: String) {
+        lock.lock()
+        let census = onSessionCensus
+        lock.unlock()
+        // As for `attach`: a session that can never produce a byte is ended at once.
+        if let census, !Self.isStreamable(session: session, census: census()) {
+            viewer.send([.ended])
+            viewer.markGone()
+            return
+        }
+        lock.lock()
+        let stream = streams[session] ?? Stream()
+        streams[session] = stream
+        sessionForViewer[viewer.id] = session
+        localViewers[viewer.id] = viewer
+        let hook = onSnapshot
+        let grid = sizeForPane[session]
+        lock.unlock()
+
+        stream.lock.lock()
+        stream.locals[viewer.id] = viewer
+        // The join: what was accepted before the snapshot goes to the queued
+        // viewers, and this one gets the snapshot that holds it.
+        let outstanding = stream.take()
+        let frame = hook?(session)
+        var messages: [StreamMessage] = []
+        if let frame {
+            // The started half of a character goes behind the snapshot, and the
+            // rest follows in the stream, as for a queued viewer.
+            messages = [.resize(cols: frame.size.cols, rows: frame.size.rows, own: false),
+                        .snapshot(TerminalPaint.hardReset + frame.bytes + stream.pendingCharacter)]
+        } else if let grid {
+            messages = [.resize(cols: grid.cols, rows: grid.rows, own: false)]
+        }
+        let sinks = stream.viewers.values.map(\.sink)
+        let first = !stream.localAttachReported
+        stream.localAttachReported = true
+        viewer.writeLock.lock()
+        stream.lock.unlock()
+        viewer.send(messages)
+        viewer.writeLock.unlock()
+
+        Self.deliver(outstanding, to: sinks)
+        if first {
+            lock.lock()
+            let attached = onLocalViewerAttached
+            lock.unlock()
+            attached?(session)
+        }
+        if frame == nil, hook != nil {
+            GhosttyLog.stack.error("""
+                no snapshot of session \(session, privacy: .public) for a local viewer \
+                attaching; it starts from the stream alone
+                """)
+        }
+    }
+
     /// What one join took under the session's lock, delivered after it.
     private struct Join {
         /// The bytes accepted before the snapshot, and who gets them: the other
@@ -317,7 +603,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         let snapshotAsked: Bool
 
         func deliver() {
-            if !outstanding.isEmpty { for sink in outstandingTo { sink(.data(outstanding)) } }
+            PaneStreamHub.deliver(outstanding, to: outstandingTo)
             for message in messages { viewer(message) }
         }
     }
@@ -376,6 +662,9 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// this one. So the join is queued behind it rather than run on the spot: run
     /// on the spot, the other viewers would get the next bytes before the ones
     /// being delivered.
+    ///
+    /// A local viewer is never resynchronised: for its id the join finds no queued
+    /// viewer, and `onUnavailable` is called.
     package func resync(connectionId: UUID, onUnavailable: @escaping @Sendable () -> Void) {
         delivery.async { [weak self] in
             guard let self, self.resyncNow(connectionId) else { return onUnavailable() }
@@ -403,10 +692,21 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
 
     /// Unregisters a viewer. The session's stream state stays: its bell tracker and
     /// its pending character describe the byte stream, not who is watching it.
+    ///
+    /// A local viewer is marked gone without taking its session's lock, which a
+    /// thread waiting for that viewer's blocked `write` may hold: see `attachLocal`
+    /// for what that guarantees. The session drops it the next time its lock is
+    /// taken for a delivery.
     package func detach(connectionId: UUID) {
         lock.lock()
-        let stream = sessionForViewer.removeValue(forKey: connectionId).flatMap { streams[$0] }
+        let session = sessionForViewer.removeValue(forKey: connectionId)
+        let local = localViewers.removeValue(forKey: connectionId)
+        let stream = session.flatMap { streams[$0] }
         lock.unlock()
+        if let local {
+            local.markGone()
+            return
+        }
         guard let stream else { return }
         stream.lock.lock()
         stream.viewers[connectionId] = nil
@@ -428,9 +728,13 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         lock.lock()
         streams = [:]
         sessionForViewer = [:]
+        let locals = localViewers.values
+        localViewers = [:]
         let source = timer
         timer = nil
         lock.unlock()
+        // As a detach: no further call to their `write` starts.
+        for local in locals { local.markGone() }
         source?.cancel()
     }
 
@@ -444,6 +748,11 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Callers must call this in stream order and from one thread per session.
     /// Terminal output delivered out of order is corrupt on screen, and this
     /// method does not reorder anything.
+    ///
+    /// The session's local viewers are written to here, on the caller's thread,
+    /// before this returns, so a local viewer whose `write` blocks holds the caller
+    /// with it. That is the backpressure: the caller is the thread reading the pty,
+    /// and the child waits on a full pty as it would on a slow terminal.
     package func write(session: String, bytes: [UInt8]) {
         lock.lock()
         let stream = streams[session] ?? Stream()
@@ -453,15 +762,21 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         let alternateScreen = onAlternateScreen
         lock.unlock()
 
+        stream.standAsideForAFlush(limit: Self.writerYieldLimit)
         stream.lock.lock()
-        // Only with a viewer to deliver to: without one the flush would hand the
-        // bytes to nobody, and every echoed keystroke of a terminal nobody watches
-        // would pay a dispatch for it. The timer empties that buffer as before.
-        let quiet = !stream.viewers.isEmpty
+        let locals = stream.liveLocals()
+        // Only with a queued viewer to deliver to: without one the flush would hand
+        // the bytes to nobody, and every echoed keystroke of a terminal nobody
+        // watches would pay a dispatch for it. The timer empties that buffer as
+        // before. A local viewer is written to below and never needs it.
+        let queued = !stream.viewers.isEmpty
+        let quiet = queued
             && stream.buffer.isEmpty
             && DispatchTime.now().uptimeNanoseconds &- stream.lastFlush > Self.quietNanoseconds
         if quiet { stream.quietFlushes += 1 }
-        stream.buffer.append(contentsOf: bytes)
+        // Kept for the queued viewers, and, as before, for a session nobody
+        // watches yet; not for a session whose only viewers are local.
+        if queued || locals.isEmpty { stream.buffer.append(contentsOf: bytes) }
         ingest?(session, bytes)
         stream.pendingCharacter = Self.incompleteCharacter(after: stream.pendingCharacter, bytes)
         let bells = bell == nil ? 0 : stream.tracker.bells(in: bytes)
@@ -474,8 +789,14 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
             leftAlternateScreen = stream.onAlternateScreen
             stream.onAlternateScreen = []
         }
+        // Under the session's lock, so this chunk reaches each local viewer ahead
+        // of anything a later holder of the lock has for it: a repaint taken from
+        // a model that has parsed this chunk, say.
+        for local in locals { local.writeLock.lock() }
         stream.lock.unlock()
 
+        // The queued viewers' dispatches first, so they are not held behind a
+        // local viewer that blocks.
         if quiet {
             delivery.async { [weak self, weak stream] in
                 guard let self, let stream else { return }
@@ -485,6 +806,13 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         if !leftAlternateScreen.isEmpty {
             delivery.async { [weak self] in
                 for id in leftAlternateScreen { self?.resyncNow(id) }
+            }
+        }
+        if !locals.isEmpty {
+            let messages = Self.dataMessages(bytes)
+            for local in locals {
+                local.send(messages)
+                local.writeLock.unlock()
             }
         }
         // One call per counted bell: a program ringing twice in one write should
@@ -585,14 +913,26 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// The answer to a claim for the grid in force: the bytes accepted so far go to
     /// every viewer, as a flush would send them, so that the claimant gets them
     /// ahead of the answer, and then the claimant alone is sent the grid.
+    ///
+    /// A local claimant has every byte already and is sent the grid alone, through
+    /// its write lock.
     private func answerClaimant(_ id: UUID, of stream: Stream, _ size: TerminalSize) {
+        let answer = StreamMessage.resize(cols: size.cols, rows: size.rows, own: true)
         stream.lock.lock()
+        if let local = stream.locals[id] {
+            guard !local.isGone else { stream.lock.unlock(); return }
+            local.writeLock.lock()
+            stream.lock.unlock()
+            local.send([answer])
+            local.writeLock.unlock()
+            return
+        }
         guard let claimant = stream.viewers[id] else { stream.lock.unlock(); return }
         let outstanding = stream.take()
         let sinks = stream.viewers.values.map(\.sink)
         stream.lock.unlock()
-        if !outstanding.isEmpty { for sink in sinks { sink(.data(outstanding)) } }
-        claimant.sink(.resize(cols: size.cols, rows: size.rows, own: true))
+        Self.deliver(outstanding, to: sinks)
+        claimant.sink(answer)
     }
 
     /// The same join an attach makes, for the same reason. What was accepted
@@ -621,13 +961,19 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
 
         stream.lock.lock()
         let viewers = Array(stream.viewers)
+        let locals = stream.liveLocals()
         // Nothing is delivered without a viewer, so there is nothing to take and
         // nothing to paint either.
-        guard !viewers.isEmpty else { stream.lock.unlock(); return }
+        guard !viewers.isEmpty || !locals.isEmpty else { stream.lock.unlock(); return }
+        // The outstanding bytes are the queued viewers'. A local viewer has been
+        // given every byte accepted so far, or is about to be by the writer that
+        // holds its write lock, which the lock taken below waits for.
         let outstanding = stream.take()
         let wantRepaint = viewers.contains { $0.value.resize == .repaint }
+            || locals.contains { $0.resize == .repaint }
         let repaint = wantRepaint ? hook?(session) : nil
         let pending = stream.pendingCharacter
+        for local in locals { local.writeLock.lock() }
         stream.lock.unlock()
 
         let grid = repaint?.size ?? size
@@ -637,7 +983,17 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
             if sizeForPane[session] == size { sizeForPane[session] = grid }
             lock.unlock()
         }
-        if !outstanding.isEmpty { for (_, viewer) in viewers { viewer.sink(.data(outstanding)) } }
+        // The local viewers first, and their write locks released, before any
+        // queued sink runs: a sink may detach, which takes the session's lock.
+        for local in locals {
+            var messages: [StreamMessage] = [.resize(cols: grid.cols, rows: grid.rows, own: local.id == claimant)]
+            if local.resize == .repaint, let repaint {
+                messages.append(.repaint(TerminalPaint.reset + repaint.frame + pending))
+            }
+            local.send(messages)
+            local.writeLock.unlock()
+        }
+        Self.deliver(outstanding, to: viewers.map(\.value.sink))
         for (id, viewer) in viewers {
             viewer.sink(.resize(cols: grid.cols, rows: grid.rows, own: id == claimant))
             if viewer.resize == .repaint, let repaint {
@@ -654,6 +1010,18 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
                 its viewers keep a stale screen
                 """)
         }
+    }
+
+    /// How many bytes a session holds for its queued viewers and has not delivered.
+    /// For the tests: a session whose only viewers are local must hold none.
+    package func bufferedBytes(session: String) -> Int {
+        lock.lock()
+        let stream = streams[session]
+        lock.unlock()
+        guard let stream else { return 0 }
+        stream.lock.lock()
+        defer { stream.lock.unlock() }
+        return stream.buffer.count
     }
 
     /// How many writes into a session the quiet rule has sent straight to the
@@ -694,7 +1062,8 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     ///   scrollback after a resize can hold a write behind it for a long time.
     ///   Waiting there would park this queue, and with it every other session's
     ///   viewers, behind one terminal. Skipped, that session's bytes stay where
-    ///   they are and go out on the next tick, in order. A caller's own `flush()`
+    ///   they are and go out on a later tick, in order; how many ticks in a row
+    ///   it may be skipped is bounded, see `flush(_:waiting:)`. A caller's own `flush()`
     ///   does wait, because it promises everything accepted has been delivered.
     private func flushNow(waiting: Bool) {
         lock.lock()
@@ -706,17 +1075,25 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Call on `delivery`. The only work under the session's lock is the swap of
     /// the buffer and the list of who to hand it to: that lock is also the one the
     /// terminal's writes take.
+    ///
+    /// Skipped, but not without limit: a writer that holds the lock back to back,
+    /// parsing a flood chunk after chunk, would never be caught with it free. After
+    /// `skipsBeforeWaiting` ticks in a row the flush asks the writer to stand aside
+    /// and waits for the lock, up to `flushWaitLimit`.
     private func flush(_ stream: Stream, waiting: Bool) {
         if waiting {
             stream.lock.lock()
         } else if !stream.lock.try() {
-            return
+            stream.skippedFlushes += 1
+            guard stream.skippedFlushes > Self.skipsBeforeWaiting,
+                  stream.lockWithTheWritersHelp(limit: Self.flushWaitLimit) else { return }
         }
+        stream.skippedFlushes = 0
         guard !stream.buffer.isEmpty else { stream.lock.unlock(); return }
         let bytes = stream.take()
         stream.lastFlush = DispatchTime.now().uptimeNanoseconds
         let sinks = stream.viewers.values.map(\.sink)
         stream.lock.unlock()
-        for sink in sinks { sink(.data(bytes)) }
+        Self.deliver(bytes, to: sinks)
     }
 }
