@@ -309,6 +309,21 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         return TerminalSize(cols: Int(size.columns), rows: Int(size.rows))
     }
 
+    /// Everything `ghostty_surface_size` reports for one surface, in pixels, or nil
+    /// for a surface this host does not have.
+    ///
+    /// For one caller, the imposed grid measurement (`scripts/imposed-grid-check.sh`),
+    /// which has to see the cell size and the pixel size the grid was derived from,
+    /// not only the grid. Not part of `TerminalSurfaceHosting`, and not the API a pane
+    /// that imposes a grid will use: that one is still to be designed.
+    func pixelMetrics(id: String) -> (columns: Int, rows: Int, widthPx: Int, heightPx: Int,
+                                      cellWidthPx: Int, cellHeightPx: Int)? {
+        guard let surface = surfaces[id] else { return nil }
+        let size = ghostty_surface_size(surface.handle)
+        return (Int(size.columns), Int(size.rows), Int(size.width_px), Int(size.height_px),
+                Int(size.cell_width_px), Int(size.cell_height_px))
+    }
+
     /// Whether a read of `maxLines` rows has to reach past the grid into
     /// scrollback.
     ///
