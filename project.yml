@@ -18,9 +18,13 @@ packages:
     from: "1.2.0"
   # Exact, not a floor: the package defines the wire format, and 1.0.0 is terminal
   # stream protocol version 2, which this app serves and the iPad has to speak too.
+  #
+  # Temporary, for the phase 3 part 2 work of issue #84: the local checkout of the
+  # package holds the codec additions this work needs (`StreamFrameReader.failure`,
+  # `StreamCodec.checkedSocketFrame`). A version pin (1.1.0) returns before the pull
+  # request.
   WiettyShared:
-    url: https://github.com/kloostermanw/wietty-shared
-    exactVersion: "1.0.0"
+    path: ../wietty-shared-part2
   # The libghostty embedding API is explicitly unstable: pin exactly, never a range.
   #
   # Unconditional on the app target on purpose, even though it is the largest
