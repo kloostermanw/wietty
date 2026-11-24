@@ -600,14 +600,24 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// it, the repaint is taken under that same lock, and everything accepted
     /// afterwards follows it. So a repaint neither repeats a byte nor loses one.
     ///
+    /// A grid the surface reported is announced only while it is still the grid in
+    /// force: a claim handled after the report and before this ran has replaced it,
+    /// and announcing it then would tell the viewers a grid the pty is not on. The
+    /// claim has told them its own already.
+    ///
+    /// The grid announced is the repaint's when there is one, which is the model's
+    /// and can differ from `size`; it then becomes the record, so a later claim or
+    /// report is judged against what the viewers were told.
+    ///
     /// - Parameter claimant: the viewer whose claim moved the grid, the one told
     ///   `own` true. Nil for a grid the surface reported.
     private func resizeNow(session: String, _ size: TerminalSize, claimant: UUID? = nil) {
         lock.lock()
         let hook = onRepaint
         let stream = streams[session]
+        let overtaken = claimant == nil && sizeForPane[session] != size
         lock.unlock()
-        guard let stream else { return }
+        guard let stream, !overtaken else { return }
 
         stream.lock.lock()
         let viewers = Array(stream.viewers)
@@ -621,6 +631,12 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         stream.lock.unlock()
 
         let grid = repaint?.size ?? size
+        if grid != size {
+            lock.lock()
+            // Only over the size this resize was for: a report noted since is newer.
+            if sizeForPane[session] == size { sizeForPane[session] = grid }
+            lock.unlock()
+        }
         if !outstanding.isEmpty { for (_, viewer) in viewers { viewer.sink(.data(outstanding)) } }
         for (id, viewer) in viewers {
             viewer.sink(.resize(cols: grid.cols, rows: grid.rows, own: id == claimant))

@@ -54,6 +54,22 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
 @Suite struct PaneStreamClaimTests {
     private static let grid = TerminalSize(cols: 100, rows: 30)
 
+    /// Leaves `payload` in the buffer of session `gt:1`, for a claim to take.
+    ///
+    /// A write into a quiet session goes out at once on its own flush, queued ahead
+    /// of any claim, and would leave the claim nothing to take. So a primer byte
+    /// `p` is written and flushed first, which makes the session not quiet for the
+    /// next 8 ms, and `payload` is written straight after. The quiet flush count
+    /// proves it: were the write quiet after all, the test fails here rather than
+    /// passing on an empty take.
+    private func writeOutstanding(_ hub: PaneStreamHub, _ payload: [UInt8]) throws {
+        hub.write(session: "gt:1", bytes: bytes("p"))
+        hub.flush()
+        let quiet = hub.quietFlushes(session: "gt:1")
+        hub.write(session: "gt:1", bytes: payload)
+        try #require(hub.quietFlushes(session: "gt:1") == quiet, "the write was quiet")
+    }
+
     /// A hub whose repaint and claim hooks are recorded on `timeline`.
     private func hub(_ timeline: Timeline) -> PaneStreamHub {
         let hub = PaneStreamHub()
@@ -76,11 +92,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
         hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("reflowing"))
         hub.attach(session: "gt:1", resize: .repaint, onMessage: timeline.sink("repainted"))
         hub.waitForPendingDeliveries()
-        // Past the quiet interval, and then two writes, so at least the second is
-        // still in the buffer when the claim is handled.
-        usleep(20_000)
-        hub.write(session: "gt:1", bytes: bytes("a"))
-        hub.write(session: "gt:1", bytes: bytes("b"))
+        try writeOutstanding(hub, bytes("ab"))
 
         hub.claim(connectionId: claimant, cols: 100, rows: 30)
         hub.waitForPendingDeliveries()
@@ -98,8 +110,10 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
         for (viewer, own, repaints) in [("claimant", true, true), ("reflowing", false, false),
                                         ("repainted", false, true)] {
             let messages = timeline.messages(of: viewer)
-            #expect(dataBytes(messages) == bytes("ab"), "\(viewer)")
-            let tail: [StreamMessage] = [.resize(cols: 100, rows: 30, own: own)] + (repaints ? [screen] : [])
+            #expect(dataBytes(messages) == bytes("pab"), "\(viewer)")
+            // The claim's own take, as one message just ahead of the grid.
+            let tail: [StreamMessage] = [.data(bytes("ab")), .resize(cols: 100, rows: 30, own: own)]
+                + (repaints ? [screen] : [])
             #expect(Array(messages.suffix(tail.count)) == tail, "\(viewer)")
             #expect(messages.dropLast(tail.count).allSatisfy(isData), "\(viewer)")
         }
@@ -145,7 +159,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
 
     /// Bytes accepted before the claim is handled reach the claimant before its
     /// answer, and bytes accepted after it reach the claimant after it.
-    @Test func outputKeepsItsPlaceAroundAClaim() {
+    @Test func outputKeepsItsPlaceAroundAClaim() throws {
         for equal in [false, true] {
             let timeline = Timeline()
             let hub = PaneStreamHub()
@@ -153,9 +167,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
             hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
             if equal { hub.noteSize(session: "gt:1", Self.grid) }
             hub.waitForPendingDeliveries()
-            usleep(20_000)
-            hub.write(session: "gt:1", bytes: bytes("before-1 "))
-            hub.write(session: "gt:1", bytes: bytes("before-2 "))
+            try writeOutstanding(hub, bytes("before"))
             hub.claim(connectionId: claimant, cols: 100, rows: 30)
             hub.waitForPendingDeliveries()
             hub.write(session: "gt:1", bytes: bytes("after"))
@@ -165,11 +177,82 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
             let answer = messages.firstIndex(of: .resize(cols: 100, rows: 30, own: true))
             #expect(answer != nil, "equal \(equal)")
             guard let answer else { continue }
-            #expect(dataBytes(Array(messages[..<answer])) == bytes("before-1 before-2 "), "equal \(equal)")
+            #expect(dataBytes(Array(messages[..<answer])) == bytes("pbefore"), "equal \(equal)")
+            #expect(answer > 0 && messages[answer - 1] == .data(bytes("before")), "equal \(equal)")
             #expect(dataBytes(Array(messages[(answer + 1)...])) == bytes("after"), "equal \(equal)")
-            #expect(dataBytes(timeline.messages(of: "other")) == bytes("before-1 before-2 after"),
+            #expect(dataBytes(timeline.messages(of: "other")) == bytes("pbeforeafter"),
                     "equal \(equal)")
         }
+    }
+
+    /// A grid the surface reported, overtaken by a claim before its resize was
+    /// delivered, is not announced: it is no longer the grid in force, and telling
+    /// it would leave the viewers on a grid the pty is not.
+    @Test func aReportedGridOvertakenByAClaimIsNotAnnounced() {
+        let timeline = Timeline()
+        let hub = PaneStreamHub()
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        // A claim on another session whose resizer holds the delivery queue, so
+        // the claim and the report below are both queued before either runs.
+        hub.onClaim = { session, size in
+            timeline.add(.claimed(session, size))
+            if session == "gt:block" { entered.signal(); release.wait() }
+        }
+        let blocker = hub.attach(session: "gt:block", resize: .reflow) { _ in }
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
+        hub.claim(connectionId: blocker, cols: 50, rows: 10)
+        #expect(entered.wait(timeout: .now() + 3) == .success)
+
+        hub.claim(connectionId: claimant, cols: 100, rows: 30)
+        hub.noteSize(session: "gt:1", TerminalSize(cols: 80, rows: 24))
+        release.signal()
+        hub.waitForPendingDeliveries()
+
+        #expect(timeline.messages(of: "claimant") == [.resize(cols: 100, rows: 30, own: true)])
+        #expect(timeline.messages(of: "other") == [.resize(cols: 100, rows: 30, own: false)])
+    }
+
+    /// The record holds the grid the viewers were told, which is the model's when
+    /// it differs from the claim, so a later claim of that grid is the grid in
+    /// force and moves nothing.
+    @Test func theRecordHoldsTheGridTheViewersWereTold() {
+        let timeline = Timeline()
+        let hub = PaneStreamHub()
+        hub.onRepaint = { _ in (size: TerminalSize(cols: 90, rows: 20), frame: bytes("SCREEN")) }
+        hub.onClaim = { session, size in timeline.add(.claimed(session, size)) }
+        let claimant = hub.attach(session: "gt:1", resize: .repaint, onMessage: timeline.sink("claimant"))
+        hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
+        hub.claim(connectionId: claimant, cols: 100, rows: 30)
+        hub.waitForPendingDeliveries()
+        #expect(timeline.messages(of: "other") == [.resize(cols: 90, rows: 20, own: false)])
+        let before = timeline.events.count
+
+        hub.claim(connectionId: claimant, cols: 90, rows: 20)
+        hub.waitForPendingDeliveries()
+
+        #expect(Array(timeline.events.dropFirst(before))
+                == [.message("claimant", .resize(cols: 90, rows: 20, own: true))])
+    }
+
+    /// The hub accepts exactly the grids the codec lets through as a `resize`, so
+    /// the bounds kept in two places cannot drift apart unnoticed.
+    @Test func theHubAcceptsExactlyTheGridsTheCodecDecodes() {
+        for (cols, rows) in [(1, 1), (10_000, 10_000), (0, 24), (80, 0), (10_001, 24), (80, 10_001)] {
+            let text = #"{"cols":\#(cols),"own":false,"rows":\#(rows),"type":"resize"}"#
+            let decoded = StreamCodec.message(from: .text(text)) != nil
+            let timeline = Timeline()
+            let hub = PaneStreamHub()
+            let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+            hub.claim(connectionId: claimant, cols: cols, rows: rows)
+            hub.waitForPendingDeliveries()
+            let answered = !timeline.messages(of: "claimant").isEmpty
+            #expect(decoded == answered, "\(cols)x\(rows): codec \(decoded), hub \(answered)")
+        }
+        // Both ways, or the comparison above proves nothing.
+        #expect(StreamCodec.message(from: .text(#"{"cols":1,"own":false,"rows":1,"type":"resize"}"#)) != nil)
+        #expect(StreamCodec.message(from: .text(#"{"cols":0,"own":false,"rows":1,"type":"resize"}"#)) == nil)
     }
 
     /// A viewer that has gone, or never was, claims nothing.

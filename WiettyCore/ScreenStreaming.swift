@@ -19,8 +19,13 @@ package protocol ScreenStreaming: AnyObject, Sendable {
     /// could be built). The answer comes later, not before this returns, because
     /// the caller is usually inside a delivery to that very viewer.
     func resync(connectionId: UUID, onUnavailable: @escaping @Sendable () -> Void)
-    /// A viewer says "I am active, this is my grid". Answered with a `resize` to every
-    /// viewer, `own` true for this one. Unknown ids are ignored.
+    /// A viewer says "I am active, this is my grid".
+    ///
+    /// A grid other than the one in force becomes it, and every viewer is sent a
+    /// `resize`, `own` true for this one and false for the others. The grid in force
+    /// already is answered to this viewer alone, with one `resize` whose `own` is
+    /// true. Either way the claimant gets exactly one answer. An unknown or detached
+    /// id, or a `cols` or `rows` outside 1...10,000, is ignored without an answer.
     func claim(connectionId: UUID, cols: Int, rows: Int)
     func stop()
 }
