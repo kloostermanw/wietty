@@ -577,12 +577,16 @@ makes the hub repaint and the repaint is taken from the model: reported first, i
 as it was before the reflow and then be contradicted by the bytes the reflow produced.
 
 The hub can also take the grid from a viewer, through `PaneStreamHub.claim(connectionId:cols:rows:)`,
-which nothing calls yet. On its delivery queue it calls `onClaim` (wired to the resizer `GhosttyService`
-registers in `SharedTerminalState`, which resizes the pty and then the model) and then repaints as above,
-`own` true in the claimant's `resize`; a claim and `noteSize` share the one record of the grid in force.
+which nothing calls yet. A claim and `noteSize` share the one record of the grid in force. A claim for a
+new grid is handled on the hub's delivery queue: the hub calls `onClaim` (wired to the resizer
+`GhosttyService` registers in `SharedTerminalState`, which resizes the pty and then the model) and then
+repaints as above, with `own` true in the claimant's `resize` only. A claim for the grid already in force
+resizes nothing and is answered to the claimant alone, with one `resize` whose `own` is true. A grid the
+surface reported that a claim has overtaken before its repaint ran is not announced.
 
 The direction of these hooks matters as much as their order. The resize report runs on the main actor
-and hands the size to a lock guarded hub. The census, the model feed, the frames and the input writer
+and hands the size to a lock guarded hub. A claim's resize runs on the hub's delivery queue instead,
+and reaches the pty and the model through `SharedTerminalState`, never through the service. The census, the model feed, the frames and the input writer
 are asked by the hub from the relay's queue, from its own, and from the thread a viewer's input
 arrived on, and answer from `SharedTerminalState` and the model, both lock guarded. Nothing on a hub
 queue reaches back into the main actor isolated service.
