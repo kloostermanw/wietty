@@ -132,6 +132,24 @@ Quit Wietty first. It opens a window for a few seconds. The sanitizer build repl
 in derived data, so the run takes a few minutes and so does the next ordinary build. In an ordinary
 test run the suite is counted and reported as skipped.
 
+### The imposed grid check
+
+The own pane shows a grid another viewer chose by giving the surface's view exactly the size that
+belongs to it: `(cols * cell_width_px + padding_x) / scale` by the same for rows, where the padding is
+both sides together, `2 * window-padding * scale` in pixels. `ImposedGridMeasurementTests` sets that
+size on a real surface in a real window for seven grids and reads the grid back from the surface and
+from `stty size` in its child, at the display's scale and at the other one (1 or 2, simulated by a
+window that reports it, so the display is never touched), with the default padding and with one
+that is not. It prints one line per grid starting with `IMPOSED`. Run it after changing the pin of
+libghostty, or the way a pane sizes its surface:
+
+```sh
+scripts/imposed-grid-check.sh
+```
+
+Quit Wietty first. It opens a window for about a minute. The padding goes into the sandbox's
+`ghostty.cfg`, never your own. In an ordinary test run the suite is counted and reported as skipped.
+
 ### The stream baseline
 
 `StreamBaselineTests` measures the terminal byte path from where `wietty-pty` stands, with the
