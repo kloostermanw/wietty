@@ -547,9 +547,12 @@ chunk, and `NSLock` is not fair: a thread waiting for it loses to the thread tha
 again, so a timer that only tried the lock could miss such a session for as long as the flood lasted.
 After three ticks in a row on which the lock was held, the flush asks the session's writer to stand
 aside at the start of its next write (`Stream.standAsideForAFlush`) and tries for the lock for up to
-4 ms. A session that is merely busy is flushed then; one still stuck after 4 ms is skipped again, at a
-cost of those 4 ms per tick to everyone else rather than a delivery queue parked for as long as it is
-stuck. Until phase 3 of issue #84 the flush also decoded the bytes into text under that lock, byte
+4 ms. A session that is merely busy is flushed then. When the flush gives up, its request stays up,
+so the writer stands aside at the start of its next write and the next tick finds the lock free: a
+session is skipped at most five ticks in a row, as long as no single write holds its lock for longer
+than a tick and those 4 ms together. One still stuck costs everyone else 4 ms per tick rather than a
+delivery queue parked for as long as it is stuck. A session without a queued viewer is never asked to
+stand aside, since its flush would hand the bytes to nobody. Until phase 3 of issue #84 the flush also decoded the bytes into text under that lock, byte
 by byte, and that alone capped a terminal at about 3 MiB/s.
 
 **Coalescing, and a quiet terminal.** Output is delivered on an 8 ms timer, so a burst coalesces into
@@ -587,29 +590,43 @@ buffer and schedules no quiet flush. `onLocalViewerAttached` is called once per 
 local viewer has been sent its snapshot.
 
 The messages for one local viewer come from two threads: output from the writer's, and the attach, a
-`resize`, a `repaint`, a claim's answer and `ended` from the delivery queue. One order between them is
-kept by a write lock per local viewer, and by one rule: whoever has a message for it takes the session's
-lock, takes the viewer's write lock while still holding it, releases the session's lock, calls
-`write`, and releases the write lock. So the messages reach the viewer in the order the session's lock
-was held for them, which is the stream's: a repaint taken from a model that has parsed a chunk cannot
-be written ahead of that chunk, because the writer took the write lock for the chunk before it let go
-of the session's lock. Nothing asks for a session's lock while holding a write lock, the hub's own lock
-and the model's lock are never held across `write`, and several local viewers of one session have their
-write locks taken in the order of their ids. `detach` of a local viewer takes neither its session's lock
-nor its write lock, since a thread waiting for a blocked `write` may hold the one and the blocked call
-holds the other: it marks the viewer gone, and once it has returned no call to `write` starts, except
-the one call that had already been checked when it ran, which is left to finish when its owner shuts
-the transport down.
+`resize`, a `repaint`, a claim's answer and `ended` from the delivery queue. At most one thread writes
+to the viewer at a time, the one that made it busy, and who that is gets decided while the session's
+lock is held. A thread with messages for an idle viewer becomes its writer, releases the session's
+lock and writes. When the viewer is busy, the writer thread waits for it, still holding the session's
+lock, because that wait is the backpressure; the delivery queue never waits: it leaves its messages
+with the viewer and goes on. Whoever becomes the writer next writes what was left first. The writer
+thread does not stay to write what was left while it wrote, since a pane that reads slowly during a
+window drag could keep it from its next chunk for as long as resizes came; it hands that to the
+delivery queue, which writes it once the viewer is idle. Checking for a left message and giving the
+viewer up happen in one critical section, so nothing is stranded. The order the viewer sees is
+therefore the order in which the session's lock was held for its messages, which is the stream's: a
+repaint taken from a model that has parsed a chunk cannot be written ahead of that chunk, and a resize
+left during a chunk goes out after it and before the next one. What is left is control messages only,
+never output, and it is coalesced: with no output between two left messages, a later repaint replaces
+earlier repaints and resizes that are not a claim's answer, and for a viewer that reflows a later
+resize replaces earlier ones. Every claim's answer is kept.
 
-The cost was accepted knowingly. While a local viewer's `write` blocks, everything on the delivery
-queue that has a message for that session waits for it (a resize, a claim, an ending, another viewer's
-attach), and because the queue is shared, every other session's deliveries wait behind those. A queued
-viewer of the same session may wait too, and catches up once the local viewer reads again. With no such
-message pending, the other sessions are not held: the timer flushes them, and the blocked session's
-queued viewers as well, because the writer holds no session lock while it is inside `write`.
-`PaneStreamLocalViewerTests` covers the thread, the backpressure, the order under a race with an attach
-and with grid changes into a slow viewer, ending, a detach while a write is blocked, a claim, and the
-two bounds above.
+`detach` of a local viewer marks it gone and then waits until its `write` is not running, and for
+nothing else: not for the session's lock, which the writer thread may hold while it waits for that
+very write. After it returns, the viewer's `write` is not running and is never called again, unless
+`detach` was called from inside that `write`, when it returns at once. A blocked write must therefore
+be released first: the owner shuts its socket down, then detaches, then closes the descriptor. The
+thread that drains a local viewer's transport must never wait on the hub (no `attach`, no `detach` of
+a queued viewer, nothing that waits for the delivery queue or a session's lock), directly or through
+the main actor or the cooperative pool, because those can be waiting for a write that only its
+reading lets return.
+
+The cost is limited to that terminal. While a pane does not read, its terminal's pty read waits and so
+does its child, the terminal's other local viewers get nothing, and whatever was left for the pane in
+the meantime is written when it reads again. Nothing else waits: every other session, the queued
+viewers of this one, attaches, resyncs, claims and endings carry on. The one exception is a write the
+delivery queue makes itself to an idle local viewer (the snapshot of an attach, a resize, a claim's
+answer, an ending, or what was left for it) when the pane stops reading in the middle of that write:
+while it lasts, the delivery queue and so every session's queued viewers wait. `PaneStreamLocalViewerTests`
+covers the thread, the backpressure, the order under a race with an attach and with grid changes into
+a slow viewer, messages left with a busy viewer and that the delivery queue does not wait for it, the
+ending, `detach`, a claim, and the two bounds above.
 
 `PaneStreamJoinTests` races a writer against an attach and against repaints, plays everything the
 viewer was sent into a terminal of its own, and asserts every numbered line is there exactly once.

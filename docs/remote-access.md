@@ -243,7 +243,8 @@ payload**, splitting a larger paste into several in order; the browser page and
 **The bound per viewer.** The server holds at most 4 MiB (`4 << 20` bytes) of
 `data` and `repaint` payload for one WebSocket viewer, in that viewer's
 `ViewerQueue`. One `data` message the server sends holds at most
-256 KiB of output; a larger batch goes out as several, in order. A viewer that reads slower than the terminal writes overflows it:
+256 KiB of output; a larger batch goes out as several, in order. A viewer
+that reads slower than the terminal writes overflows it:
 everything queued for it except the control messages is dropped, and the server
 resynchronises it with a fresh `resize` and `snapshot`, which replaces everything
 the viewer holds. Until that snapshot comes, further output for that viewer is

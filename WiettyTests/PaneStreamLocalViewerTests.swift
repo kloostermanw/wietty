@@ -88,6 +88,26 @@ private func eventually(within seconds: Double = 5, _ condition: () -> Bool) -> 
     return true
 }
 
+/// A gate a test closes inside a viewer's `write`. Every wait is bounded, so a
+/// regression fails the test instead of hanging the suite.
+private final class Gate: @unchecked Sendable {
+    private let entered = DispatchSemaphore(value: 0)
+    private let released = DispatchSemaphore(value: 0)
+    /// Inside the closure: says it is in, and waits to be let go, 10 s at most.
+    func hold() {
+        entered.signal()
+        _ = released.wait(timeout: .now() + 10)
+    }
+    func open() { released.signal() }
+    func waitUntilHeld() -> Bool { entered.wait(timeout: .now() + 5) == .success }
+}
+
+/// Whether the delivery work queued so far ran within `seconds`. The hub's own
+/// barrier waits without limit; this one fails a test whose delivery queue parked.
+private func settled(_ hub: PaneStreamHub, within seconds: Double = 5) -> Bool {
+    onThread { hub.waitForPendingDeliveries() }.wait(timeout: .now() + seconds) == .success
+}
+
 /// The messages played into a fresh terminal, as a viewer plays them. See
 /// `PaneStreamJoinTests` for why a terminal and not a scan of the bytes.
 private func replay(_ messages: [StreamMessage], scrollbackLines: Int) throws -> [String] {
@@ -209,29 +229,26 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
     @Test func whileALocalViewersWriteBlocksTheWriteIntoItsSessionDoesNotReturn() {
         let hub = PaneStreamHub()
         defer { hub.stop() }
-        let entered = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
-        defer { release.signal() }
+        let gate = Gate()
+        defer { gate.open() }
         hub.attachLocal(session: Self.session, resize: .repaint) { message in
-            guard isData(message) else { return }
-            entered.signal()
-            release.wait()
+            if isData(message) { gate.hold() }
         }
         let returned = onThread { hub.write(session: Self.session, bytes: bytes("x")) }
-        #expect(entered.wait(timeout: .now() + 5) == .success)
+        #expect(gate.waitUntilHeld())
         #expect(returned.wait(timeout: .now() + 0.2) == .timedOut, "the write returned while the viewer blocked")
 
         let other = onThread { hub.write(session: "gt:other", bytes: bytes("y")) }
         #expect(other.wait(timeout: .now() + 5) == .success, "another session's write was held")
 
-        release.signal()
+        gate.open()
         #expect(returned.wait(timeout: .now() + 5) == .success, "the write did not return once unblocked")
     }
 
     /// The join of phase 2, for a local viewer: output written in a tight loop on a
     /// thread of its own while the viewer attaches. The viewer sees the grid, the
     /// snapshot and then only bytes, and plays them into exactly the lines written.
-    @Test func aLocalViewerAttachingMidStreamSeesEveryLineExactlyOnce() async throws {
+    @Test func aLocalViewerAttachingMidStreamSeesEveryLineExactlyOnce() throws {
         var random = SystemRandomNumberGenerator()
         let lines = 1_500
         for round in 0..<60 {
@@ -240,18 +257,21 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
             let attachAt = Int.random(in: 0..<chunks.count, using: &random)
             let session = Self.session
             let log = LocalLog()
-            let writer = Task.detached {
+            let writer = onThread {
                 for chunk in chunks {
                     hub.write(session: session, bytes: chunk)
                     usleep(100)
                 }
             }
-            let attacher = Task.detached {
+            let attacher = onThread {
                 usleep(UInt32(attachAt * 120))
                 hub.attachLocal(session: session, resize: .repaint) { log.add($0) }
             }
-            await attacher.value
-            await writer.value
+            guard attacher.wait(timeout: .now() + 30) == .success,
+                  writer.wait(timeout: .now() + 30) == .success else {
+                Issue.record("round \(round): the writer or the attach did not finish")
+                return
+            }
 
             let messages = log.messages
             guard messages.count >= 2, case .resize = messages[0], case .snapshot = messages[1],
@@ -273,7 +293,7 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
     /// so the viewer still plays into every line once; and a `resize` is never
     /// written while a `data` is still being written, since the two come from two
     /// threads.
-    @Test func aGridChangeDuringOutputIsNeitherInterleavedNorOutOfOrder() async throws {
+    @Test func aGridChangeDuringOutputIsNeitherInterleavedNorOutOfOrder() throws {
         var random = SystemRandomNumberGenerator()
         let lines = 1_200
         for round in 0..<12 {
@@ -289,15 +309,16 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
                 default: log.add(message, hold: 600)
                 }
             }
-            let writer = Task.detached {
+            let writer = onThread {
                 for chunk in chunks {
                     hub.write(session: session, bytes: chunk)
                     usleep(50)
                 }
             }
-            let resizer = Task.detached {
+            let stopResizing = Box(false)
+            let resizer = onThread {
                 var rows = 24
-                while !Task.isCancelled {
+                while !stopResizing.value {
                     rows = rows == 24 ? 31 : 24
                     let size = TerminalSize(cols: 80, rows: rows)
                     model.resize(to: size)
@@ -305,10 +326,12 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
                     usleep(500)
                 }
             }
-            await writer.value
-            resizer.cancel()
-            await resizer.value
-            hub.waitForPendingDeliveries()
+            let wrote = writer.wait(timeout: .now() + 30) == .success
+            stopResizing.value = true
+            guard wrote, resizer.wait(timeout: .now() + 5) == .success, settled(hub, within: 30) else {
+                Issue.record("round \(round): the writer, the resizer or the deliveries did not finish")
+                return
+            }
 
             #expect(log.overlapping == 0, "round \(round): two writes for one viewer at once")
             let shown = try replay(log.messages, scrollbackLines: 10_000)
@@ -332,7 +355,7 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         hub.write(session: Self.session, bytes: bytes("before"))
         hub.noteSize(session: Self.session, TerminalSize(cols: 90, rows: 20))
         hub.write(session: Self.session, bytes: bytes("after"))
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         let messages = log.messages
         let resize = messages.firstIndex(of: .resize(cols: 90, rows: 20, own: false))
         let before = messages.firstIndex(of: .data(bytes("before")))
@@ -359,32 +382,43 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         let log = LocalLog()
         let id = hub.attachLocal(session: Self.session, resize: .repaint) { log.add($0) }
         hub.write(session: Self.session, bytes: bytes("x"))
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         #expect(asked.value == 0)
 
         let unavailable = DispatchSemaphore(value: 0)
         hub.resync(connectionId: id) { unavailable.signal() }
         #expect(unavailable.wait(timeout: .now() + 5) == .success)
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         #expect(log.messages == [.resize(cols: 80, rows: 24, own: false),
                                  .snapshot(TerminalPaint.hardReset + bytes("ALT")), .data(bytes("x"))])
     }
 
     /// A queued viewer beside a local one on the same session: each gets every byte
     /// once, the local one per write and the queued one still batched.
+    ///
+    /// The delivery queue is held (by a queued viewer of another session whose sink
+    /// blocks) while the four writes are made, so no flush can run between them
+    /// whatever the scheduler does: the first write's quiet flush then finds all
+    /// four in the buffer.
     @Test func aQueuedViewerBesideALocalOneIsUntouched() {
         let hub = PaneStreamHub()
         defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        hub.attach(session: "gt:hold", resize: .repaint) { message in
+            if isData(message) { gate.hold() }
+        }
         let local = LocalLog()
         let queued = LocalLog()
         hub.attach(session: Self.session, resize: .repaint) { queued.add($0) }
         hub.attachLocal(session: Self.session, resize: .repaint) { local.add($0) }
+        hub.write(session: "gt:hold", bytes: bytes("h"))
+        #expect(gate.waitUntilHeld())
         for part in ["a", "b", "c", "d"] { hub.write(session: Self.session, bytes: bytes(part)) }
-        hub.waitForPendingDeliveries()
-        hub.flush()
         #expect(local.messages == ["a", "b", "c", "d"].map { .data(bytes($0)) })
-        #expect(queued.dataBytes == bytes("abcd"))
-        #expect(queued.messages.count < 4, "\(queued.messages.count) messages: not batched")
+        gate.open()
+        #expect(settled(hub))
+        #expect(queued.messages == [.data(bytes("abcd"))])
     }
 
     /// Several local viewers of one session each get every byte, in order.
@@ -408,11 +442,11 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         hub.attachLocal(session: Self.session, resize: .repaint) { log.add($0) }
         hub.write(session: Self.session, bytes: bytes("tail"))
         hub.endViewers(ofSession: Self.session)
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         #expect(log.messages == [.data(bytes("tail")), .ended])
         hub.write(session: Self.session, bytes: bytes("late"))
         hub.noteSize(session: Self.session, TerminalSize(cols: 10, rows: 10))
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         #expect(log.messages == [.data(bytes("tail")), .ended])
     }
 
@@ -426,43 +460,249 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         hub.write(session: Self.session, bytes: bytes("unseen"))
         hub.noteSize(session: Self.session, TerminalSize(cols: 10, rows: 10))
         hub.endViewers(ofSession: Self.session)
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         #expect(log.messages == [.data(bytes("seen"))])
     }
 
-    /// The case the local socket server will meet: its client is gone while the
-    /// writer is blocked inside that client's `write`, and the delivery queue is
-    /// waiting behind it with a resize. `detach` returns anyway, and once the
-    /// blocked write is let go nothing more is written, the resize included.
-    @Test func aDetachWhileAWriteIsBlockedReturnsAndEndsTheViewer() {
+    /// The contract a socket server builds on: `detach` from another thread does
+    /// not return while the viewer's `write` is running, and returns once it has;
+    /// nothing is written afterwards.
+    @Test func aDetachWaitsForTheWriteInProgressAndNothingFollowsIt() {
         let hub = PaneStreamHub()
         defer { hub.stop() }
-        let entered = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
-        defer { release.signal() }
+        let gate = Gate()
+        defer { gate.open() }
         let log = LocalLog()
         let id = hub.attachLocal(session: Self.session, resize: .repaint) { message in
             log.add(message)
-            guard isData(message) else { return }
-            entered.signal()
-            release.wait()
+            if isData(message) { gate.hold() }
         }
         let writer = onThread { hub.write(session: Self.session, bytes: bytes("x")) }
-        #expect(entered.wait(timeout: .now() + 5) == .success)
-        // Queued behind the blocked write: it holds the session's lock while it
-        // waits for the viewer's write lock.
+        #expect(gate.waitUntilHeld())
+        // Left with the viewer while it is busy, not waited for.
         hub.noteSize(session: Self.session, TerminalSize(cols: 90, rows: 20))
-        let delivery = onThread { hub.waitForPendingDeliveries() }
-        #expect(delivery.wait(timeout: .now() + 0.1) == .timedOut, "the resize did not wait for the blocked write")
+        #expect(settled(hub), "the delivery queue waited for the blocked write")
 
         let detached = onThread { hub.detach(connectionId: id) }
-        #expect(detached.wait(timeout: .now() + 5) == .success, "detach waited for the blocked write")
-
-        release.signal()
+        #expect(detached.wait(timeout: .now() + 0.2) == .timedOut, "detach returned while the write ran")
+        gate.open()
+        #expect(detached.wait(timeout: .now() + 5) == .success, "detach did not return once the write did")
         #expect(writer.wait(timeout: .now() + 5) == .success)
-        #expect(delivery.wait(timeout: .now() + 5) == .success)
+        hub.write(session: Self.session, bytes: bytes("y"))
+        hub.endViewers(ofSession: Self.session)
+        #expect(settled(hub))
+        #expect(log.messages == [.data(bytes("x"))])
+    }
+
+    /// A viewer may detach itself from inside its own `write`: that returns at once,
+    /// and the call in progress is the last.
+    @Test func aDetachFromInsideTheViewersOwnWriteReturnsAtOnce() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let log = LocalLog()
+        let id = Box<UUID?>(nil)
+        id.value = hub.attachLocal(session: Self.session, resize: .repaint) { message in
+            log.add(message)
+            if isData(message), let own = id.value { hub.detach(connectionId: own) }
+        }
+        let writer = onThread { hub.write(session: Self.session, bytes: bytes("x")) }
+        #expect(writer.wait(timeout: .now() + 5) == .success, "a detach from inside write did not return")
         hub.write(session: Self.session, bytes: bytes("y"))
         #expect(log.messages == [.data(bytes("x"))])
+    }
+
+    /// An ending queued on the delivery queue, and a detach made before it runs:
+    /// once the detach has returned, the ending writes nothing.
+    @Test func anEndingAfterADetachReturnedWritesNothing() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        hub.attach(session: "gt:hold", resize: .repaint) { message in
+            if isData(message) { gate.hold() }
+        }
+        let log = LocalLog()
+        let id = hub.attachLocal(session: Self.session, resize: .repaint) { log.add($0) }
+        hub.write(session: "gt:hold", bytes: bytes("h"))
+        #expect(gate.waitUntilHeld())
+        hub.endViewers(ofSession: Self.session)
+        let detached = onThread { hub.detach(connectionId: id) }
+        #expect(detached.wait(timeout: .now() + 5) == .success)
+        gate.open()
+        #expect(settled(hub))
+        #expect(log.messages.isEmpty)
+    }
+
+    /// Nothing a detached viewer's `write` captured outlives the detach on a
+    /// terminal that writes nothing more.
+    @Test func aDetachedViewerIsNotKeptByAnIdleSession() {
+        final class Token: @unchecked Sendable {}
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        weak var watched: Token?
+        let id: UUID = {
+            let token = Token()
+            watched = token
+            return hub.attachLocal(session: Self.session, resize: .repaint) { _ in _ = token }
+        }()
+        hub.write(session: Self.session, bytes: bytes("x"))
+        #expect(watched != nil)
+        hub.detach(connectionId: id)
+        #expect(watched == nil)
+    }
+
+    // MARK: - The delivery queue never waits for a busy local viewer
+
+    /// With a local viewer of one session blocked inside its `write`, everything
+    /// the delivery queue has for that viewer (a resize, a claim that changes the
+    /// grid, the answer to its own claim, an ending) is left with it, and a queued
+    /// viewer of another session keeps receiving. Once let go, the viewer gets the
+    /// chunk, then those messages in order, then nothing. `flush()` is the proof:
+    /// it waits for the delivery queue, so it cannot return while that is parked.
+    @Test func aBusyLocalViewerNeverHoldsTheDeliveryQueue() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        let log = LocalLog()
+        let id = hub.attachLocal(session: Self.session, resize: .reflow) { message in
+            log.add(message)
+            if isData(message) { gate.hold() }
+        }
+        let other = LocalLog()
+        hub.attach(session: "gt:other", resize: .repaint) { other.add($0) }
+        let writer = onThread { hub.write(session: Self.session, bytes: bytes("chunk")) }
+        #expect(gate.waitUntilHeld())
+
+        var sent: [UInt8] = []
+        let steps: [(String, () -> Void)] = [
+            ("a resize", { hub.noteSize(session: Self.session, TerminalSize(cols: 90, rows: 20)) }),
+            ("a claim", { hub.claim(connectionId: id, cols: 100, rows: 30) }),
+            ("a claim answer", { hub.claim(connectionId: id, cols: 100, rows: 30) }),
+            ("an ending", { hub.endViewers(ofSession: Self.session) }),
+        ]
+        for (index, (name, step)) in steps.enumerated() {
+            step()
+            let output = bytes("\(index)")
+            sent += output
+            hub.write(session: "gt:other", bytes: output)
+            let flushed = onThread { hub.flush() }
+            #expect(flushed.wait(timeout: .now() + 5) == .success, "\(name) held the delivery queue")
+            #expect(other.dataBytes == sent, "after \(name)")
+        }
+
+        gate.open()
+        #expect(writer.wait(timeout: .now() + 5) == .success)
+        hub.write(session: Self.session, bytes: bytes("late"))
+        #expect(settled(hub))
+        // The surface's resize was replaced by the claim's, which came after it
+        // with no output between: a viewer that reflows needs only the latest
+        // grid. Each claim's own answer is kept.
+        #expect(log.messages == [.data(bytes("chunk")),
+                                 .resize(cols: 100, rows: 30, own: true),
+                                 .resize(cols: 100, rows: 30, own: true),
+                                 .ended])
+    }
+
+    /// A resize left with a busy viewer goes out after the chunk in progress and
+    /// before the next one.
+    @Test func aResizeLeftPendingGoesBetweenTwoChunks() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        let held = Box(false)
+        let log = LocalLog()
+        hub.attachLocal(session: Self.session, resize: .reflow) { message in
+            log.add(message)
+            if isData(message), !held.value {
+                held.value = true
+                gate.hold()
+            }
+        }
+        let writer = onThread {
+            hub.write(session: Self.session, bytes: bytes("one"))
+            hub.write(session: Self.session, bytes: bytes("two"))
+        }
+        #expect(gate.waitUntilHeld())
+        hub.noteSize(session: Self.session, TerminalSize(cols: 90, rows: 20))
+        #expect(settled(hub))
+        gate.open()
+        #expect(writer.wait(timeout: .now() + 5) == .success)
+        #expect(log.messages == [.data(bytes("one")), .resize(cols: 90, rows: 20, own: false),
+                                 .data(bytes("two"))])
+    }
+
+    /// The bytes written before a local viewer's own claim reach it ahead of the
+    /// answer, also when the answer has to wait for the chunk in progress.
+    @Test func bytesWrittenBeforeALocalClaimPrecedeItsAnswer() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        let log = LocalLog()
+        let id = hub.attachLocal(session: Self.session, resize: .reflow) { message in
+            log.add(message)
+            if isData(message) { gate.hold() }
+        }
+        let writer = onThread { hub.write(session: Self.session, bytes: bytes("before")) }
+        #expect(gate.waitUntilHeld())
+        hub.claim(connectionId: id, cols: 100, rows: 30)
+        #expect(settled(hub))
+        gate.open()
+        #expect(writer.wait(timeout: .now() + 5) == .success)
+        #expect(settled(hub))
+        #expect(log.messages == [.data(bytes("before")), .resize(cols: 100, rows: 30, own: true)])
+    }
+
+    /// An `ended` left with a busy viewer is written after the chunk in progress,
+    /// and nothing follows it.
+    @Test func anEndingLeftPendingFollowsTheChunkAndEndsTheViewer() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        let log = LocalLog()
+        hub.attachLocal(session: Self.session, resize: .reflow) { message in
+            log.add(message)
+            if isData(message) { gate.hold() }
+        }
+        let writer = onThread { hub.write(session: Self.session, bytes: bytes("last")) }
+        #expect(gate.waitUntilHeld())
+        hub.endViewers(ofSession: Self.session)
+        #expect(settled(hub))
+        gate.open()
+        #expect(writer.wait(timeout: .now() + 5) == .success)
+        hub.write(session: Self.session, bytes: bytes("after"))
+        hub.noteSize(session: Self.session, TerminalSize(cols: 10, rows: 10))
+        #expect(settled(hub))
+        #expect(log.messages == [.data(bytes("last")), .ended])
+    }
+
+    /// A message left at the instant the writer finishes is never stranded: a
+    /// writer and a stream of claims race for a few thousand rounds, and every
+    /// claim is answered.
+    @Test func noMessageLeftWithAViewerIsStranded() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let answers = Box(0)
+        let id = hub.attachLocal(session: Self.session, resize: .reflow) { message in
+            if case .resize(_, _, true) = message { answers.value += 1 }
+        }
+        hub.claim(connectionId: id, cols: 100, rows: 30)
+        #expect(settled(hub))
+        answers.value = 0
+        let rounds = 3_000
+        let writer = onThread {
+            for _ in 0..<rounds { hub.write(session: Self.session, bytes: bytes("x")) }
+        }
+        let claimer = onThread {
+            for _ in 0..<rounds { hub.claim(connectionId: id, cols: 100, rows: 30) }
+        }
+        #expect(writer.wait(timeout: .now() + 30) == .success)
+        #expect(claimer.wait(timeout: .now() + 30) == .success)
+        #expect(settled(hub, within: 30))
+        #expect(answers.value == rounds)
     }
 
     // MARK: - The hook, claims, other sessions
@@ -485,7 +725,7 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         #expect(timeline.value == ["first resize", "first snapshot", "attached \(Self.session)"])
         hub.attachLocal(session: Self.session, resize: .repaint) { _ in }
         hub.attachLocal(session: "gt:other", resize: .repaint) { _ in }
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         #expect(timeline.value == ["first resize", "first snapshot", "attached \(Self.session)",
                                    "attached gt:other"])
     }
@@ -504,13 +744,13 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         hub.attach(session: Self.session, resize: .reflow) { queued.add($0) }
 
         hub.claim(connectionId: id, cols: 100, rows: 30)
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         #expect(claimed.value == [TerminalSize(cols: 100, rows: 30)])
         #expect(local.messages == [.resize(cols: 100, rows: 30, own: true)])
         #expect(queued.messages == [.resize(cols: 100, rows: 30, own: false)])
 
         hub.claim(connectionId: id, cols: 100, rows: 30)
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         #expect(claimed.value.count == 1)
         #expect(local.messages == [.resize(cols: 100, rows: 30, own: true),
                                    .resize(cols: 100, rows: 30, own: true)])
@@ -523,13 +763,10 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
     @Test func aBlockedLocalViewerDoesNotStallAnotherSessionsViewers() {
         let hub = PaneStreamHub(startTimer: true)
         defer { hub.stop() }
-        let entered = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
-        defer { release.signal() }
+        let gate = Gate()
+        defer { gate.open() }
         hub.attachLocal(session: Self.session, resize: .repaint) { message in
-            guard isData(message) else { return }
-            entered.signal()
-            release.wait()
+            if isData(message) { gate.hold() }
         }
         let sameSession = LocalLog()
         let otherSession = LocalLog()
@@ -537,14 +774,13 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         hub.attach(session: "gt:other", resize: .repaint) { otherSession.add($0) }
 
         let writer = onThread { hub.write(session: Self.session, bytes: bytes("held")) }
-        #expect(entered.wait(timeout: .now() + 5) == .success)
+        #expect(gate.waitUntilHeld())
         hub.write(session: "gt:other", bytes: bytes("one "))
         #expect(eventually { otherSession.dataBytes == bytes("one ") })
-        usleep(40_000)
         hub.write(session: "gt:other", bytes: bytes("two"))
         #expect(eventually { otherSession.dataBytes == bytes("one two") })
 
-        release.signal()
+        gate.open()
         #expect(writer.wait(timeout: .now() + 5) == .success)
         #expect(eventually { sameSession.dataBytes == bytes("held") })
     }
@@ -581,7 +817,7 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         let size = TerminalSize(cols: 50, rows: 8)
         model.resize(to: size)
         hub.noteSize(session: Self.session, size)
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         hub.write(session: Self.session, bytes: Array(text[cut...]))
         let paints = log.messages.compactMap { message -> [UInt8]? in
             if case let .repaint(payload) = message { return payload }
@@ -629,11 +865,11 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         hub.attach(session: Self.session, resize: .repaint) { log.add($0) }
         let large = (0..<600_000).map { UInt8(truncatingIfNeeded: $0 % 251) }
         hub.write(session: Self.session, bytes: large)
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
         hub.flush()
         hub.write(session: Self.session, bytes: large)
         hub.endViewers(ofSession: Self.session)
-        hub.waitForPendingDeliveries()
+        #expect(settled(hub))
 
         let messages = log.messages
         #expect(messages.last == .ended)
