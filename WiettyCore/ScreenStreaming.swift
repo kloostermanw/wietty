@@ -19,5 +19,8 @@ package protocol ScreenStreaming: AnyObject, Sendable {
     /// could be built). The answer comes later, not before this returns, because
     /// the caller is usually inside a delivery to that very viewer.
     func resync(connectionId: UUID, onUnavailable: @escaping @Sendable () -> Void)
+    /// A viewer says "I am active, this is my grid". Answered with a `resize` to every
+    /// viewer, `own` true for this one. Unknown ids are ignored.
+    func claim(connectionId: UUID, cols: Int, rows: Int)
     func stop()
 }

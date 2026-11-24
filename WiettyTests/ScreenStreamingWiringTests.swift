@@ -27,6 +27,11 @@ private final class FakeStreamer: ScreenStreaming, @unchecked Sendable {
         lock.lock(); resynced += 1; lock.unlock()
     }
     func stop() { lock.lock(); stopped = true; lock.unlock() }
+    /// Every claim made, in order.
+    private(set) var claims: [(id: UUID, cols: Int, rows: Int)] = []
+    func claim(connectionId: UUID, cols: Int, rows: Int) {
+        lock.lock(); claims.append((connectionId, cols, rows)); lock.unlock()
+    }
 }
 
 @Suite struct ScreenStreamingWiringTests {

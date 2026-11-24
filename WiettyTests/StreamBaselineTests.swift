@@ -58,6 +58,7 @@ struct StreamBaselineTests {
             hub.onRepaint = { session in shared.model(for: session)?.repaintFrame() }
             hub.onAlternateScreen = { session in shared.model(for: session)?.isAlternateScreen ?? false }
             hub.onInput = { session, bytes in GhosttyStack.input(bytes, for: session, in: shared) }
+            hub.onClaim = { session, size in shared.resizer(for: session)?(size) }
             self.hub = hub
             let pty: RawPTY
             do {
@@ -83,6 +84,10 @@ struct StreamBaselineTests {
             }
             shared.note(model: model, for: session)
             shared.register(writer: { [weak pty] bytes in pty?.write(bytes) }, for: session)
+            shared.register(resizer: { [weak pty, weak model] size in
+                pty?.resize(to: size)
+                model?.resize(to: size)
+            }, for: session)
             relay.start(onExit: { _ in })
         }
 

@@ -74,9 +74,11 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private let lock = NSLock()
     private var streams: [String: Stream] = [:]
     private var sessionForViewer: [UUID: String] = [:]
-    /// The grid last seen for a session. libghostty reports a size on events that
-    /// need not have moved it (a font metric change, a re-parent), so this is what
-    /// keeps a resize to the changes that really moved the grid.
+    /// The grid in force for a session: the last one either reported by the surface
+    /// through `noteSize` or claimed by a viewer through `claim`, whichever came
+    /// last. libghostty reports a size on events that need not have moved it (a font
+    /// metric change, a re-parent), so this is what keeps a resize to the changes
+    /// that really moved the grid.
     private var sizeForPane: [String: TerminalSize] = [:]
     private var timer: DispatchSourceTimer?
     /// Where everything that delivers to a viewer runs: the flush timer, a quiet
@@ -137,6 +139,11 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Reports a genuine bell in a pane's output. Unwired in the app, where the
     /// surface reports the bell; while it is nil the hub does not look for bells.
     package var onBell: (@Sendable (_ pane: String) -> Void)?
+    /// Resizes the pty and the model of a session. Called before the repaint is taken.
+    ///
+    /// Called on `delivery` with no lock of the hub's held, because it takes the
+    /// model's lock and signals the child. It must not call back into the hub.
+    package var onClaim: (@Sendable (_ session: String, _ size: TerminalSize) -> Void)?
 
     /// Interval chosen so typing feels immediate while a burst of output still
     /// coalesces into one message.
@@ -534,11 +541,68 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         delivery.async { [weak self] in self?.resizeNow(session: session, size) }
     }
 
+    /// The grids a viewer may claim, the same bounds the codec keeps for a `resize`.
+    private static let claimable = 1...10_000
+
+    /// A viewer says "I am active, this is my grid".
+    ///
+    /// A grid other than the one in force becomes it: `onClaim` resizes the pty and
+    /// the model, and then every viewer is told as for any resize, `own` true for
+    /// the claimant alone. The grid in force already moves nothing and is answered
+    /// to the claimant alone, so every claim gets exactly one answer, in order. A
+    /// viewer that is not attached, or a grid outside `claimable`, claims nothing
+    /// and is not answered.
+    ///
+    /// Safe from any thread, and asynchronous like a resize: handled on `delivery`,
+    /// so the bytes accepted before it is handled reach the claimant before its
+    /// answer, and the main actor plays no part.
+    package func claim(connectionId: UUID, cols: Int, rows: Int) {
+        guard Self.claimable.contains(cols), Self.claimable.contains(rows) else { return }
+        let size = TerminalSize(cols: cols, rows: rows)
+        delivery.async { [weak self] in self?.claimNow(connectionId, size) }
+    }
+
+    /// Call on `delivery`. The record is read and written here rather than when the
+    /// claim is made, so claims are judged in the order they are handled.
+    private func claimNow(_ id: UUID, _ size: TerminalSize) {
+        lock.lock()
+        guard let session = sessionForViewer[id], let stream = streams[session] else {
+            lock.unlock()
+            return
+        }
+        let changed = sizeForPane[session] != size
+        sizeForPane[session] = size
+        let resizer = onClaim
+        lock.unlock()
+        guard changed else { return answerClaimant(id, of: stream, size) }
+        // The pty and the model first, with no lock of the hub's held, and only then
+        // the repaint: taken before, it would paint the screen as it was before the
+        // reflow. The rule `GhosttyService` keeps for a resize the surface reports.
+        resizer?(session, size)
+        resizeNow(session: session, size, claimant: id)
+    }
+
+    /// The answer to a claim for the grid in force: the bytes accepted so far go to
+    /// every viewer, as a flush would send them, so that the claimant gets them
+    /// ahead of the answer, and then the claimant alone is sent the grid.
+    private func answerClaimant(_ id: UUID, of stream: Stream, _ size: TerminalSize) {
+        stream.lock.lock()
+        guard let claimant = stream.viewers[id] else { stream.lock.unlock(); return }
+        let outstanding = stream.take()
+        let sinks = stream.viewers.values.map(\.sink)
+        stream.lock.unlock()
+        if !outstanding.isEmpty { for sink in sinks { sink(.data(outstanding)) } }
+        claimant.sink(.resize(cols: size.cols, rows: size.rows, own: true))
+    }
+
     /// The same join an attach makes, for the same reason. What was accepted
     /// before the repaint is taken under the session's lock and delivered ahead of
     /// it, the repaint is taken under that same lock, and everything accepted
     /// afterwards follows it. So a repaint neither repeats a byte nor loses one.
-    private func resizeNow(session: String, _ size: TerminalSize) {
+    ///
+    /// - Parameter claimant: the viewer whose claim moved the grid, the one told
+    ///   `own` true. Nil for a grid the surface reported.
+    private func resizeNow(session: String, _ size: TerminalSize, claimant: UUID? = nil) {
         lock.lock()
         let hook = onRepaint
         let stream = streams[session]
@@ -546,20 +610,20 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         guard let stream else { return }
 
         stream.lock.lock()
-        let viewers = Array(stream.viewers.values)
+        let viewers = Array(stream.viewers)
         // Nothing is delivered without a viewer, so there is nothing to take and
         // nothing to paint either.
         guard !viewers.isEmpty else { stream.lock.unlock(); return }
         let outstanding = stream.take()
-        let wantRepaint = viewers.contains { $0.resize == .repaint }
+        let wantRepaint = viewers.contains { $0.value.resize == .repaint }
         let repaint = wantRepaint ? hook?(session) : nil
         let pending = stream.pendingCharacter
         stream.lock.unlock()
 
         let grid = repaint?.size ?? size
-        if !outstanding.isEmpty { for viewer in viewers { viewer.sink(.data(outstanding)) } }
-        for viewer in viewers {
-            viewer.sink(.resize(cols: grid.cols, rows: grid.rows, own: false))
+        if !outstanding.isEmpty { for (_, viewer) in viewers { viewer.sink(.data(outstanding)) } }
+        for (id, viewer) in viewers {
+            viewer.sink(.resize(cols: grid.cols, rows: grid.rows, own: id == claimant))
             if viewer.resize == .repaint, let repaint {
                 viewer.sink(.repaint(TerminalPaint.reset + repaint.frame + pending))
             }

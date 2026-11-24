@@ -576,6 +576,11 @@ re-parent). And the service resizes the model *before* it reports the size, beca
 makes the hub repaint and the repaint is taken from the model: reported first, it would paint the screen
 as it was before the reflow and then be contradicted by the bytes the reflow produced.
 
+The hub can also take the grid from a viewer, through `PaneStreamHub.claim(connectionId:cols:rows:)`,
+which nothing calls yet. On its delivery queue it calls `onClaim` (wired to the resizer `GhosttyService`
+registers in `SharedTerminalState`, which resizes the pty and then the model) and then repaints as above,
+`own` true in the claimant's `resize`; a claim and `noteSize` share the one record of the grid in force.
+
 The direction of these hooks matters as much as their order. The resize report runs on the main actor
 and hands the size to a lock guarded hub. The census, the model feed, the frames and the input writer
 are asked by the hub from the relay's queue, from its own, and from the thread a viewer's input

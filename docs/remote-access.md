@@ -262,7 +262,11 @@ came in between. A viewer that disconnects before then gets none.
 
 **A viewer's `resize`** is accepted and not yet acted on: the server parses it
 and ignores it, and answers nothing. Claiming the grid is the next part of
-phase 3 of issue #84.
+phase 3 of issue #84. The hub can already act on a claim
+(`PaneStreamHub.claim(connectionId:cols:rows:)`: it resizes the pty and the model
+when the grid is new and tells every viewer, `own` true for the claimant alone, or
+answers the claimant alone when the grid is already in force), but nothing calls it
+yet.
 
 **Ending.** After `ended` or `error` the server closes the socket. When the
 viewer closes, or its socket fails, the server detaches it from the hub, and so

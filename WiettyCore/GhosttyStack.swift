@@ -168,6 +168,10 @@ package final class GhosttyStack {
         // the hub was handed it on. The pty queues it on its own serial queue, so
         // it arrives in the order it was sent and never waits for the main actor.
         hub.onInput = { session, bytes in Self.input(bytes, for: session, in: shared) }
+        // A viewer's claim of a grid, to the pty and then the model of the terminal,
+        // on the hub's delivery queue and before the hub takes its repaint. Nothing
+        // claims yet: the attach route still ignores an inbound `resize`.
+        hub.onClaim = { session, size in shared.resizer(for: session)?(size) }
         // The hub holds the escape state needed to tell a real bell from an OSC
         // terminator, but libghostty has already parsed both, so the surface's
         // bell is the one that is reported and this hook stays unwired.
