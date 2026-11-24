@@ -274,7 +274,7 @@ package final class GhosttyStack {
     /// lifetime of the crashed run whose leftovers this exists for. Nothing is lost
     /// by being late: `TerminalRelay` unlinks before it binds, so a stale file never
     /// blocks a terminal in the first place.
-    package static let staleSocketAge: TimeInterval = 3600
+    nonisolated package static let staleSocketAge: TimeInterval = 3600
 
     /// Removes socket files a crashed run left in the temp directory.
     ///
