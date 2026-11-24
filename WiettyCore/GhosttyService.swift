@@ -16,6 +16,7 @@ package final class SharedTerminalState: @unchecked Sendable {
     private var live: Set<String> = []
     private var models: [String: any TerminalScreenModel] = [:]
     private var writers: [String: @Sendable ([UInt8]) -> Void] = [:]
+    private var resizers: [String: @Sendable (TerminalSize) -> Void] = [:]
 
     /// `GhosttyService` builds the app's one instance. Reachable from the tests so
     /// `StreamBaselineTests` can wire the hub to a model exactly as `GhosttyStack` does.
@@ -70,6 +71,23 @@ package final class SharedTerminalState: @unchecked Sendable {
 
     package func removeWriter(for session: String) {
         lock.lock(); writers[session] = nil; lock.unlock()
+    }
+
+    /// What resizes a terminal's pty and then its model, for the hub to call when a
+    /// viewer claims a grid, without the main actor. Both serialise their own calls,
+    /// so calling it from any thread is safe.
+    package func register(resizer: @escaping @Sendable (TerminalSize) -> Void, for session: String) {
+        lock.lock(); resizers[session] = resizer; lock.unlock()
+    }
+
+    /// The resizer of a terminal that is open and has not exited, or nil.
+    package func resizer(for session: String) -> (@Sendable (TerminalSize) -> Void)? {
+        lock.lock(); defer { lock.unlock() }
+        return resizers[session]
+    }
+
+    package func removeResizer(for session: String) {
+        lock.lock(); resizers[session] = nil; lock.unlock()
     }
 }
 
@@ -345,6 +363,13 @@ package final class GhosttyService: TerminalService {
         // Weakly, like the status tap's reply: the registry must not keep a pty
         // alive, and one that has been released has nobody left to read input.
         shared.register(writer: { [weak pty] bytes in pty?.write(bytes) }, for: session)
+        // What a viewer's claim of a grid resizes, off the main actor: the pty, and
+        // then the model, in the order `host.onResized` keeps. Weakly, for the same
+        // reason as the writer.
+        shared.register(resizer: { [weak pty, weak model] size in
+            pty?.resize(to: size)
+            model?.resize(to: size)
+        }, for: session)
         relay.start(onExit: { [weak self] _ in
             Task { @MainActor in self?.reap(session) }
         })
@@ -389,6 +414,7 @@ package final class GhosttyService: TerminalService {
         // for this terminal is refused here as `send` refuses it, rather than
         // handed to a pty that drops it without a word.
         shared.removeWriter(for: session)
+        shared.removeResizer(for: session)
         // Every viewer of this terminal, wherever it is. The census only answers an
         // attach that has not happened yet; a browser or an iPad already watching
         // this session has nothing else to learn from and would otherwise stay on a
@@ -501,6 +527,7 @@ package final class GhosttyService: TerminalService {
         // id is answered `ended` by the census from here on.
         shared.removeModel(for: sessionId)
         shared.removeWriter(for: sessionId)
+        shared.removeResizer(for: sessionId)
         // Told even when the child was reaped earlier, because a viewer can attach
         // between the two: the census answers an attach on a reaped terminal
         // `ended`, but a viewer that attached while it was alive is still here.
@@ -578,6 +605,7 @@ package final class GhosttyService: TerminalService {
             host.destroySurface(id: session)
             shared.removeModel(for: session)
             shared.removeWriter(for: session)
+            shared.removeResizer(for: session)
             // Told here too, and it is not only for tidiness at exit: this is also
             // the teardown a test performs while a viewer is attached.
             onStreamEnded(session)

@@ -12,6 +12,11 @@ private final class RouteStreamer: ScreenStreaming, @unchecked Sendable {
         let resize: ResizeMode
         let id: UUID
     }
+    struct Claim: Equatable {
+        let id: UUID
+        let cols: Int
+        let rows: Int
+    }
 
     private let lock = NSLock()
     private var sinks: [UUID: @Sendable (StreamMessage) -> Void] = [:]
@@ -55,6 +60,12 @@ private final class RouteStreamer: ScreenStreaming, @unchecked Sendable {
     /// Resyncs answered with "no snapshot" so far, counted once the answer returned.
     var answered: Int { lock.lock(); defer { lock.unlock() }; return answeredCount }
     func stop() {}
+    private var claimList: [Claim] = []
+    func claim(connectionId: UUID, cols: Int, rows: Int) {
+        lock.lock(); claimList.append(Claim(id: connectionId, cols: cols, rows: rows)); lock.unlock()
+    }
+    /// Every claim the route made, in order.
+    var claims: [Claim] { lock.lock(); defer { lock.unlock() }; return claimList }
 
     var attaches: [Attach] { lock.lock(); defer { lock.unlock() }; return attachList }
     var sent: [[UInt8]] { lock.lock(); defer { lock.unlock() }; return sentList }

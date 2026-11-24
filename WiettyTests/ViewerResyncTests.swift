@@ -44,6 +44,12 @@ private final class Counter: @unchecked Sendable {
 /// A streamer that keeps each viewer's sink and each resync's answer for the test
 /// to use.
 private final class ScriptedStreamer: ScreenStreaming, @unchecked Sendable {
+    struct Claim: Equatable {
+        let id: UUID
+        let cols: Int
+        let rows: Int
+    }
+
     private let lock = NSLock()
     private var sink: (@Sendable (StreamMessage) -> Void)?
     private var answers: [@Sendable () -> Void] = []
@@ -67,6 +73,12 @@ private final class ScriptedStreamer: ScreenStreaming, @unchecked Sendable {
         lock.lock(); resyncIds.append(connectionId); answers.append(onUnavailable); lock.unlock()
     }
     func stop() {}
+    private var claimList: [Claim] = []
+    func claim(connectionId: UUID, cols: Int, rows: Int) {
+        lock.lock(); claimList.append(Claim(id: connectionId, cols: cols, rows: rows)); lock.unlock()
+    }
+    /// Every claim made, in order.
+    var claims: [Claim] { lock.lock(); defer { lock.unlock() }; return claimList }
 
     func deliver(_ message: StreamMessage) {
         lock.lock(); let sink = self.sink; lock.unlock()
