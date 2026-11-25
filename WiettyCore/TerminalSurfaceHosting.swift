@@ -64,6 +64,12 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// (another display's scale, a font or padding change) without being imposed
     /// again. `onResized` keeps reporting the surface's grid as its view's size
     /// changes, an imposed size included.
+    ///
+    /// Any grid is accepted and held to what can be shown: at least 1 by 1, at most
+    /// 10,000 per side (the stream protocol's range), and at most what the
+    /// renderer's largest texture holds at the surface's cell size and scale. A grid
+    /// past that last bound is shown with fewer columns or rows than it has, which
+    /// is the same as clipping it: the cells beyond are not on screen.
     func impose(grid: TerminalSize?, on id: String)
 
     /// libghostty reported a title change (OSC 0 or OSC 2).

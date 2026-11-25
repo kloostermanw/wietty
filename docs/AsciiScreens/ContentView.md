@@ -179,10 +179,13 @@ terminal fills the pane, live resize included. A grid can also be imposed on a
 terminal (`TerminalSurfaceHosting.impose(grid:on:)`), and then the view gets exactly
 the size that grid needs, worked out from the surface's cell size, its configured
 padding and the display's scale (`SurfaceMetrics`), rounded up to the next device
-pixel. Nothing imposes one yet; the next step lets the most recently active viewer of
-a terminal decide its grid for every viewer. A smaller grid sits at the top left in a
-margin the container paints in the terminal's background colour. A larger one is cut
-off at the right and bottom edges and does not scroll.
+pixel. The most recently active viewer of a terminal decides its grid for every
+viewer, so the pane shows another viewer's grid this way. A smaller grid sits at the top left in a
+margin the container paints in the colour the terminal's background has (the configured one, or
+the one a program set with `OSC 11`, at the configured `background-opacity`), only where the grid
+leaves the pane uncovered. With nothing imposed the container paints nothing. A larger grid is cut
+off at the right and bottom edges and does not scroll; a grid too large for the renderer's largest
+texture shows fewer columns or rows, which looks the same.
 
 ```
 smaller grid imposed                      larger grid imposed

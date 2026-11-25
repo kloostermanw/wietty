@@ -144,7 +144,9 @@ simulated by a window that reports it, so the display is never touched), with th
 with one that is not, and with two values per axis and `window-padding-balance` on. Each grid is set
 by hand on the bare view and then through the pane's own API (`impose(grid:on:)` with the view in
 its `SurfaceContainerView`, sized from `metrics(id:)`). It prints one line per grid and variant
-starting with `IMPOSED`. Run it after changing the pin of libghostty, or the way a pane sizes its
+starting with `IMPOSED`, and `IMPOSED-EXTRA` lines for paths that need a real surface: a grid imposed
+off screen and then shown, a scale change with a grid imposed, a reload that changes the padding, and
+a program setting and resetting the background (`OSC 11`, `OSC 111`), which the margin follows. Run it after changing the pin of libghostty, or the way a pane sizes its
 surface:
 
 ```sh

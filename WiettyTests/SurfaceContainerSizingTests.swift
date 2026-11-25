@@ -169,13 +169,41 @@ import WiettyCore
 
     /// A smaller grid sits top left in a margin the container draws in the
     /// terminal's background colour.
-    @Test func aSmallerGridLeavesAMarginInTheBackgroundColour() {
+    @Test func aSmallerGridLeavesAMarginInTheBackgroundColour() throws {
         let pane = pane()
         defer { pane.window.close() }
         pane.surface.imposedSize = CGSize(width: 644, height: 412)
         pane.layout()
         #expect(pane.surface.frame == NSRect(x: 0, y: 600 - 412, width: 644, height: 412))
-        #expect(pane.container.layer?.backgroundColor == pane.surface.marginColor.cgColor)
+        let margin = try #require(pane.container.margin)
+        #expect(margin.color == pane.surface.marginColor)
+        // The strip to the right, full height, and the strip below the surface.
+        #expect(margin.rects == [NSRect(x: 644, y: 0, width: 156, height: 600),
+                                 NSRect(x: 0, y: 0, width: 644, height: 188)])
+        // Nothing behind the surface: the layer itself carries no colour.
+        #expect(pane.container.layer?.backgroundColor == nil)
+    }
+
+    /// With nothing imposed the container paints nothing at all, so a translucent
+    /// terminal blends over the window as it did before; nor when an imposed grid
+    /// covers the whole pane, or after the grid is cleared.
+    @Test func thereIsNoMarginWhileTheSurfaceFillsThePane() {
+        let pane = pane()
+        defer { pane.window.close() }
+        #expect(pane.container.margin == nil)
+        #expect(pane.container.layer?.backgroundColor == nil)
+        pane.surface.imposedSize = CGSize(width: 2404, height: 1534)
+        pane.layout()
+        #expect(pane.container.margin == nil)
+        pane.surface.imposedSize = CGSize(width: 800, height: 600)
+        pane.layout()
+        #expect(pane.container.margin == nil)
+        pane.surface.imposedSize = CGSize(width: 2404, height: 300)
+        pane.layout()
+        #expect(pane.container.margin?.rects == [NSRect(x: 0, y: 0, width: 800, height: 300)])
+        pane.surface.imposedSize = nil
+        pane.layout()
+        #expect(pane.container.margin == nil)
     }
 
     /// The margin follows the colour: a reloaded configuration with another
@@ -184,9 +212,10 @@ import WiettyCore
         let pane = pane()
         defer { pane.window.close() }
         let next = NSColor(srgbRed: 0.9, green: 0.8, blue: 0.7, alpha: 1)
+        pane.surface.imposedSize = CGSize(width: 644, height: 412)
         pane.surface.marginColor = next
         pane.layout()
-        #expect(pane.container.layer?.backgroundColor == next.cgColor)
+        #expect(pane.container.margin?.color == next)
     }
 
     /// A larger grid keeps its size, is cut off by the container, and nothing
@@ -296,7 +325,8 @@ import WiettyCore
         SurfaceContainer.attach(surface, to: container)
         container.layoutSubtreeIfNeeded()
         #expect(surface.frame == container.bounds)
-        #expect(container.layer?.backgroundColor == NSColor.clear.cgColor)
+        #expect(container.margin == nil)
+        #expect(container.layer?.backgroundColor == nil)
     }
 }
 
@@ -335,26 +365,115 @@ import WiettyCore
         #expect(host.metrics(id: "gt:1") == nil)
     }
 
-    /// The configured padding stands while it fits what the surface reports: the
-    /// pixels beyond whole cells are the padding plus less than one cell.
-    @Test func aConfiguredPaddingThatFitsTheSurfaceStands() {
+    /// One report bounds the true padding to `[remainder - cell + 1, remainder]`;
+    /// a configured value inside stands, one outside gives way to the upper bound.
+    @Test func aConfiguredPaddingStandsOnlyInsideTheBounds() {
+        var window = PaddingWindow()
+        #expect(window.padding(configured: 4) == 4) // nothing observed yet
         // 124 columns of 8 in 1000 pixels leave 8: the padding is 1 to 8.
-        #expect(GhosttySurfaceHost.checkedPadding(configured: 4, pixels: 1000, cells: 124, cell: 8) == 4)
-        #expect(GhosttySurfaceHost.checkedPadding(configured: 1, pixels: 1000, cells: 124, cell: 8) == 1)
-        #expect(GhosttySurfaceHost.checkedPadding(configured: 8, pixels: 1000, cells: 124, cell: 8) == 8)
+        window.observe(pixels: 1000, cells: 124, cell: 8)
+        #expect(window.padding(configured: 4) == 4)
+        #expect(window.padding(configured: 8) == 8)
+        #expect(window.padding(configured: 0) == 8)
+        #expect(window.padding(configured: 26) == 8)
     }
 
-    /// One that cannot be what libghostty uses gives way to the remainder, which is
-    /// never smaller than the true padding and less than a cell larger.
-    @Test func aConfiguredPaddingTheSurfaceDisprovesGivesWayToTheRemainder() {
-        #expect(GhosttySurfaceHost.checkedPadding(configured: 0, pixels: 1000, cells: 124, cell: 8) == 8)
-        #expect(GhosttySurfaceHost.checkedPadding(configured: 26, pixels: 1000, cells: 124, cell: 8) == 8)
+    /// The under estimate a single report cannot catch (configured 1, true 4,
+    /// cell 8) is caught once another size narrows the bounds above it, and the
+    /// value used then is never below the true padding.
+    @Test func anUnderEstimateIsCaughtAsTheBoundsNarrow() {
+        var window = PaddingWindow()
+        window.observe(pixels: 1000, cells: 124, cell: 8) // [1, 8]
+        #expect(window.padding(configured: 1) == 1)
+        // 1003 px with a true padding of 4: 124 columns, remainder 11, so [4, 11].
+        window.observe(pixels: 1003, cells: 124, cell: 8)
+        #expect(window.lower == 4)
+        #expect(window.upper == 8)
+        #expect(window.padding(configured: 1) == 8)
+        // And on to the exact value: 1004 px leaves 12 over 124, 1005 px 125 with 5.
+        window.observe(pixels: 1005, cells: 125, cell: 8)
+        #expect(window.upper == 5)
+        #expect(window.padding(configured: 1) == 5)
+        #expect(window.padding(configured: 4) == 4)
+    }
+
+    /// Whatever the configured value, the padding used sizes every grid so the
+    /// surface shows at least that grid, and a pane's fitting grid never exceeds
+    /// what the surface shows at the pane's size.
+    @Test func theUpperBoundNeverClaimsTooMuch() {
+        let truth = 4, cell = 8
+        func surfaceCells(_ pixels: Int) -> Int { max(1, (pixels - truth) / cell) }
+        for configured in [0, 1, 2, 3, 4, 5, 9, 26] {
+            var window = PaddingWindow()
+            for pixels in stride(from: 300, through: 1400, by: 37) {
+                window.observe(pixels: pixels, cells: surfaceCells(pixels), cell: cell)
+                let used = window.padding(configured: configured)
+                let fitting = max(1, (pixels - used) / cell)
+                #expect(fitting <= surfaceCells(pixels), "configured \(configured) at \(pixels)")
+                #expect(used >= truth || used == configured, "configured \(configured) at \(pixels)")
+            }
+            #expect(window.padding(configured: configured) >= truth, "configured \(configured)")
+        }
     }
 
     /// A surface of one column may have been clamped up to it, which proves
     /// nothing about the padding.
     @Test func aSingleCellSurfaceProvesNothing() {
-        #expect(GhosttySurfaceHost.checkedPadding(configured: 26, pixels: 5, cells: 1, cell: 8) == 26)
+        var window = PaddingWindow()
+        window.observe(pixels: 5, cells: 1, cell: 8)
+        #expect(window.padding(configured: 26) == 26)
+    }
+
+    /// The grid a view is sized for is held to 1 by 1, to the protocol's 10,000,
+    /// and to Metal's 16384 pixel texture side at the surface's metrics.
+    @Test func anImposedGridIsHeldToWhatCanBeShown() {
+        let metrics = SurfaceMetrics(cellWidth: 8, cellHeight: 17, paddingX: 4, paddingY: 4, scale: 1)
+        let retina = SurfaceMetrics(cellWidth: 16, cellHeight: 34, paddingX: 8, paddingY: 8, scale: 2)
+        func shown(_ cols: Int, _ rows: Int, _ m: SurfaceMetrics?) -> TerminalSize {
+            GhosttySurfaceView.shownGrid(for: TerminalSize(cols: cols, rows: rows), metrics: m)
+        }
+        #expect(shown(80, 24, metrics) == TerminalSize(cols: 80, rows: 24))
+        #expect(shown(0, -5, metrics) == TerminalSize(cols: 1, rows: 1))
+        #expect(shown(.min, .min, nil) == TerminalSize(cols: 1, rows: 1))
+        #expect(shown(.max, .max, nil) == TerminalSize(cols: 10_000, rows: 10_000))
+        // (16384 - 4) / 8 = 2047 columns, (16384 - 4) / 17 = 963 rows.
+        #expect(shown(10_000, 10_000, metrics) == TerminalSize(cols: 2047, rows: 963))
+        #expect(shown(.max, 50, retina) == TerminalSize(cols: 1023, rows: 50))
+        #expect(GhosttySurfaceView.maxTexturePixels == 16_384)
+        let size = metrics.viewSize(for: shown(10_000, 10_000, metrics))
+        #expect(size.width * 1 <= 16_384 && size.height * 1 <= 16_384)
+    }
+
+    /// A colour change action moves the margin only for the background kind.
+    @Test func aBackgroundChangeIsTheMarginsColour() throws {
+        let color = try #require(GhosttySurfaceHost.background(changeKind: -2, r: 0x10, g: 0x20, b: 0x30)?
+            .usingColorSpace(.sRGB))
+        #expect(Int((color.redComponent * 255).rounded()) == 0x10)
+        #expect(Int((color.blueComponent * 255).rounded()) == 0x30)
+        #expect(GhosttySurfaceHost.background(changeKind: -1, r: 1, g: 2, b: 3) == nil) // foreground
+        #expect(GhosttySurfaceHost.background(changeKind: -3, r: 1, g: 2, b: 3) == nil) // cursor
+    }
+
+    /// The margin is the program's background when it set one, else the
+    /// configured one, at the configured opacity.
+    @Test func theMarginIsTheProgramsBackgroundAtTheConfiguredOpacity() {
+        let configured = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+        let program = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
+        #expect(GhosttySurfaceView.marginColor(configured: configured, program: nil, opacity: 1) == configured)
+        let set = GhosttySurfaceView.marginColor(configured: configured, program: program, opacity: 0.75)
+        #expect(set.redComponent == 1)
+        #expect(set.alphaComponent == 0.75)
+    }
+
+    @Test func theConfiguredBackgroundOpacityIsRead() throws {
+        let url = TestScratch.root.appendingPathComponent("wietty-opacity-\(UUID().uuidString).cfg")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try "background-opacity = 0.75\n".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(GhosttySurfaceHost.backgroundOpacity(loading: url) == 0.75)
+        try "\n".write(to: url, atomically: true, encoding: .utf8)
+        #expect(GhosttySurfaceHost.backgroundOpacity(loading: url) == 1)
     }
 
     /// The margin's colour is the configuration's `background`, read through

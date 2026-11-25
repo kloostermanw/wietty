@@ -132,4 +132,37 @@ import WiettyCore
         #expect(metrics.grid(fitting: 611.5, 416.5) == Self.grid(81, 25))
         #expect(metrics.grid(fitting: 611, 416) == Self.grid(80, 24))
     }
+
+    /// A size is never a pixel short once the surface multiplies it back by the
+    /// scale and rounds down, at any scale, not only 1 and 2.
+    @Test func aViewSizeIsNeverAPixelShortAtAnyScale() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 1.1, 1.3, 2.2] {
+            for pixels in 1...4000 {
+                let metrics = SurfaceMetrics(cellWidth: 1, cellHeight: 1, paddingX: 0, paddingY: 0, scale: scale)
+                let size = metrics.viewSize(for: TerminalSize(cols: pixels, rows: pixels))
+                #expect((size.width * scale).rounded(.down) >= Double(pixels), "scale \(scale) pixels \(pixels)")
+                // And not a whole pixel over either.
+                #expect((size.width * scale).rounded(.down) < Double(pixels) + 1, "scale \(scale) pixels \(pixels)")
+            }
+        }
+    }
+
+    /// Any `Int` grid gives a size rather than a trap.
+    @Test func anyGridGivesASizeWithoutTrapping() {
+        let metrics = SurfaceMetrics(cellWidth: 16, cellHeight: 34, paddingX: 8, paddingY: 8, scale: 2)
+        let huge = metrics.viewSize(for: TerminalSize(cols: .max, rows: .max))
+        #expect(huge.width.isFinite && huge.width > 0)
+        let negative = metrics.viewSize(for: TerminalSize(cols: .min, rows: -3))
+        #expect(negative.width.isFinite && negative.width < 0)
+    }
+
+    @Test func clampingHoldsAGridToATextureSide() {
+        let metrics = SurfaceMetrics(cellWidth: 8, cellHeight: 17, paddingX: 26, paddingY: 14, scale: 1)
+        #expect(metrics.clamped(TerminalSize(cols: 5000, rows: 2000), maxPixels: 16_384)
+                == TerminalSize(cols: (16_384 - 26) / 8, rows: (16_384 - 14) / 17))
+        #expect(metrics.clamped(TerminalSize(cols: 80, rows: 24), maxPixels: 16_384)
+                == TerminalSize(cols: 80, rows: 24))
+        #expect(metrics.clamped(TerminalSize(cols: 0, rows: -1), maxPixels: 16_384)
+                == TerminalSize(cols: 1, rows: 1))
+    }
 }
