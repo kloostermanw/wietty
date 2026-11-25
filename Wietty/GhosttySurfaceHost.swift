@@ -906,8 +906,9 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     /// shows fewer columns or rows than the grid in force, which looks like clipping.
     private(set) var shownGrid: TerminalSize?
     /// The size in points that shows `shownGrid` at the current metrics, which the
-    /// pane's container applies. Nil with no grid imposed, or with metrics not
-    /// known yet.
+    /// pane's container applies, and the view applies to itself while no container
+    /// holds it (`applyImposedSizeOffDisplay`). Nil with no grid imposed, or with
+    /// metrics not known yet.
     private(set) var imposedSize: CGSize?
 
     /// Metal's largest 2D texture side, in pixels. Measured on this machine's M4:
@@ -1068,7 +1069,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     }
 
     /// Recomputes the imposed size from the metrics as they stand and, when it
-    /// moved, asks the container to apply it.
+    /// moved, asks the container to apply it, or applies it itself with no container.
     private func refreshImposedSize() {
         shownGrid = imposedGrid.map { Self.shownGrid(for: $0, metrics: metrics) }
         if let imposedGrid, let shownGrid, shownGrid != imposedGrid, !reportedClamp {
@@ -1085,6 +1086,50 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         guard size != imposedSize else { return }
         imposedSize = size
         container?.surfaceSizingDidChange()
+        applyImposedSizeOffDisplay()
+    }
+
+    /// Set while `applyImposedSizeOffDisplay` sizes the view, whose own
+    /// `setFrameSize` comes back here through `synchronizeMetrics`.
+    private var applyingOffDisplaySize = false
+
+    /// A view held by no container is given the imposed size directly, so the
+    /// surface's grid follows the grid in force while the terminal is not on display:
+    /// the pty and the model are at that grid, and the surface, which answers the
+    /// terminal's queries and keeps its history, has to lay the child's output out
+    /// for the same one. Outside the view hierarchy the view is frame based; `hold`
+    /// replaces that with the container's constraints when it is shown, which then
+    /// find it at the size they ask for. With no grid imposed the frame is left as
+    /// it is.
+    ///
+    /// The size in points comes from `metrics`, taken at the scale the surface last
+    /// rendered at, which is the scale `synchronizeMetrics` uses for a view with no
+    /// window, so the pixel size it sets is the one the size was computed for. A new
+    /// size can move the metrics (the padding bounds narrow), and with them the
+    /// imposed size, so the size is applied again until it holds, as often as the
+    /// closed loop may correct it.
+    private func applyImposedSizeOffDisplay() {
+        guard superview == nil, !applyingOffDisplaySize else { return }
+        applyingOffDisplaySize = true
+        defer { applyingOffDisplaySize = false }
+        for _ in 0...Self.maxCorrections {
+            guard let imposedSize, frame.size != imposedSize else { return }
+            setFrameSize(imposedSize)
+        }
+    }
+
+    /// Hands the view metrics as `synchronizeMetrics` would take them, for a test of
+    /// a view with no surface behind it (`host` nil), which takes none of its own.
+    func useMetricsForTesting(_ metrics: SurfaceMetrics) {
+        self.metrics = metrics
+        noteMetrics(report: false)
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        // Taken out of a container before its constraints gave the view the
+        // imposed size it asked for: it gets that size now.
+        applyImposedSizeOffDisplay()
     }
 
     /// The closed loop: with a grid imposed and the view at its size, the surface
