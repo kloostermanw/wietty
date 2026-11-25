@@ -365,6 +365,49 @@ private let folder = URL(fileURLWithPath: "/tmp")
         #expect(await eventually { again.output.text.contains("again-6") })
     }
 
+    /// What a live local terminal costs the app in descriptors, counted: its pty's
+    /// master, the socket its bridge accepted from the helper (the bridge's listener
+    /// is closed once it has), its link's socket and the server's end of it. Four,
+    /// where libghostty's surface adds its own in the app. Counted over the whole
+    /// descriptor table before and after, less the sockets standing in for the
+    /// helpers; other suites open descriptors meanwhile, which can only add, so the
+    /// least of three rounds is the measurement.
+    @Test func aLiveTerminalCostsAtMostFourDescriptors() async throws {
+        let count = 16
+        var least = Int.max
+        for _ in 0..<3 {
+            let rig = try rig(realHelpers: false)
+            let before = Self.openDescriptors()
+            var sockets: [UnixTestSocket] = []
+            for _ in 0..<count {
+                sockets.append(try await rig.openWithSocket("echo up-$((1+1)); sleep 30").socket)
+            }
+            var seen = [Int32: String]()
+            let arrived = await eventually(within: 20) {
+                for socket in sockets where !(seen[socket.fd] ?? "").contains("up-2") {
+                    var readable = pollfd(fd: socket.fd, events: Int16(POLLIN), revents: 0)
+                    guard poll(&readable, 1, 0) > 0 else { continue }
+                    var buffer = [UInt8](repeating: 0, count: 1 << 16)
+                    let got = read(socket.fd, &buffer, buffer.count)
+                    if got > 0 { seen[socket.fd, default: ""] += String(decoding: buffer[0..<got], as: UTF8.self) }
+                }
+                return seen.values.filter { $0.contains("up-2") }.count == count
+            }
+            #expect(arrived)
+            let after = Self.openDescriptors()
+            let added = after.subtracting(before).subtracting(sockets.map(\.fd)).count
+            least = min(least, added)
+            rig.tearDown()
+        }
+        print("MEASURE descriptors per live local terminal: \(Double(least) / Double(count))")
+        #expect(least <= 4 * count)
+    }
+
+    private static func openDescriptors() -> Set<Int32> {
+        let top = min(getdtablesize(), 1 << 16)
+        return Set((0..<top).filter { fcntl($0, F_GETFD) != -1 })
+    }
+
     /// Every live terminal's pane holds a connection to the server for as long as it
     /// lives, so more than the old cap of 64 must each get their own stream. Plain
     /// sockets stand in for the helpers, to keep it fast.

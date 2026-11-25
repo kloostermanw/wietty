@@ -58,7 +58,8 @@ import WiettyShared
 /// ## Threads and descriptors
 ///
 /// The listener is watched by a dispatch source on a queue of the bridge's own, and is
-/// closed only by that source's cancel handler. The helper is read by a thread of its
+/// closed only by that source's cancel handler: as soon as the helper has been accepted
+/// (it accepts one, and holds no descriptor for it after), or at `stop()` before that. The helper is read by a thread of its
 /// own, which is the only one that closes the helper's socket, as it exits, holding
 /// the write lock; writes to it run on the link's thread under that lock. Everything
 /// else only shuts the socket down while it is open, which releases a blocked read or
@@ -172,7 +173,8 @@ final class TerminalBridge: @unchecked Sendable {
 
     deinit { stop() }
 
-    /// The listening descriptor, or -1 once stopped. For tests.
+    /// The listening descriptor, or -1 once the helper has been accepted or the bridge
+    /// stopped. For tests.
     var listeningDescriptor: Int32 {
         lock.lock(); defer { lock.unlock() }
         return listenFd
@@ -332,6 +334,18 @@ final class TerminalBridge: @unchecked Sendable {
             lock.unlock()
             guard !reject else { close(fd); continue }
 
+            // The listener has done its one job: closed now, through its source's
+            // cancel handler once this handler returns, so a live terminal holds no
+            // descriptor for it. The file stays until `stop()`, the one place that
+            // unlinks it (checked against the file it bound): a connect to it is
+            // refused meanwhile, as a second helper always was.
+            lock.lock()
+            let source = listenSource
+            listenSource = nil
+            listenFd = -1
+            lock.unlock()
+            source?.cancel()
+
             // The link first, so the helper's first keystrokes find it started.
             control.lock()
             startLinkIfReady()
@@ -339,6 +353,7 @@ final class TerminalBridge: @unchecked Sendable {
             let thread = Thread { [self] in readHelper(fd) }
             thread.name = "eu.kloosterman.wietty.bridge.helper"
             thread.start()
+            return
         }
     }
 

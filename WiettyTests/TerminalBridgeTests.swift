@@ -364,7 +364,7 @@ private final class BridgeEvents: @unchecked Sendable {
 
     @Test func theHelperSocketIsPrivateCloseOnExecQuietAndForOneClient() throws {
         let link = FakeLink()
-        let (bridge, helper) = try connected(link)
+        let bridge = try TerminalBridge(helperSocketPath: shortSocketPath("tb"), link: link)
         defer { bridge.stop() }
         let path = bridge.helperSocketPath
         var info = stat()
@@ -372,18 +372,27 @@ private final class BridgeEvents: @unchecked Sendable {
         #expect(info.st_mode & S_IFMT == S_IFSOCK)
         #expect(info.st_mode & 0o777 == 0o600)
 
+        // The listener, while there is one: before the helper connects.
         let listener = bridge.listeningDescriptor
         #expect(listener >= 0)
         #expect(fcntl(listener, F_GETFD) & FD_CLOEXEC != 0)
         #expect(option(listener, SO_NOSIGPIPE) != 0)
+
+        let helper = try UnixTestSocket(connectingTo: path)
+        #expect(waitUntil { link.starts == 1 })
         #expect(waitUntil { bridge.helperDescriptor != nil })
         let accepted = try #require(bridge.helperDescriptor)
         #expect(fcntl(accepted, F_GETFD) & FD_CLOEXEC != 0)
         #expect(option(accepted, SO_NOSIGPIPE) != 0)
 
-        // A second client is closed, and the first keeps working.
-        let second = try UnixTestSocket(connectingTo: path)
-        #expect(second.seesEnd())
+        // One helper is all a bridge accepts, so the listener is closed once it has:
+        // a second client is refused (or, if it slipped into the backlog before the
+        // close, ended), and the first keeps working. The file stays until `stop()`.
+        #expect(bridge.listeningDescriptor == -1)
+        if let second = try? UnixTestSocket(connectingTo: path) {
+            #expect(second.seesEnd())
+        }
+        #expect(lstat(path, &info) == 0)
         link.deliver(.data([0x41]))
         #expect(helper.read(1) == [0x41])
         #expect(link.starts == 1)

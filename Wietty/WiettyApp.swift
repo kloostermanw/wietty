@@ -45,6 +45,13 @@ struct WiettyApp: App {
     static let mainWindowID = "main"
 
     init() {
+        // Before anything opens a descriptor in numbers: every live terminal costs
+        // several, and an app launched from the Finder may hold only 256. Under a test
+        // host too, where it is harmless, so the suite runs the call.
+        let descriptors = DescriptorLimit.raise()
+        GhosttyLog.stack.notice("""
+            open descriptor limit \(descriptors.before, privacy: .public) -> \(descriptors.after, privacy: .public)
+            """)
         let stack = TerminalStack()
         _terminals = State(wrappedValue: stack)
         // The job poll needs the live service, which only exists once the stack is
