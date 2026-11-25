@@ -29,13 +29,15 @@ import WiettyShared
 /// ## The write deadline
 ///
 /// Every message other than `data` is written with a progress deadline
-/// (`controlWriteDeadline`, 5 seconds): if the socket accepts no byte for that long
-/// while such a frame is being written, the connection is ended. The deadline
-/// restarts whenever bytes are accepted, so a client that reads slowly but steadily
-/// keeps its connection however long a snapshot takes. The hub writes the snapshot
-/// and control messages on its delivery queue, which every remote viewer of every
-/// terminal shares, and a pane that stopped reading would otherwise park it until
-/// `stop()`. A frame cut off by the deadline is never completed: the socket is
+/// (`controlWriteDeadline`, 5 seconds): the connection is ended if the client reads
+/// nothing for that long while such a message is being written. What restarts the
+/// deadline is the client reading, which makes room in the socket, so a client that
+/// reads slowly but steadily keeps its connection however long a snapshot takes.
+/// The rule bounds a client that has stopped, not one that reads very slowly, and
+/// it bounds each stopped one separately: several stopped panes cost 5 seconds each
+/// on the hub's queue. The hub writes the snapshot and control messages on its
+/// delivery queue, which every remote viewer of every terminal shares, and a pane
+/// that stopped reading would otherwise park it until `stop()`. A frame cut off by the deadline is never completed: the socket is
 /// closed, so the client sees a lost connection, not a corrupt stream.
 ///
 /// `data` is written with no deadline, blocking for as long as the client does not
@@ -71,6 +73,7 @@ package final class LocalStreamServer: @unchecked Sendable {
     private let controlWriteDeadline: TimeInterval
     private let peerCheck: @Sendable (Int32) -> Bool
     private let acceptCall: @Sendable (Int32) -> Int32
+    private let sendTimeoutCall: @Sendable (Int32, TimeInterval) -> Int32
     private let queue = DispatchQueue(label: "eu.kloosterman.wietty.local-stream")
 
     private let lock = NSLock()
@@ -93,18 +96,22 @@ package final class LocalStreamServer: @unchecked Sendable {
     /// long a client may take, counted from the accept, to send a whole `hello`
     /// before it is closed with no reply. `controlWriteDeadline` is the write
     /// deadline above. `accept` stands in for `accept(2)` in tests: it returns the
-    /// descriptor, or -1 with `errno` set.
+    /// descriptor, or -1 with `errno` set. `setSendTimeout` stands in for setting a
+    /// socket's `SO_SNDTIMEO` in tests: it returns what `setsockopt` would.
     package init(path: String, streamer: any ScreenStreaming,
                  helloTimeout: TimeInterval = 5,
                  controlWriteDeadline: TimeInterval = 5,
                  peerCheck: @escaping @Sendable (Int32) -> Bool = LocalStreamServer.isSameUser,
-                 accept: @escaping @Sendable (Int32) -> Int32 = { Darwin.accept($0, nil, nil) }) throws {
+                 accept: @escaping @Sendable (Int32) -> Int32 = { Darwin.accept($0, nil, nil) },
+                 setSendTimeout: @escaping @Sendable (Int32, TimeInterval) -> Int32
+                     = LocalStreamServer.setSendTimeout) throws {
         self.path = path
         self.streamer = streamer
         self.helloTimeout = helloTimeout
         self.controlWriteDeadline = controlWriteDeadline
         self.peerCheck = peerCheck
         self.acceptCall = accept
+        self.sendTimeoutCall = setSendTimeout
         // A backlog as deep as the cap: panes restored at launch connect at once.
         let (fd, identity) = try PrivateSocket.listen(at: path, backlog: Int32(Self.maxConnections))
         boundFile = identity
@@ -119,6 +126,12 @@ package final class LocalStreamServer: @unchecked Sendable {
         var gid: gid_t = 0
         guard getpeereid(fd, &uid, &gid) == 0 else { return false }
         return uid == getuid()
+    }
+
+    /// Sets the socket's `SO_SNDTIMEO`, 0 for none, and returns `setsockopt`'s result.
+    package static func setSendTimeout(_ fd: Int32, _ seconds: TimeInterval) -> Int32 {
+        var value = timeval(tv_sec: Int(seconds), tv_usec: Int32((seconds - Double(Int(seconds))) * 1e6))
+        return setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &value, socklen_t(MemoryLayout<timeval>.size))
     }
 
     /// Runs `body` with the listening descriptor while it cannot be closed, or
@@ -138,8 +151,12 @@ package final class LocalStreamServer: @unchecked Sendable {
         return all.compactMap { $0.withOpenDescriptor(body) }
     }
 
-    /// The connections not yet closed. For tests.
-    package var connectionCount: Int { inspectConnections { _ in () }.count }
+    /// The connections the cap counts: one is added at its accept and removed once
+    /// its thread has ended it, a moment after its descriptor is closed. For tests.
+    package var connectionCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return connections.count
+    }
 
     // MARK: Listening
 
@@ -188,7 +205,8 @@ package final class LocalStreamServer: @unchecked Sendable {
                 continue
             }
             let connection = Connection(fd: fd, streamer: streamer, helloTimeout: helloTimeout,
-                                        controlWriteDeadline: controlWriteDeadline)
+                                        controlWriteDeadline: controlWriteDeadline,
+                                        setSendTimeout: sendTimeoutCall)
             lock.lock()
             let refused = stopped || connections.count >= Self.maxConnections
             if !refused { connections[ObjectIdentifier(connection)] = connection }
@@ -273,6 +291,7 @@ private final class Connection: @unchecked Sendable {
     private let streamer: any ScreenStreaming
     private let helloTimeout: TimeInterval
     private let controlWriteDeadline: TimeInterval
+    private let sendTimeoutCall: @Sendable (Int32, TimeInterval) -> Int32
 
     private let lock = NSLock()
     /// Whether `fd` is still this connection's. Cleared only by `close`, under the
@@ -285,11 +304,13 @@ private final class Connection: @unchecked Sendable {
     private var sendTimeout: TimeInterval = 0
 
     init(fd: Int32, streamer: any ScreenStreaming, helloTimeout: TimeInterval,
-         controlWriteDeadline: TimeInterval) {
+         controlWriteDeadline: TimeInterval,
+         setSendTimeout: @escaping @Sendable (Int32, TimeInterval) -> Int32) {
         self.fd = fd
         self.streamer = streamer
         self.helloTimeout = helloTimeout
         self.controlWriteDeadline = controlWriteDeadline
+        self.sendTimeoutCall = setSendTimeout
     }
 
     /// `body` with the descriptor, under the lock that keeps it open; nil once closed.
@@ -484,15 +505,18 @@ private final class Connection: @unchecked Sendable {
     }
 
     /// The socket's send timeout, changed only when it differs from what is set.
-    /// Only the one writer of the moment calls this.
+    /// Only the one writer of the moment calls this. The value is recorded only once
+    /// `setsockopt` has taken it, so one that failed is tried again on the next write
+    /// rather than believed in force.
     private func setSendTimeout(_ seconds: TimeInterval) {
         lock.lock()
         let current = sendTimeout
-        sendTimeout = seconds
         lock.unlock()
         guard current != seconds else { return }
-        var value = timeval(tv_sec: Int(seconds), tv_usec: Int32((seconds - Double(Int(seconds))) * 1e6))
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &value, socklen_t(MemoryLayout<timeval>.size))
+        guard sendTimeoutCall(fd, seconds) == 0 else { return }
+        lock.lock()
+        sendTimeout = seconds
+        lock.unlock()
     }
 
     private func writeAll(_ bytes: [UInt8]) -> Bool {

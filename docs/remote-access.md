@@ -248,10 +248,12 @@ hub (see `docs/terminal.md`): nothing is ever dropped, and every frame is writte
 whole on the thread the hub writes from. `data` is written blocking with no
 limit, so a pane that does not read holds back its terminal's output, and with
 it the child. Every other message (the `hello`, `resize`, `snapshot`, `repaint`,
-`ended`, an `error`) is written with a progress deadline: if the socket accepts
-no byte for 5 seconds while such a frame is being written, the server closes the
-connection. The deadline restarts whenever bytes are accepted, so a pane that
-reads slowly but steadily keeps its connection however long a snapshot takes. A
+`ended`, an `error`) is written with a progress deadline: the server closes the
+connection if the client reads nothing for 5 seconds while such a message is
+being written. What restarts the deadline is the client reading, so a pane that
+reads slowly but steadily keeps its connection however long a snapshot takes.
+The rule bounds a client that has stopped, not one that reads very slowly, and
+several stopped panes cost 5 seconds each on the hub's delivery queue. A
 frame cut off this way is never completed: the client sees the connection lost
 in the middle of a frame, never a corrupt stream, and has to connect again. This
 is what keeps a pane that stopped reading from parking the hub's delivery queue,
