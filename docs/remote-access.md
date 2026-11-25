@@ -262,7 +262,8 @@ skips is closed at that point with no reply.
 
 After the `hello` the order is the WebSocket's: the server's `hello`, `resize`,
 `snapshot`, then `data`, and a session that names no live terminal gets `hello`
-and `ended`, after which the server closes. The client is a local viewer of the
+and `ended`, after which the local socket's server closes (the WebSocket
+leaves the close to the viewer, see "Ending" below). The client is a local viewer of the
 hub (see `docs/terminal.md`): nothing is ever dropped, and every frame is written
 whole on the thread the hub writes from. `data` is written blocking with no
 limit, so a pane that does not read holds back its terminal's output, and with
@@ -371,6 +372,10 @@ the close, the server drops the connection, and the next thing the client sends 
 claim or input it held until the `hello`, or a keystroke) fails the task, which
 then loses the unread `ended` and reports a lost connection instead of an ended
 session. An owner that reconnects on a lost connection would then try again. A
+viewer that has not closed by the end of the grace (for example an app suspended in
+the background when `ended` arrived) can lose the unread `ended` in the same way and
+report a lost connection. Attaching again is answered with `hello` and `ended`, which
+reports the session as ended. A
 refusal needs no grace: the package's client sends nothing before the `hello`, so
 there is no send to fail, and a browser's `WebSocket` hands over every message
 before it reports the close.
