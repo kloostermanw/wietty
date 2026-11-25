@@ -5,9 +5,9 @@ import WiettyShared
 
 /// A terminal's stream from this Mac's own `LocalStreamServer`, on its Unix socket.
 ///
-/// No call on it waits for the server: `start`, `send` and `claim` return at once,
-/// whatever the server is doing. Only `stop()` waits, and only for a callback that is
-/// running (see `stop()`).
+/// `start` and `claim` return at once, whatever the server is doing. `send` waits only
+/// while `maxQueuedInput` of input is already waiting for the server (see `send`), and
+/// `stop()` only for a callback that is running (see `stop()`).
 ///
 /// ## Threads
 ///
@@ -22,11 +22,14 @@ import WiettyShared
 ///
 /// The writer writes the outbox, in order, with blocking writes. The first frame in it
 /// is `hello(protocol: 2, session:, resize: .reflow)`, put there by `start()`, so it
-/// precedes every `send` and `claim`. `send` and `claim` only append to the outbox:
-/// one `resize` frame for a claim, and for input one `data` frame per 64 KiB (the
-/// server refuses an inbound frame over 1 MiB), appended together so another call's
-/// frames never land between them. The outbox is not bounded: it holds input the
-/// server has not read yet, which is what was typed or pasted, and claims. A failed
+/// precedes every `send` and `claim`. `claim` appends one `resize` frame and never
+/// waits. `send` appends one `data` frame per 64 KiB of input (the server refuses an
+/// inbound frame over 1 MiB), each only while less than `maxQueuedInput` of input is
+/// waiting in the outbox; past that it waits for the writer, so a server that does not
+/// read holds back the thread that gives it input (the bridge's helper reader, and
+/// through it the surface) instead of the input piling up here. Claims are not
+/// counted against the bound and are never held by it, so a claim can land between
+/// two frames of one large `send`; the server handles each frame on its own. A failed
 /// write ends the link as `.connectionLost` through the reader.
 ///
 /// ## Ends
@@ -55,6 +58,8 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
 
     /// The largest `data` frame `send` writes. The server takes up to 1 MiB.
     static let maxInputFrame = 64 << 10
+    /// How much input may wait in the outbox before `send` waits for the writer.
+    static let maxQueuedInput = 256 << 10
 
     let path: String
     let session: String
@@ -65,7 +70,12 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
     private var fd: Int32 = -1
     /// Whether `fd` is still this link's. Cleared only by the reader thread's close.
     private var open = false
-    private var outbox: [[UInt8]] = []
+    /// The frames to write, from `outboxHead` on; each with the input bytes it carries
+    /// (zero for the hello and a claim). Consumed by index, compacted now and then.
+    private var outbox: [(frame: [UInt8], input: Int)] = []
+    private var outboxHead = 0
+    /// Input bytes in the outbox not yet taken by the writer.
+    private var queuedInput = 0
     private var messageHandler: (@Sendable (StreamMessage) -> Void)?
     private var endHandler: (@Sendable (TerminalEndReason) -> Void)?
     private var reader: Thread?
@@ -99,7 +109,9 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
         lock.lock()
         guard phase == .idle else { lock.unlock(); return }
         phase = .awaitingHello
-        outbox = [hello]
+        outbox = [(hello, 0)]
+        outboxHead = 0
+        queuedInput = 0
         let thread = Thread { [self] in run() }
         thread.name = "eu.kloosterman.wietty.local-link.reader"
         reader = thread
@@ -117,7 +129,7 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
     func stop() {
         lock.lock()
         phase = .stopped
-        outbox = []
+        clearOutbox()
         if open { shutdown(fd, SHUT_RDWR) }
         lock.broadcast()
         let readerThread = reader
@@ -127,31 +139,47 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
         callbackLock.unlock()
     }
 
-    /// Input, byte exact. Never blocks: queued for the writer, in frames of at most
-    /// `maxInputFrame` bytes. Dropped before `start()` and after an end or a stop.
+    /// Input, byte exact, in frames of at most `maxInputFrame` bytes. Dropped before
+    /// `start()` and after an end or a stop.
+    ///
+    /// The one call of the link that may wait: before each frame, for as long as
+    /// `maxQueuedInput` or more of input is waiting for the server. It returns when the
+    /// writer has drained below that, or when the link ends or stops (the rest of the
+    /// input is then dropped). Call it only from a thread that may be held back by the
+    /// server, never from the main thread; the bridge calls it from its helper thread.
     func send(_ bytes: [UInt8]) {
-        var frames: [[UInt8]] = []
         var start = 0
+        lock.lock()
+        defer { lock.unlock() }
         while start < bytes.count {
+            while phase.isLive && queuedInput >= Self.maxQueuedInput { lock.wait() }
+            guard phase.isLive else { return }
             let end = min(start + Self.maxInputFrame, bytes.count)
-            frames.append(StreamCodec.socketFrame(for: .data(Array(bytes[start..<end]))))
+            outbox.append((StreamCodec.socketFrame(for: .data(Array(bytes[start..<end]))), end - start))
+            queuedInput += end - start
             start = end
+            lock.broadcast()
         }
-        enqueue(frames)
     }
 
-    /// Claims the grid at this size; `own` is sent as false. Never blocks, as `send`.
+    /// Claims the grid at this size; `own` is sent as false. Never waits: queued for
+    /// the writer whatever the input waiting. Dropped before `start()` and after an end
+    /// or a stop.
     func claim(cols: Int, rows: Int) {
-        enqueue([StreamCodec.socketFrame(for: .resize(cols: cols, rows: rows, own: false))])
-    }
-
-    private func enqueue(_ frames: [[UInt8]]) {
-        guard !frames.isEmpty else { return }
+        let frame = StreamCodec.socketFrame(for: .resize(cols: cols, rows: rows, own: false))
         lock.lock()
         defer { lock.unlock() }
         guard phase.isLive else { return }
-        outbox += frames
-        lock.signal()
+        outbox.append((frame, 0))
+        lock.broadcast()
+    }
+
+    /// With the lock held; the caller broadcasts after it, which wakes the writer and
+    /// every waiting `send`.
+    private func clearOutbox() {
+        outbox = []
+        outboxHead = 0
+        queuedInput = 0
     }
 
     // MARK: The reader thread
@@ -264,7 +292,7 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
         lock.lock()
         guard phase.isLive else { lock.unlock(); return }
         phase = .ended
-        outbox = []
+        clearOutbox()
         if open { shutdown(fd, SHUT_RDWR) }
         lock.broadcast()
         lock.unlock()
@@ -286,9 +314,20 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
     private func write(_ socket: Int32) {
         while true {
             lock.lock()
-            while outbox.isEmpty && phase.isLive { lock.wait() }
+            while outboxHead == outbox.count && phase.isLive { lock.wait() }
             guard phase.isLive else { lock.unlock(); return }
-            let frame = outbox.removeFirst()
+            let (frame, input) = outbox[outboxHead]
+            outboxHead += 1
+            if outboxHead == outbox.count {
+                outbox.removeAll(keepingCapacity: true)
+                outboxHead = 0
+            } else if outboxHead >= 64, outboxHead * 2 >= outbox.count {
+                outbox.removeFirst(outboxHead)
+                outboxHead = 0
+            }
+            queuedInput -= input
+            // A `send` may be waiting for room.
+            lock.broadcast()
             lock.unlock()
             guard Self.writeAll(socket, frame) else {
                 // The reader sees the end of the socket and ends the link.

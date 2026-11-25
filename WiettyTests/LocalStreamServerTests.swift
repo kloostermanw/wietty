@@ -74,6 +74,8 @@ final class LocalFakeStreamer: ScreenStreaming, @unchecked Sendable {
     private var attachInitial: [StreamMessage] = [.resize(cols: 80, rows: 24, own: false), .snapshot([0x41])]
     private var attachEnds = false
     private var attachReturns = 0
+    private var inputGate: DispatchSemaphore?
+    private var inputWaiting = 0
 
     /// What an attach writes before it returns, as the hub writes the grid and the snapshot.
     var onAttach: [StreamMessage] {
@@ -92,6 +94,16 @@ final class LocalFakeStreamer: ScreenStreaming, @unchecked Sendable {
     var inputs: [Input] { lock.lock(); defer { lock.unlock() }; return inputList }
     /// Attaches that have returned to their caller.
     var attachesReturned: Int { lock.lock(); defer { lock.unlock() }; return attachReturns }
+    /// Inputs held by `holdInput`, not yet recorded.
+    var inputsWaiting: Int { lock.lock(); defer { lock.unlock() }; return inputWaiting }
+
+    /// From now on `send` waits (at most ten seconds) before it records, so the
+    /// connection's reading thread, which calls it, stops reading the socket.
+    func holdInput() { lock.lock(); inputGate = DispatchSemaphore(value: 0); lock.unlock() }
+    func releaseInput() {
+        lock.lock(); let gate = inputGate; inputGate = nil; lock.unlock()
+        gate?.signal()
+    }
 
     func attach(session: String, resize: ResizeMode,
                 onMessage: @escaping @Sendable (StreamMessage) -> Void) -> UUID {
@@ -148,6 +160,14 @@ final class LocalFakeStreamer: ScreenStreaming, @unchecked Sendable {
     }
 
     func send(session: String, bytes: [UInt8]) {
+        lock.lock()
+        let gate = inputGate
+        if gate != nil { inputWaiting += 1 }
+        lock.unlock()
+        if let gate {
+            _ = gate.wait(timeout: .now() + 10)
+            lock.lock(); inputWaiting -= 1; lock.unlock()
+        }
         lock.lock(); inputList.append(Input(session: session, bytes: bytes)); lock.unlock()
     }
 
