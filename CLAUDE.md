@@ -162,6 +162,25 @@ scripts/imposed-grid-check.sh
 Quit Wietty first. It opens a window for about a minute. The padding goes into the sandbox's
 `ghostty.cfg`, never your own. In an ordinary test run the suite is counted and reported as skipped.
 
+### The reload surface check
+
+A colour change in Settings calls `reloadConfig()` on the one `GhosttySurfaceHost`, and the next
+terminal opened creates a surface on it. `ReloadThenCreateSurfaceTests` runs reload then create 25
+times in each of four ways: a fresh host each time, one host, one host with the sandbox's
+`ghostty.cfg` changed before every reload, and one host with a surface kept alive through every
+reload. It prints one line per way starting with `RELOAD`. Run it after changing the pin of
+libghostty or `reloadConfig()`, and with `--asan` for the address sanitizer (that build replaces the
+normal one in derived data, as the coexistence check's does):
+
+```sh
+scripts/reload-surface-check.sh [--asan]
+```
+
+Quit Wietty first. It opens a window for about ten seconds, and a display must be awake: with every
+display asleep, libghostty cannot create a surface's display link and fails the surface with
+`error.OutOfMemory`, which once passed for a reload bug. In an ordinary test run the suite is
+counted and reported as skipped.
+
 ### The stream baseline
 
 `StreamBaselineTests` measures the terminal byte path from where `wietty-pty` stands, with the
