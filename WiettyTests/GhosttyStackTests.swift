@@ -67,7 +67,7 @@ private final class Flag: @unchecked Sendable {
     /// The local socket server runs on every working stack, remote access or not,
     /// and `shutDown()` (what quitting calls) stops it and removes its socket file.
     @Test func aWorkingStackServesItsLocalSocketUntilShutDown() throws {
-        let path = shortSocketPath("gst")
+        let path = testServerSocketPath()
         let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: path, readDelay: 0)
         #expect(stack.localSocketPath == path)
         #expect(stack.localServer != nil)
@@ -82,7 +82,7 @@ private final class Flag: @unchecked Sendable {
     /// explain itself. Every terminal action then fails with the one actionable
     /// message instead of appearing to do nothing.
     @Test func abrokenStackStillServesAnActionableError() async {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: shortSocketPath("gst"),
+        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: testServerSocketPath(),
                                  startupFailure: .ghosttyHelperMissing)
         #expect(stack.service is UnavailableTerminalService)
         await #expect(throws: TerminalError.self) {
@@ -99,7 +99,7 @@ private final class Flag: @unchecked Sendable {
     /// nothing with certainty, and the sidebar can offer such a session at any time,
     /// including a row that was never opened.
     @Test func abrokenStackEndsAnAttachRatherThanLeavingItSilent() {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: shortSocketPath("gst"),
+        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: testServerSocketPath(),
                                  startupFailure: .ghosttyHelperMissing)
         let ended = Flag()
         stack.hub.attach(session: "gt:anything", resize: .repaint) { if case .ended = $0 { ended.raise() } }
@@ -112,7 +112,7 @@ private final class Flag: @unchecked Sendable {
     /// reinstall the app for a missing helper, sending them to fix the wrong thing.
     @Test func aLibghosttyFailureIsReportedAndThrownAsTheSameError() async {
         let expected = TerminalError.ghosttyInitFailed("no Metal device")
-        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: shortSocketPath("gst"),
+        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: testServerSocketPath(),
                                  startupFailure: expected)
         #expect(stack.setupError == expected.errorDescription)
         await #expect(throws: expected) {
@@ -123,7 +123,7 @@ private final class Flag: @unchecked Sendable {
 
     @Test func aWorkingStackBuildsTheRealPieces() {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         #expect(stack.setupError == nil)
         #expect(stack.service is GhosttyService)
         #expect(stack.monitor is GhosttyMonitor)
@@ -133,7 +133,7 @@ private final class Flag: @unchecked Sendable {
     /// it without the service knowing the hub exists.
     @Test func terminalBytesReachTheHub() async throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
                                                   command: "echo hubbed-21", badge: nil)
@@ -157,7 +157,7 @@ private final class Flag: @unchecked Sendable {
     /// shell that read the line.
     @Test func remoteKeystrokesReachTheTerminal() async throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
                                                   command: nil, badge: nil)
@@ -192,7 +192,7 @@ private final class Flag: @unchecked Sendable {
     /// would add its own startup, its own line editor, and nothing to the claim.
     @Test func rapidKeystrokesReachTheTerminalInOrder() async throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
                                                   command: "cat", badge: nil)
@@ -223,7 +223,7 @@ private final class Flag: @unchecked Sendable {
     /// path through the main actor could only time out.
     @Test func inputReachesTheWriterWhileTheMainActorIsBlocked() throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let shared = try #require(stack.ghosttyService?.shared)
         let arrived = DispatchSemaphore(value: 0)
         shared.register(writer: { bytes in if bytes == [0x71] { arrived.signal() } }, for: "gt:blocked")
@@ -239,7 +239,7 @@ private final class Flag: @unchecked Sendable {
     /// any time.
     @Test func attachingToADeadSessionEndsTheViewer() {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let ended = Flag()
         stack.hub.attach(session: "gt:never-existed", resize: .repaint) { if case .ended = $0 { ended.raise() } }
         #expect(ended.isRaised)
@@ -255,7 +255,7 @@ private final class Flag: @unchecked Sendable {
     /// state the census exists to prevent for a viewer arriving later.
     @Test func anAttachedViewerIsToldWhenTheChildExits() async throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
                                                   command: "exit 0", badge: nil)
@@ -273,7 +273,7 @@ private final class Flag: @unchecked Sendable {
     /// follows if nobody tells it.
     @Test func anAttachedViewerIsToldWhenTheRowIsClosed() async throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
                                                   command: "sleep 30", badge: nil)
@@ -291,7 +291,7 @@ private final class Flag: @unchecked Sendable {
     /// watching `echo` a session that ended and never what it printed.
     @Test func theLastOutputReachesAViewerBeforeTheEnding() async throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
                                                   command: "echo parted-$((7+6))", badge: nil)
@@ -319,7 +319,7 @@ private final class Flag: @unchecked Sendable {
     @Test func aViewerAttachingToALiveTerminalIsPaintedTheScreenTheModelHolds() async throws {
         let host = FakeSurfaceHost()
         let stack = GhosttyStack.testing(host: host)
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let handle = try await stack.service.open(
             folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
             command: #"printf '\033[31malpha\033[0m\r\nbeta-%s' $((3+4)); sleep 5"#, badge: nil)
@@ -353,7 +353,7 @@ private final class Flag: @unchecked Sendable {
     @Test func resizingATerminalTellsItsViewersTheNewGrid() async throws {
         let host = FakeSurfaceHost()
         let stack = GhosttyStack.testing(host: host)
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         // Ninety columns of output: two rows on a grid of eighty, one on a hundred.
         let handle = try await stack.service.open(
             folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
@@ -396,7 +396,7 @@ private final class Flag: @unchecked Sendable {
     @Test func surfaceInputReachesTheWiredHandler() {
         let host = FakeSurfaceHost()
         let stack = GhosttyStack.testing(host: host)
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         var typed: [String] = []
         stack.onInput = { session in typed.append(session) }
         host.emitInput("gt:sess-A")
@@ -408,7 +408,7 @@ private final class Flag: @unchecked Sendable {
     /// because that is where the listener runs.
     @Test func aProgramStatusReportReachesTheMonitor() async throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         var events: [MonitorEvent] = []
         stack.monitor.start { events.append($0) }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
@@ -425,7 +425,7 @@ private final class Flag: @unchecked Sendable {
     /// answers nothing and every agent's status freezes.
     @Test func theJobPollIsBoundToThisStack() async throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
                                                   command: "sleep 5", badge: nil)

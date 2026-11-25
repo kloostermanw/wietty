@@ -114,13 +114,33 @@ extension GhosttyOverrideFile {
     }
 }
 
+/// A server socket path for a stack a test builds: `wty-<pid>-<n>.sock`, with `n` from
+/// a million up so it never meets a bridge's number. The suite builds many stacks in
+/// the app's one process, and `LocalSocketPaths.server()` names the process. A stack
+/// stops its server (and unlinks this) when it is shut down or released; one that a
+/// test leaked until the process ended is removed by the next launch's
+/// `LocalSocketPaths.sweep`, which recognises the name and finds its pid gone.
+func testServerSocketPath() -> String {
+    TestServerSockets.lock.lock()
+    TestServerSockets.last += 1
+    let number = TestServerSockets.last
+    TestServerSockets.lock.unlock()
+    // The temp directory fits, or every socket test fails anyway.
+    return (try? LocalSocketPaths.bridge(number)) ?? shortSocketPath("gst")
+}
+
+private enum TestServerSockets {
+    static let lock = NSLock()
+    nonisolated(unsafe) static var last = 1_000_000
+}
+
 extension GhosttyStack {
-    /// A stack for a test: its local socket server on a path of its own, since the
-    /// suite builds many stacks in the app's one process and `LocalSocketPaths.server()`
-    /// names the process, and terminals read at once (`readDelay` 0), since a fake host
-    /// has no pane to attach. The read without a pane is logged as an error each time.
+    /// A stack for a test: its local socket server on a path of its own
+    /// (`testServerSocketPath()`), and terminals read at once (`readDelay` 0), since
+    /// a fake host has no pane to attach. The read without a pane is logged as an
+    /// error each time.
     static func testing(host: any TerminalSurfaceHosting, readDelay: TimeInterval = 0) -> GhosttyStack {
-        GhosttyStack(host: host, localSocketPath: shortSocketPath("gst"), readDelay: readDelay)
+        GhosttyStack(host: host, localSocketPath: testServerSocketPath(), readDelay: readDelay)
     }
 }
 
@@ -130,6 +150,6 @@ extension TerminalStack {
     static func testing(host: any TerminalSurfaceHosting & TerminalSurfaceViewing,
                         helperPath: String? = "/usr/bin/true") -> TerminalStack {
         TerminalStack(ghosttyHost: host, helperPath: helperPath,
-                      localSocketPath: shortSocketPath("tst"), readDelay: 0)
+                      localSocketPath: testServerSocketPath(), readDelay: 0)
     }
 }

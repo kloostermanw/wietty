@@ -312,7 +312,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
     /// yielding, so a claim that needed it could only time out.
     @Test func aClaimIsHandledWhileTheMainActorIsBlocked() throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let shared = try #require(stack.ghosttyService?.shared)
         shared.note(live: ["gt:blocked"])
         let resized = DispatchSemaphore(value: 0)
@@ -333,7 +333,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
     /// the claimant's answer names it, which it takes from the model's repaint.
     @Test func aClaimReachesTheRealPtyAndTheModel() async throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghosttyService?.closeAll() }
+        defer { stack.shutDown() }
         let probe = TestScratch.root.appendingPathComponent("claim-\(UUID().uuidString)").path
         let handle = try await stack.service.open(
             folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
@@ -358,8 +358,8 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
     /// leave nothing to resize.
     @Test func theResizerIsRemovedWithTheWriter() async throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
+        defer { stack.shutDown() }
         let service = try #require(stack.ghosttyService)
-        defer { service.closeAll() }
         let shared = service.shared
 
         let exiting = try await service.open(folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,

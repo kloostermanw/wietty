@@ -36,11 +36,16 @@ struct ReconnectBackoff: Sendable {
 /// message) is replaced by a fresh link, from `onEnded` and nowhere else, after the
 /// wait `ReconnectBackoff` gives. The new link's attach brings a snapshot, which
 /// begins with a full reset, so the surface starts over from the server's screen.
-/// `.sessionEnded` is the terminal stopping: the service's own end path (the stopped
-/// screen) takes over and nothing is made again. `.refused` and `.serverTooOld`
-/// cannot happen between two halves of one process; they are logged and not
-/// retried. The helper going away means the surface went away: the bridge is
-/// stopped.
+/// `.sessionEnded` is the terminal stopping: the bridge is stopped, so the helper
+/// exits with the child as it did when the relay owned its socket and no process,
+/// thread or socket file is kept for a stopped row; the surface stays, with its last
+/// screen, until the row is closed or restarted, and the stopped screen comes from
+/// the service's own end path. `.refused` means the server would not serve this pane
+/// (`busy`: it serves as many as it can); it is logged and not retried, and the
+/// terminal's pty is still read once `GhosttyService`'s wait for the pane runs out,
+/// so remote viewers keep it. `.serverTooOld` cannot happen between two halves of one
+/// process; it is logged likewise. The helper going away means the surface went away:
+/// the bridge is stopped.
 ///
 /// **Threads.** None of this runs on the main actor, and none of it needs to: the
 /// bridge calls `onEnded` on the link's thread and `onHelperGone` on its helper
@@ -120,14 +125,14 @@ final class OwnPaneBridge: @unchecked Sendable {
                 queue.asyncAfter(deadline: .now() + delay) { [weak self] in self?.reconnect() }
             }
         case .sessionEnded:
-            // The terminal stopped. The surface keeps its last screen; the stopped
-            // screen comes from the service's own end path.
-            break
+            // The terminal stopped. Off this callback: the stop waits for a running
+            // callback of the bridge, and this is one.
+            queue.async { [weak self] in self?.stop() }
         case .serverTooOld, .refused:
             Self.log.error("""
                 the pane of terminal \(self.session, privacy: .public) was refused by \
                 this app's own stream server (\(String(describing: reason), privacy: .public)); \
-                it is not reconnected
+                it is not reconnected, and the terminal is read without it
                 """)
         }
     }

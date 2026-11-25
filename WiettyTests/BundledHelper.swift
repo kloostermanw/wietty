@@ -6,8 +6,9 @@ import Foundation
 /// at the first terminal a user opens.
 ///
 /// Shared rather than copied per suite: `WiettyPtyHelperTests` exercises the
-/// helper on its own and `RelayHelperIntegrationTests` runs it against a real
-/// relay, and two copies of this lookup would drift the day the bundling changes.
+/// helper on its own, and `OwnPaneStreamTests` and `TerminalBridgeTests` run it
+/// against a real bridge, and copies of this lookup would drift the day the bundling
+/// changes.
 func bundledHelperURL() throws -> URL {
     // In the test bundle the app under test is the host, so its auxiliary
     // executables are reachable through the host bundle.

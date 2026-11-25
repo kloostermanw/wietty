@@ -134,6 +134,7 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
     /// store rather than copying it: a later change is what the next open reads.
     @Test func theStackMakesTheServiceFollowTheStoresSetting() throws {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
+        defer { stack.shutDown() }
         let service = try #require(stack.ghosttyService)
         let store = SettingsFixture(config: WiettyConfigFile.temporary()).store
         #expect(service.scrollbackLines() == TerminalScrollback.defaultLines)

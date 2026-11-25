@@ -158,6 +158,7 @@ import SwiftUI
     /// be here: the pane is the half that has to fill.
     @Test func theEmptyPaneFillsTheHeightItIsOffered() {
         let stack = TerminalStack.testing(host: FakeSurfaceHost())
+        defer { stack.ghostty.shutDown() }
         #expect(stack.setupError == nil)
         let size = heightOffered(LocalTerminalView(setupError: stack.setupError,
                                                    surfaceView: { stack.surfaceView(for: $0) },
@@ -189,6 +190,7 @@ import SwiftUI
     /// `480.0`, so the conversion is explicit.
     @Test func thePaneKeepsItsMinimumInAWindowSmallerThanIt() {
         let stack = TerminalStack.testing(host: FakeSurfaceHost())
+        defer { stack.ghostty.shutDown() }
         let size = heightOffered(LocalTerminalView(setupError: stack.setupError,
                                                    surfaceView: { stack.surfaceView(for: $0) },
                                                    session: nil),

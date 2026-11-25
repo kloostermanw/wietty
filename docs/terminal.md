@@ -696,7 +696,10 @@ Two types in the app make this Mac's own pane a local viewer of the stream. `Own
 socket the surface's `wietty-pty` connects to, with a `LocalSocketLink` to the app's
 `LocalStreamServer` for that session. It makes a fresh link when one ends as `.connectionLost`
 while the terminal lives (at once, then after 250 ms, doubling up to 5 s, the count reset once a
-link stayed up 10 s), and never for `.sessionEnded`.
+link stayed up 10 s). On `.sessionEnded` it stops the bridge instead, so the helper exits with the
+child and its socket goes, while the surface keeps its last screen until the row is closed or
+restarted. A `.refused` link (the server is at its cap and answered `busy`) is logged and not made
+again; the terminal is then read without its pane after 5 seconds.
 
 `LocalSocketLink` is a client of `LocalStreamServer` for one session, behind the protocol
 `TerminalStreamLink`. `start()` returns at once: a reader thread of its own connects and then decodes

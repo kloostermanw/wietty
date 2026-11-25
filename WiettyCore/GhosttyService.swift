@@ -310,12 +310,14 @@ package final class GhosttyService: TerminalService {
             self.onResized(session, size)
         }
         // libghostty asking for a surface to be closed means the terminal has
-        // ended, so it is retired exactly as an exit noticed on the relay is. The
-        // two paths are the same event seen from either side: the user's `exit`
-        // reaches the relay as EOF and reaches libghostty as its helper's child
-        // exiting, and whichever arrives first does the work because `reap` is
-        // guarded. It also covers a `close_surface` keybinding in the user's own
-        // Ghostty configuration, which has no other way in.
+        // ended, so it is retired exactly as an exit noticed on the pty is. After
+        // the user's `exit` the pty's EOF arrives first and reaps; the stream then
+        // ends the pane's link, its bridge is stopped, the helper exits, and
+        // libghostty's close request for that reaches here and finds the terminal
+        // already exited, so `reap`'s guard makes it nothing. A request that comes
+        // first (a `close_surface` keybinding in the user's own Ghostty
+        // configuration, which has no other way in, or a helper that died) does
+        // the work instead.
         host.onCloseRequested = { [weak self] session in self?.reap(session) }
     }
 

@@ -224,15 +224,20 @@ missing `own` as `false`. A `resize` whose `cols` or `rows` is outside 1 to
 **The local socket.** `LocalStreamServer` speaks that framing on a Unix socket at
 `<tmp>/wty-<pid>.sock` (`LocalSocketPaths`), for the Mac's own panes. The path
 must be absolute. The file has mode 0600, and a peer that is not this user
-(`getpeereid`) is closed before a byte is read. At most 64 connections are served
-at once; one more is closed at accept with no reply.
+(`getpeereid`) is closed before a byte is read. Every live local terminal's pane
+holds one connection for as long as the terminal lives, so the cap is a limit on
+live terminals: at most 1024 connections are served at once. One more is not
+attached: once its first frame has arrived it is answered with one `error`,
+code `busy`, and closed (one that sends nothing is closed at the hello timeout
+with no reply). The pane's link then ends as refused and is not made again; its
+terminal is read without it after 5 seconds, so remote viewers still have it.
 
 The first frame must be a `hello` carrying `protocol` 2, a `session`, and
 optionally `resize` (missing means `reflow`). A first message that is anything
 else is answered with one `error` and closed, and nothing is attached: code
 `hello` for a first message that is not a `hello`, and for a first frame the
 reader refuses (a zero length, or a length over 1 MiB); `protocol` for another
-version; `session` for a `hello` without a session. A frame the codec skips (an
+version; `session` for a `hello` without a session; `busy` over the cap, above. A frame the codec skips (an
 unknown type, JSON it cannot parse, a `resize` out of range) is no message at
 all: it gets no `error`, and the server goes on waiting for the `hello`. The
 whole `hello` must have arrived within 5 seconds of the accept; a client that
