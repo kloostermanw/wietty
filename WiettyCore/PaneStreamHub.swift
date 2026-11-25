@@ -361,6 +361,13 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Guards the registry below and the hooks. Held for a lookup and never while
     /// a session's own lock is taken, so there is no order between the two to get
     /// wrong.
+    ///
+    /// The one call made under it is the start of a held claim's timer
+    /// (`claimScheduler`, in `claimArrived`), so that recording the timer's cancel and
+    /// starting it are one step and a `detach` cannot fall between them. That is
+    /// safe because the scheduler takes no lock of the hub's and runs nothing
+    /// before it returns: the timer's work runs later, on `delivery`, and takes this
+    /// lock only then.
     private let lock = NSLock()
     private var streams: [String: Stream] = [:]
     /// The session of every viewer, queued or local.
@@ -1144,6 +1151,10 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private struct HeldClaim {
         var size: TerminalSize
         var replaced: Int
+        /// When the interval is over, on `claimClock`: what becomes the viewer's
+        /// last handled time when the timer runs, however late it runs, so a late
+        /// timer does not push the viewer's next interval back.
+        let due: UInt64
         let cancel: @Sendable () -> Void
     }
 
@@ -1168,8 +1179,9 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// than `claimInterval` after the same viewer's last handled claim is held, and
     /// a later one replaces it, counted. One timer per held claim fires on
     /// `delivery` when the interval is over. Then each replaced claim is answered
-    /// with a `resize`, `own` true, carrying the grid in force, and nothing else
-    /// happens for it; then the held claim is handled as any claim. So a burst
+    /// with a `resize`, `own` true, carrying the grid in force, behind the bytes
+    /// accepted before it and with no reflow and no message of its own to anyone
+    /// else; then the held claim is handled as any claim. So a burst
     /// costs at most two reflows, the first claim's and the last's, and every claim
     /// is still answered once and in order. Detach, the end of the session and
     /// `stop()` drop a held claim unanswered and cancel its timer.
@@ -1210,7 +1222,8 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
                 let cancel = claimScheduler(Self.claimInterval - since, delivery) { [weak self] in
                     self?.releaseHeldClaim(id)
                 }
-                pace.held = HeldClaim(size: size, replaced: 0, cancel: cancel)
+                pace.held = HeldClaim(size: size, replaced: 0, due: pace.lastHandled &+ Self.claimInterval,
+                                      cancel: cancel)
                 claimPaces[id] = pace
                 lock.unlock()
                 return
@@ -1225,14 +1238,13 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// replaced, then handles it. Nothing when there is no held claim: the viewer
     /// went, or this is a timer that fired as it was cancelled.
     private func releaseHeldClaim(_ id: UUID) {
-        let time = claimClock()
         lock.lock()
         guard var pace = claimPaces[id], let held = pace.held else {
             lock.unlock()
             return
         }
         pace.held = nil
-        pace.lastHandled = time
+        pace.lastHandled = held.due
         claimPaces[id] = pace
         let session = sessionForViewer[id]
         let stream = session.flatMap { streams[$0] }
@@ -1248,10 +1260,12 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     }
 
     /// The answers to `count` claims that a later one replaced: one `resize` each,
-    /// `own` true, with the grid in force, to the claimant alone. No bytes go ahead
-    /// of them, since the grid has not moved; the held claim handled right after
-    /// takes them as usual. A local claimant gets them through its write lock, in
-    /// order behind whatever it was left.
+    /// `own` true, with the grid in force, to the claimant alone. As for any claim
+    /// for the grid in force (`answerClaimant`), an answer never overtakes a byte
+    /// accepted before it: the bytes accepted so far go to every queued viewer
+    /// first, as a flush would send them. A local claimant has every byte already
+    /// and gets the answers through its write lock, in order behind whatever it was
+    /// left.
     private func answerReplaced(_ id: UUID, of stream: Stream, _ grid: TerminalSize, count: Int) {
         let answers = Array(repeating: StreamMessage.resize(cols: grid.cols, rows: grid.rows, own: true),
                             count: count)
@@ -1263,7 +1277,10 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
             return
         }
         guard let claimant = stream.viewers[id] else { stream.lock.unlock(); return }
+        let outstanding = stream.take()
+        let sinks = stream.viewers.values.map(\.sink)
         stream.lock.unlock()
+        Self.deliver(outstanding, to: sinks)
         for answer in answers { claimant.sink(answer) }
     }
 

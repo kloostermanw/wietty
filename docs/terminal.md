@@ -237,10 +237,13 @@ model's and can differ from the grid claimed (issue 92, under "Limitations"). A 
 pace the pane already keeps. A claim that reaches the delivery queue sooner than 50 ms after the same
 viewer's last handled claim is held, and a later one replaces it, counted. A held claim always
 replaces: a claim arriving after the 50 ms while one is still held does not overtake it. One timer per
-held claim fires on the delivery queue when the 50 ms are over. Then each claim it replaced is
-answered with one `resize`, `own` true, carrying the grid in force, and nothing else happens for it
-(no reflow, no signal to the child, nothing to the other viewers). Then the held claim is handled as
-any claim, which may make it a claim for the grid in force. So a burst of claims costs at most two
+held claim fires on the delivery queue when the 50 ms are over, and the held claim counts as handled
+at the moment it was due, so a timer that runs late does not push the viewer's next 50 ms back. Then
+each claim it replaced is answered with one `resize`, `own` true, carrying the grid in force. As for
+any claim for the grid in force, the bytes accepted before it go to every queued viewer first, so the
+answer never overtakes output; otherwise nothing happens for it (no reflow, no signal to the child,
+no message of its own to the other viewers). Then the held claim is handled as any claim, which may
+make it a claim for the grid in force. So a burst of claims costs at most two
 reflows, the first's and the last's, and the claimant still gets one answer per claim, in order. A
 local viewer's claims are held the same way, and its answers reach it in order behind whatever it was
 left (see "Serving the stream"). Detaching the viewer, the end of the session and `stop()` drop a held

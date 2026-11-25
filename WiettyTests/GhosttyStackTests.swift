@@ -359,7 +359,8 @@ private final class Flag: @unchecked Sendable {
             command: #"printf '%090d' $((40+2)); sleep 5"#, badge: nil)
         let line = String(repeating: "0", count: 88) + "42"
         let model = try #require(stack.ghosttyService?.screenModel(for: handle.sessionId))
-        let claimer = stack.hub.attach(session: handle.sessionId, resize: .reflow) { _ in }
+        let answers = MessageLog()
+        let claimer = stack.hub.attach(session: handle.sessionId, resize: .reflow) { answers.add($0) }
         stack.hub.claim(connectionId: claimer, cols: 80, rows: 5)
         try await waitUntil { model.text(maxLines: 10).contains("042") }
         // Drained before the viewer exists, or this test races itself: that first
@@ -373,6 +374,11 @@ private final class Flag: @unchecked Sendable {
         let afterAttach = log.messages.count
 
         stack.hub.claim(connectionId: claimer, cols: 100, rows: 30)
+        // Waited for by its answer, not by the delivery queue: a second claim from
+        // the same viewer within 50 ms of the first is held by the hub, and the
+        // queue is empty while it waits. Once the claimant has its answer the claim
+        // is being handled on the queue, and the barrier waits for the rest of it.
+        try await waitUntil { answers.messages.contains(.resize(cols: 100, rows: 30, own: true)) }
         stack.hub.waitForPendingDeliveries()
 
         let sent = Array(log.messages.dropFirst(afterAttach))

@@ -359,8 +359,9 @@ to one claim per 50 ms, the pace the serving Mac's pane keeps while a window is
 dragged. A claim that arrives sooner than 50 ms after the same viewer's last
 handled claim is held; a later one replaces it. When the 50 ms are over, every
 claim that was replaced is answered, in order, with one `resize` whose `own` is
-true and which carries the grid in force at that moment; such a claim is not
-applied (no resize, nothing to the other viewers). Then the last claim is handled
+true and which carries the grid in force at that moment, behind the output the
+hub accepted before it; such a claim is not applied (no resize, no message of
+its own to the other viewers). Then the last claim is handled
 as above. A burst of claims therefore costs at most two reflows, and the claimant
 still gets exactly one answer per claim, in order. A viewer that disconnects
 meanwhile gets nothing for its held claims. A client should still limit itself:
