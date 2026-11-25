@@ -683,6 +683,35 @@ A frame that could not be built is never an empty screen: a session whose model 
 snapshot and no repaint, and the hub logs it. A new viewer then starts from the stream alone, a resync
 answers `onUnavailable`, and on a resize the viewer is sent the bare `resize`.
 
+## The link and the bridge (built, not used yet)
+
+Two types in the app are meant to make this Mac's own pane a local viewer of the stream. Nothing
+uses them yet: the pane's helper still talks to `TerminalRelay`.
+
+`LocalSocketLink` is a client of `LocalStreamServer` for one session, behind the protocol
+`TerminalStreamLink`. `start()` connects and writes the `hello` on the calling thread; a reader
+thread of its own then decodes frames and calls `onMessage` with each, in order, reading the socket
+again only once the callback has returned. The server's `hello` is consumed. An `ended`, an `error`, a
+closed socket and a first frame that is not a `hello` each end it, once, through `onEnded`, with the
+package's `TerminalEndReason`. `send` and `claim` write one frame each, whole and blocking, never
+interleaved. `stop()` fires no `onEnded`, and from outside a callback it returns only once no
+callback runs, so nothing arrives after it.
+
+`TerminalBridge` owns the raw socket `wietty-pty` connects to (bound by `PrivateSocket.listen`, which
+the server uses too: mode 0600, close on exec, no SIGPIPE) and accepts one client. It starts its link
+only when the helper has connected, writes the payloads of `snapshot`, `repaint` and `data` to the
+helper unchanged, hands `resize` to `onResize` and the link's end to `onEnded`, and sends the
+helper's bytes to `link.send`. A claim made before the link starts is remembered and sent when it
+does. The helper going away stops the link; the link ending keeps the helper, so `reconnect(with:)`
+can attach a new link to the same surface.
+
+Neither holds anything. The bridge writes to the helper inside the link's `onMessage`, with a
+blocking write, so a surface that stops reading fills the helper's socket, which holds the link's
+thread, which fills the link's socket, which holds the server's blocking write on the pty's thread.
+The pane would therefore be lossless end to end, at the cost the local viewer section above
+describes. `LocalSocketLinkTests` and `TerminalBridgeTests` cover both, the latter once end to end
+with the real server, link, bridge and bundled helper.
+
 ## Reading a terminal's output
 
 `GhosttyService.readOutput` answers an MCP read of what a terminal has printed, from the terminal's
