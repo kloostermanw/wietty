@@ -168,6 +168,10 @@ private final class Client: @unchecked Sendable {
     private var reader = StreamFrameReader()
     private var pending: [StreamMessage] = []
     private var open = true
+    /// How much one read takes, and how long the client pauses after each: a slow
+    /// but steady reader.
+    var readSize = 1 << 16
+    var readPause: TimeInterval = 0
 
     init(path: String) throws {
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -228,12 +232,13 @@ private final class Client: @unchecked Sendable {
             guard remaining > 0 else { return nil }
             var readable = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             guard poll(&readable, 1, Int32(min(remaining, 0.2) * 1000)) > 0 else { continue }
-            var buffer = [UInt8](repeating: 0, count: 1 << 16)
+            var buffer = [UInt8](repeating: 0, count: readSize)
             let count = Darwin.read(fd, &buffer, buffer.count)
             if count < 0, errno == EINTR { continue }
             guard count > 0 else { return nil }
             guard let messages = try? reader.append(Array(buffer[0..<count])) else { return nil }
             pending += messages
+            if readPause > 0 { Thread.sleep(forTimeInterval: readPause) }
         }
         return pending.removeFirst()
     }
@@ -270,10 +275,14 @@ private final class Client: @unchecked Sendable {
 
     private func server(_ streamer: LocalFakeStreamer, path: String = LocalStreamServerTests.path(),
                         helloTimeout: TimeInterval = 5,
-                        peerCheck: @escaping @Sendable (Int32) -> Bool = LocalStreamServer.isSameUser)
+                        controlWriteDeadline: TimeInterval = 5,
+                        peerCheck: @escaping @Sendable (Int32) -> Bool = LocalStreamServer.isSameUser,
+                        accept: @escaping @Sendable (Int32) -> Int32 = { Darwin.accept($0, nil, nil) })
         throws -> LocalStreamServer {
         let server = try LocalStreamServer(path: path, streamer: streamer,
-                                           helloTimeout: helloTimeout, peerCheck: peerCheck)
+                                           helloTimeout: helloTimeout,
+                                           controlWriteDeadline: controlWriteDeadline,
+                                           peerCheck: peerCheck, accept: accept)
         server.start()
         return server
     }
@@ -324,10 +333,13 @@ private final class Client: @unchecked Sendable {
         let streamer = LocalFakeStreamer()
         let server = try server(streamer)
         defer { server.stop() }
-        let fd = server.listeningDescriptor
-        #expect(fd >= 0)
-        #expect(flags(fd) & FD_CLOEXEC != 0)
-        #expect(option(fd, SO_NOSIGPIPE) != 0)
+        // Inspected while the server holds it open, so the number cannot be reused.
+        let seen = server.withListeningDescriptor { fd in
+            (cloexec: flags(fd) & FD_CLOEXEC != 0, nosigpipe: option(fd, SO_NOSIGPIPE) != 0)
+        }
+        let listener = try #require(seen)
+        #expect(listener.cloexec)
+        #expect(listener.nosigpipe)
     }
 
     @Test func anAcceptedSocketIsClosedOnExecBlockingAndHasRoomForControlMessages() throws {
@@ -336,13 +348,17 @@ private final class Client: @unchecked Sendable {
         defer { server.stop() }
         let (client, _) = try attached(streamer, server)
         defer { client.close() }
-        let fds = server.connectionDescriptors
-        #expect(fds.count == 1)
-        let fd = try #require(fds.first)
-        #expect(flags(fd) & FD_CLOEXEC != 0)
-        #expect(option(fd, SO_NOSIGPIPE) != 0)
-        #expect(fcntl(fd, F_GETFL) & O_NONBLOCK == 0)
-        let granted = option(fd, SO_SNDBUF)
+        // Inspected while the connection holds it open, so the number cannot be reused.
+        let seen = server.inspectConnections { fd in
+            (cloexec: flags(fd) & FD_CLOEXEC != 0, nosigpipe: option(fd, SO_NOSIGPIPE) != 0,
+             blocking: fcntl(fd, F_GETFL) & O_NONBLOCK == 0, sendBuffer: option(fd, SO_SNDBUF))
+        }
+        #expect(seen.count == 1)
+        let accepted = try #require(seen.first)
+        #expect(accepted.cloexec)
+        #expect(accepted.nosigpipe)
+        #expect(accepted.blocking)
+        let granted = accepted.sendBuffer
         print("MEASURE local stream server SO_SNDBUF granted \(granted) bytes")
         #expect(granted >= LocalStreamServer.sendBufferSize)
     }
@@ -370,7 +386,7 @@ private final class Client: @unchecked Sendable {
         #expect(one.endsWithNothing())
         #expect(two.endsWithNothing())
         #expect(eventually { Set(streamer.detaches) == [oneId, twoId] })
-        #expect(eventually { server.connectionDescriptors.isEmpty })
+        #expect(eventually { server.connectionCount == 0 })
         #expect((try? Client(path: server.path)) == nil)
         server.stop()
     }
@@ -385,13 +401,30 @@ private final class Client: @unchecked Sendable {
     }
 
     @Test func aPeerThatFailsTheCheckIsClosedBeforeAByteIsRead() throws {
+        let hello = StreamCodec.socketFrame(for: .hello(protocolVersion: 2, session: "s1", resize: nil))
+        // The check waits for the client's hello to be in the socket and records how
+        // much of it is still unread: all of it, if nothing was read before the check.
+        let unread = NSLock()
+        nonisolated(unsafe) var found: Int32 = -1
         let streamer = LocalFakeStreamer()
-        let server = try server(streamer, peerCheck: { _ in false })
+        let server = try server(streamer, peerCheck: { fd in
+            var available: Int32 = 0
+            _ = eventually(within: 2) {
+                var length = socklen_t(MemoryLayout<Int32>.size)
+                getsockopt(fd, SOL_SOCKET, SO_NREAD, &available, &length)
+                return available >= Int32(hello.count)
+            }
+            unread.lock(); found = available; unread.unlock()
+            return false
+        })
         defer { server.stop() }
         let client = try Client(path: server.path)
-        client.hello()
+        client.sendRaw(hello)
         #expect(client.endsWithNothing())
-        Thread.sleep(forTimeInterval: 0.1)
+        unread.lock(); let measured = found; unread.unlock()
+        #expect(measured == Int32(hello.count))
+        // Refused at the accept, so no thread was ever made that could attach it.
+        #expect(server.connectionCount == 0)
         #expect(streamer.attaches.isEmpty)
     }
 
@@ -409,7 +442,8 @@ private final class Client: @unchecked Sendable {
         }
         #expect(received == code)
         #expect(client.endsWithNothing())
-        Thread.sleep(forTimeInterval: 0.1)
+        // Once the connection's thread is done, nothing can attach it any more.
+        #expect(eventually { server.connectionCount == 0 })
         #expect(streamer.attaches.isEmpty)
     }
 
@@ -438,7 +472,7 @@ private final class Client: @unchecked Sendable {
         defer { server.stop() }
         let client = try Client(path: server.path)
         #expect(client.endsWithNothing(within: 3))
-        #expect(eventually { server.connectionDescriptors.isEmpty })
+        #expect(eventually { server.connectionCount == 0 })
         #expect(streamer.attaches.isEmpty)
     }
 
@@ -482,7 +516,7 @@ private final class Client: @unchecked Sendable {
         client.hello(session: "gone")
         #expect(client.next(2) == [.hello(protocolVersion: 2, session: nil, resize: nil), .ended])
         #expect(client.endsWithNothing())
-        #expect(eventually { server.connectionDescriptors.isEmpty })
+        #expect(eventually { server.connectionCount == 0 })
     }
 
     @Test func anEndedViewerIsClosedAfterItsEnded() throws {
@@ -606,8 +640,8 @@ private final class Client: @unchecked Sendable {
 
         #expect(writer.wait())
         #expect(eventually { streamer.detaches == [id] })
-        #expect(eventually { server.connectionDescriptors.isEmpty })
-        Thread.sleep(forTimeInterval: 0.2)
+        #expect(eventually { server.connectionCount == 0 })
+        // Closed, so its thread has detached for the last time.
         #expect(streamer.detaches == [id])
     }
 
@@ -646,7 +680,7 @@ private final class Client: @unchecked Sendable {
             #expect(eventually { streamer.attachesReturned == 1 })
             let id = try #require(streamer.attaches.first?.id)
             #expect(eventually { streamer.detaches == [id] })
-            #expect(eventually { server.connectionDescriptors.isEmpty })
+            #expect(eventually { server.connectionCount == 0 })
             server.stop()
             client.close()
         }
@@ -662,7 +696,7 @@ private final class Client: @unchecked Sendable {
             let (client, id) = try attached(streamer, server, session: session)
             clients.append((session, client, id))
         }
-        #expect(server.connectionDescriptors.count == 3)
+        #expect(server.connectionCount == 3)
         for (session, client, id) in clients {
             streamer.deliver(.data(Array(session.utf8)), to: id)
             #expect(client.next() == .data(Array(session.utf8)))
@@ -670,6 +704,136 @@ private final class Client: @unchecked Sendable {
         }
         #expect(eventually { streamer.inputs.count == 3 })
         #expect(Set(streamer.inputs) == Set(sessions.map { .init(session: $0, bytes: Array($0.utf8)) }))
+    }
+
+    // MARK: The write deadline
+
+    @Test func aClientThatStopsReadingDuringTheSnapshotIsDisconnectedAtTheDeadline() throws {
+        let streamer = LocalFakeStreamer()
+        streamer.onAttach = [.resize(cols: 80, rows: 24, own: false),
+                             .snapshot([UInt8](repeating: 0x41, count: 8 << 20))]
+        let server = try server(streamer, controlWriteDeadline: 0.3)
+        defer { server.stop() }
+        let client = try Client(path: server.path)
+        defer { client.close() }
+        client.hello()
+        #expect(eventually { streamer.attaches.count == 1 })
+        let started = Date()
+
+        // The hub's call returns, without the client and without `stop`.
+        #expect(eventually { streamer.attachesReturned == 1 })
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(elapsed >= 0.25)
+        let id = try #require(streamer.attaches.first?.id)
+        #expect(eventually { streamer.detaches == [id] })
+        #expect(eventually { server.connectionCount == 0 })
+    }
+
+    @Test func aClientThatReadsSlowlyButSteadilyKeepsItsConnection() throws {
+        let snapshot = (0..<(2 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 13) }
+        let streamer = LocalFakeStreamer()
+        streamer.onAttach = [.resize(cols: 80, rows: 24, own: false), .snapshot(snapshot)]
+        let server = try server(streamer, controlWriteDeadline: 0.3)
+        defer { server.stop() }
+        let client = try Client(path: server.path)
+        defer { client.close() }
+        // 64 KiB every 100 ms: the snapshot takes seconds, ten times the deadline,
+        // and the socket never goes 300 ms without accepting a byte.
+        client.readSize = 64 << 10
+        client.readPause = 0.1
+        client.hello()
+        let started = Date()
+        let first = client.next(3, within: 20)
+        let elapsed = Date().timeIntervalSince(started)
+        print("MEASURE a slow reader took \(Int(elapsed * 1000)) ms over a 2 MiB snapshot")
+        #expect(first.count == 3)
+        #expect(first.last == .snapshot(snapshot))
+        #expect(elapsed > 1)
+        client.readPause = 0
+        let id = try #require(streamer.attaches.first?.id)
+        #expect(streamer.deliver(.data([0x7A]), to: id))
+        #expect(client.next() == .data([0x7A]))
+        #expect(streamer.detaches.isEmpty)
+    }
+
+    @Test func dataToAClientThatDoesNotReadBlocksPastTheDeadline() throws {
+        let streamer = LocalFakeStreamer()
+        let server = try server(streamer, controlWriteDeadline: 0.3)
+        defer { server.stop() }
+        let (client, id) = try attached(streamer, server)
+        let (writer, begun) = fill(streamer, id)
+        #expect(stalls(begun))
+        // Well past the deadline: `data` is backpressure, not a stalled control message.
+        Thread.sleep(forTimeInterval: 1)
+        #expect(!writer.hasFinished)
+        #expect(server.connectionCount == 1)
+        #expect(streamer.detaches.isEmpty)
+        client.close()
+        #expect(writer.wait())
+        #expect(eventually { streamer.detaches == [id] })
+    }
+
+    // MARK: Accepting
+
+    @Test func runningOutOfDescriptorsPausesAcceptingInsteadOfSpinning() throws {
+        let calls = NSLock()
+        nonisolated(unsafe) var count = 0
+        nonisolated(unsafe) var failing = true
+        let streamer = LocalFakeStreamer()
+        let server = try server(streamer, accept: { listener in
+            calls.lock()
+            count += 1
+            let fail = failing
+            calls.unlock()
+            if fail {
+                errno = EMFILE
+                return -1
+            }
+            return Darwin.accept(listener, nil, nil)
+        })
+        defer { server.stop() }
+        let client = try Client(path: server.path)
+        defer { client.close() }
+        client.hello()
+        Thread.sleep(forTimeInterval: 0.5)
+        calls.lock(); let tries = count; failing = false; calls.unlock()
+        print("MEASURE accept was tried \(tries) times in 500 ms out of descriptors")
+        // About one try per 100 ms pause; spinning makes it many thousands.
+        #expect(tries >= 2)
+        #expect(tries <= 12)
+        // The client waited in the backlog and is served once there is room.
+        #expect(client.next(3).count == 3)
+        #expect(eventually { streamer.attaches.count == 1 })
+    }
+
+    @Test func oneConnectionOverTheCapIsClosedWithNoReply() throws {
+        let streamer = LocalFakeStreamer()
+        let server = try server(streamer, helloTimeout: 20)
+        defer { server.stop() }
+        var clients: [Client] = []
+        defer { clients.forEach { $0.close() } }
+        for _ in 0..<LocalStreamServer.maxConnections { clients.append(try Client(path: server.path)) }
+        #expect(eventually { server.connectionCount == LocalStreamServer.maxConnections })
+
+        let extra = try Client(path: server.path)
+        defer { extra.close() }
+        extra.hello()
+        #expect(extra.endsWithNothing())
+        #expect(server.connectionCount == LocalStreamServer.maxConnections)
+
+        // A place freed is a place taken.
+        clients.removeLast().close()
+        #expect(eventually { server.connectionCount == LocalStreamServer.maxConnections - 1 })
+        let next = try Client(path: server.path)
+        defer { next.close() }
+        next.hello()
+        #expect(next.next(3).count == 3)
+    }
+
+    @Test func aRelativePathIsRefused() {
+        #expect(throws: TerminalRelayError.relativeSocketPath("lst-rel.sock")) {
+            _ = try LocalStreamServer(path: "lst-rel.sock", streamer: LocalFakeStreamer())
+        }
     }
 
     // MARK: The operating system

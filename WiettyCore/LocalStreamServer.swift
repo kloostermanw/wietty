@@ -22,9 +22,27 @@ import WiettyShared
 ///
 /// `attachLocal` writes the snapshot before it returns, so a client that does not
 /// read holds its own reading thread there. That is the only thing it holds of
-/// this class: `stop()` and the client's own socket closing both make that write
-/// fail, neither needs the reading thread to notice anything, and the attach then
-/// returns and the thread ends the connection.
+/// this class: `stop()`, the client's own socket closing and the write deadline
+/// below each make that write fail, none needs the reading thread to notice
+/// anything, and the attach then returns and the thread ends the connection.
+///
+/// ## The write deadline
+///
+/// Every message other than `data` is written with a progress deadline
+/// (`controlWriteDeadline`, 5 seconds): if the socket accepts no byte for that long
+/// while such a frame is being written, the connection is ended. The deadline
+/// restarts whenever bytes are accepted, so a client that reads slowly but steadily
+/// keeps its connection however long a snapshot takes. The hub writes the snapshot
+/// and control messages on its delivery queue, which every remote viewer of every
+/// terminal shares, and a pane that stopped reading would otherwise park it until
+/// `stop()`. A frame cut off by the deadline is never completed: the socket is
+/// closed, so the client sees a lost connection, not a corrupt stream.
+///
+/// `data` is written with no deadline, blocking for as long as the client does not
+/// read: that wait is the backpressure that lets a slow pane hold back the child,
+/// and it runs on the pty's thread. The rule is by message kind, not by thread; the
+/// hub rarely writes `data` from its delivery queue or a control message from the
+/// pty's thread, and those follow their kind.
 ///
 /// ## Ending a connection
 ///
@@ -41,12 +59,18 @@ package final class LocalStreamServer: @unchecked Sendable {
     package static let sendBufferSize: Int32 = 256 << 10
     /// The most a viewer may send in one message, as on the WebSocket route.
     package static let maxInboundMessage = 1 << 20
+    /// The most connections served at once. One more is closed at accept, unanswered.
+    package static let maxConnections = 64
+    /// How long accepting pauses when the process is out of descriptors or memory.
+    static let acceptRetryDelay: DispatchTimeInterval = .milliseconds(100)
 
     package let path: String
 
     private let streamer: any ScreenStreaming
     private let helloTimeout: TimeInterval
+    private let controlWriteDeadline: TimeInterval
     private let peerCheck: @Sendable (Int32) -> Bool
+    private let acceptCall: @Sendable (Int32) -> Int32
     private let queue = DispatchQueue(label: "eu.kloosterman.wietty.local-stream")
 
     private let lock = NSLock()
@@ -59,26 +83,31 @@ package final class LocalStreamServer: @unchecked Sendable {
     private var stopped = false
     /// The socket file as bound, so `stop` unlinks only that file and not one
     /// another server has put at the path since.
-    private let boundFile: (device: dev_t, inode: ino_t)
+    private let boundFile: PrivateSocket.Identity
 
     /// Binds the socket at `path`, replacing a stale file there. Accepts nothing
     /// until `start`.
     ///
-    /// `peerCheck` decides whether a connected peer may speak; by default it must be
-    /// this process's own user. `helloTimeout` is how long a client may take to send
-    /// its `hello` before it is closed with no reply.
+    /// `path` must be absolute. `peerCheck` decides whether a connected peer may
+    /// speak; by default it must be this process's own user. `helloTimeout` is how
+    /// long a client may take, counted from the accept, to send a whole `hello`
+    /// before it is closed with no reply. `controlWriteDeadline` is the write
+    /// deadline above. `accept` stands in for `accept(2)` in tests: it returns the
+    /// descriptor, or -1 with `errno` set.
     package init(path: String, streamer: any ScreenStreaming,
                  helloTimeout: TimeInterval = 5,
-                 peerCheck: @escaping @Sendable (Int32) -> Bool = LocalStreamServer.isSameUser) throws {
-        guard path.utf8.count < LocalSocketPaths.sunPathLimit else {
-            throw TerminalRelayError.socketPathTooLong(path)
-        }
+                 controlWriteDeadline: TimeInterval = 5,
+                 peerCheck: @escaping @Sendable (Int32) -> Bool = LocalStreamServer.isSameUser,
+                 accept: @escaping @Sendable (Int32) -> Int32 = { Darwin.accept($0, nil, nil) }) throws {
         self.path = path
         self.streamer = streamer
         self.helloTimeout = helloTimeout
+        self.controlWriteDeadline = controlWriteDeadline
         self.peerCheck = peerCheck
-        let fd = try PrivateSocket.listen(at: path, backlog: 16)
-        boundFile = PrivateSocket.identity(of: path)
+        self.acceptCall = accept
+        // A backlog as deep as the cap: panes restored at launch connect at once.
+        let (fd, identity) = try PrivateSocket.listen(at: path, backlog: Int32(Self.maxConnections))
+        boundFile = identity
         listenFd = fd
     }
 
@@ -92,19 +121,25 @@ package final class LocalStreamServer: @unchecked Sendable {
         return uid == getuid()
     }
 
-    /// The listening descriptor, or -1 once stopped. For tests.
-    package var listeningDescriptor: Int32 {
+    /// Runs `body` with the listening descriptor while it cannot be closed, or
+    /// returns nil once stopped. For tests.
+    package func withListeningDescriptor<T>(_ body: (Int32) -> T) -> T? {
         lock.lock(); defer { lock.unlock() }
-        return listenFd
+        // The listener is closed only after `stop` has cleared `listenFd` under this lock.
+        return listenFd >= 0 ? body(listenFd) : nil
     }
 
-    /// The descriptors of the connections not yet closed. For tests.
-    package var connectionDescriptors: [Int32] {
+    /// Runs `body` with the descriptor of each connection not yet closed, while it
+    /// cannot be closed. For tests.
+    package func inspectConnections<T>(_ body: (Int32) -> T) -> [T] {
         lock.lock()
         let all = Array(connections.values)
         lock.unlock()
-        return all.compactMap(\.openDescriptor)
+        return all.compactMap { $0.withOpenDescriptor(body) }
     }
+
+    /// The connections not yet closed. For tests.
+    package var connectionCount: Int { inspectConnections { _ in () }.count }
 
     // MARK: Listening
 
@@ -137,9 +172,13 @@ package final class LocalStreamServer: @unchecked Sendable {
     /// runs, because only that source's cancel handler closes it.
     private func acceptAll(_ listener: Int32) {
         while true {
-            let fd = Darwin.accept(listener, nil, nil)
+            let fd = acceptCall(listener)
             if fd < 0 {
-                if errno == EINTR || errno == ECONNABORTED { continue }
+                let code = errno
+                if code == EINTR || code == ECONNABORTED { continue }
+                if code == EMFILE || code == ENFILE || code == ENOMEM || code == ENOBUFS {
+                    pauseAccepting()
+                }
                 return
             }
             prepare(fd)
@@ -148,9 +187,10 @@ package final class LocalStreamServer: @unchecked Sendable {
                 close(fd)
                 continue
             }
-            let connection = Connection(fd: fd, streamer: streamer, helloTimeout: helloTimeout)
+            let connection = Connection(fd: fd, streamer: streamer, helloTimeout: helloTimeout,
+                                        controlWriteDeadline: controlWriteDeadline)
             lock.lock()
-            let refused = stopped
+            let refused = stopped || connections.count >= Self.maxConnections
             if !refused { connections[ObjectIdentifier(connection)] = connection }
             lock.unlock()
             guard !refused else { close(fd); continue }
@@ -161,6 +201,24 @@ package final class LocalStreamServer: @unchecked Sendable {
             thread.name = "eu.kloosterman.wietty.local-stream.connection"
             thread.start()
         }
+    }
+
+    /// Stops accepting for `acceptRetryDelay`. Out of descriptors (or memory), the
+    /// listener stays readable, and the source would fire again at once and spin the
+    /// queue until one is freed. The clients waiting meanwhile stay in the backlog
+    /// and are accepted once there is room. Chosen over keeping a spare descriptor to
+    /// close and accept with: that holds a descriptor for good and still has to
+    /// close the client it accepts, while a pause serves it a moment later.
+    private func pauseAccepting() {
+        lock.lock()
+        let source = listenSource
+        lock.unlock()
+        guard let source else { return }
+        // On the source's own queue, inside its handler. A source must not be
+        // released while suspended, so the resume holds it; a `stop` meanwhile
+        // cancels it, and its cancel handler (the close) runs once it is resumed.
+        source.suspend()
+        queue.asyncAfter(deadline: .now() + Self.acceptRetryDelay) { source.resume() }
     }
 
     /// What an accepted socket does not inherit from the listener, or must not.
@@ -185,7 +243,8 @@ package final class LocalStreamServer: @unchecked Sendable {
 
     /// Stops accepting, ends every connection, and removes the socket file.
     /// Idempotent. Waits for nothing: each connection is shut down here and ended
-    /// by its own thread.
+    /// by its own thread, which may therefore still call `send`, `claim` or `detach`
+    /// on the streamer after this has returned (its `detach` always comes last).
     package func stop() {
         lock.lock()
         guard !stopped else { lock.unlock(); return }
@@ -213,6 +272,7 @@ private final class Connection: @unchecked Sendable {
     private let fd: Int32
     private let streamer: any ScreenStreaming
     private let helloTimeout: TimeInterval
+    private let controlWriteDeadline: TimeInterval
 
     private let lock = NSLock()
     /// Whether `fd` is still this connection's. Cleared only by `close`, under the
@@ -221,16 +281,21 @@ private final class Connection: @unchecked Sendable {
     /// A write failed or `ended` was written: nothing more is written, and the
     /// connection ends.
     private var finished = false
+    /// The `SO_SNDTIMEO` set on the socket, 0 for none.
+    private var sendTimeout: TimeInterval = 0
 
-    init(fd: Int32, streamer: any ScreenStreaming, helloTimeout: TimeInterval) {
+    init(fd: Int32, streamer: any ScreenStreaming, helloTimeout: TimeInterval,
+         controlWriteDeadline: TimeInterval) {
         self.fd = fd
         self.streamer = streamer
         self.helloTimeout = helloTimeout
+        self.controlWriteDeadline = controlWriteDeadline
     }
 
-    var openDescriptor: Int32? {
+    /// `body` with the descriptor, under the lock that keeps it open; nil once closed.
+    func withOpenDescriptor<T>(_ body: (Int32) -> T) -> T? {
         lock.lock(); defer { lock.unlock() }
-        return open ? fd : nil
+        return open ? body(fd) : nil
     }
 
     private var isFinished: Bool {
@@ -315,9 +380,11 @@ private final class Connection: @unchecked Sendable {
         }
     }
 
-    /// Waits up to `helloTimeout` for the first message. Nil when nothing usable
-    /// came: the client was silent, went away, or sent a frame the reader refused,
-    /// in which case it has been answered with an `error`.
+    /// Waits up to `helloTimeout`, counted from the accept, for the first message.
+    /// Nil when nothing usable came: the client was silent, trickled bytes or sent
+    /// half a frame until the time was up, sent only frames the codec skips, went
+    /// away, or sent a frame the reader refused, in which case it has been answered
+    /// with an `error`.
     private func readHello(_ reader: inout StreamFrameReader)
         -> (StreamMessage, [StreamMessage])? {
         let deadline = Date().addingTimeInterval(helloTimeout)
@@ -365,20 +432,72 @@ private final class Connection: @unchecked Sendable {
 
     // MARK: Writing
 
-    /// One message, as one frame, written in full on the calling thread. Never
-    /// called concurrently: before the attach only the reading thread writes, and
-    /// after it only the hub, which never overlaps its calls. The descriptor is
-    /// open for the call, because it is closed only after `detach` has returned.
+    /// One message, as one frame, written in full on the calling thread, or the
+    /// connection ends. Never called concurrently: before the attach only the reading
+    /// thread writes, and after it only the hub, which never overlaps its calls. The
+    /// descriptor is open for the call, because it is closed only after `detach` has
+    /// returned. `data` blocks for as long as it takes; anything else is held to the
+    /// write deadline (see `LocalStreamServer`).
     private func write(_ message: StreamMessage) {
         guard !isFinished else { return }
-        guard let frame = try? StreamCodec.checkedSocketFrame(for: message),
-              writeAll(frame) else {
-            return finish()
+        guard let frame = try? StreamCodec.checkedSocketFrame(for: message) else { return finish() }
+        let written: Bool
+        if case .data = message {
+            written = writeAll(frame)
+        } else {
+            written = writeAll(frame, progressDeadline: controlWriteDeadline)
         }
+        guard written else { return finish() }
         if case .ended = message { finish() }
     }
 
+    /// Writes every byte, or gives up once the socket has accepted nothing for
+    /// `progressDeadline` seconds. False then, or on a failure.
+    ///
+    /// The deadline is the socket's `SO_SNDTIMEO`, which bounds each wait for room
+    /// inside one `write`: a call that copied nothing in that time fails with
+    /// `EAGAIN`, and one that copied part of the frame and then waited that long
+    /// returns short. A short return that came sooner was a signal, and the write
+    /// goes on. Measured on macOS: neither `MSG_DONTWAIT` nor `poll` then `send`
+    /// works here, because `send` with `MSG_DONTWAIT` of a frame larger than the free
+    /// room blocks on a Unix socket regardless; and `O_NONBLOCK` is shared with the
+    /// connection's blocking reads.
+    private func writeAll(_ bytes: [UInt8], progressDeadline: TimeInterval) -> Bool {
+        setSendTimeout(max(progressDeadline, 0.001))
+        let allowed = UInt64(max(progressDeadline, 0.001) * 1e9)
+        var offset = 0
+        return bytes.withUnsafeBytes { raw in
+            while offset < raw.count {
+                let started = DispatchTime.now().uptimeNanoseconds
+                let written = Darwin.write(fd, raw.baseAddress! + offset, raw.count - offset)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    // EAGAIN: no byte accepted for the whole deadline.
+                    return false
+                }
+                guard written > 0 else { return false }
+                offset += written
+                if offset < raw.count, DispatchTime.now().uptimeNanoseconds - started >= allowed { return false }
+            }
+            return true
+        }
+    }
+
+    /// The socket's send timeout, changed only when it differs from what is set.
+    /// Only the one writer of the moment calls this.
+    private func setSendTimeout(_ seconds: TimeInterval) {
+        lock.lock()
+        let current = sendTimeout
+        sendTimeout = seconds
+        lock.unlock()
+        guard current != seconds else { return }
+        var value = timeval(tv_sec: Int(seconds), tv_usec: Int32((seconds - Double(Int(seconds))) * 1e6))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &value, socklen_t(MemoryLayout<timeval>.size))
+    }
+
     private func writeAll(_ bytes: [UInt8]) -> Bool {
+        // No timeout: `data` waits for as long as the client does not read.
+        setSendTimeout(0)
         var offset = 0
         return bytes.withUnsafeBytes { raw in
             while offset < raw.count {

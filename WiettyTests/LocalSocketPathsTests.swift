@@ -38,6 +38,22 @@ import WiettyCore
         }
     }
 
+    @Test func aRelativeDirectoryIsRefused() {
+        #expect(throws: TerminalRelayError.relativeSocketPath("tmp/wty-7.sock")) {
+            _ = try LocalSocketPaths.server(pid: 7, in: "tmp/")
+        }
+    }
+
+    /// A name that fits while the private bind path made for it does not fails here,
+    /// not later at the bind.
+    @Test func aNameWhoseBindPathDoesNotFitThrowsAlready() throws {
+        // 92 bytes of directory: `wty-1.sock` makes 102, `.wty-XXXXXX/s` makes 105.
+        let directory = "/" + String(repeating: "d", count: 90) + "/"
+        #expect(throws: TerminalRelayError.socketPathTooLong(directory + ".wty-XXXXXX/s")) {
+            _ = try LocalSocketPaths.server(pid: 1, in: directory)
+        }
+    }
+
     // MARK: sweep
 
     private func makeDirectory() throws -> String {
@@ -151,6 +167,86 @@ import WiettyCore
         #expect(!exists(old))
         #expect(exists(fresh))
         #expect(exists(unrelated))
+    }
+
+    // MARK: sweep, the private bind directories
+
+    private func makePrivateDirectory(_ path: String, socket: Bool = false, files: [String] = [],
+                                      age: TimeInterval = 7200) throws {
+        try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false)
+        if socket { try makeSocketFile(path + "/s") }
+        for name in files { FileManager.default.createFile(atPath: path + "/" + name, contents: Data([1])) }
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -age)],
+                                              ofItemAtPath: path)
+    }
+
+    @Test func sweepRemovesAnOldPrivateDirectoryThatIsEmptyOrHoldsItsSocket() throws {
+        let directory = try makeDirectory()
+        defer { removeDirectory(directory) }
+        let empty = directory + ".wty-Ab3dE9"
+        let holding = directory + ".wty-000000"
+        try makePrivateDirectory(empty)
+        try makePrivateDirectory(holding, socket: true)
+
+        let removed = LocalSocketPaths.sweep(in: directory)
+
+        #expect(Set(removed) == [empty, holding])
+        #expect(!exists(empty))
+        #expect(!exists(holding))
+    }
+
+    @Test func sweepKeepsAPrivateDirectoryThatIsRecent() throws {
+        let directory = try makeDirectory()
+        defer { removeDirectory(directory) }
+        let fresh = directory + ".wty-abcdef"
+        try makePrivateDirectory(fresh, socket: true, age: 60)
+        #expect(LocalSocketPaths.sweep(in: directory).isEmpty)
+        #expect(exists(fresh + "/s"))
+    }
+
+    @Test func sweepKeepsAPrivateDirectoryHoldingAnythingElse() throws {
+        let directory = try makeDirectory()
+        defer { removeDirectory(directory) }
+        let plainS = directory + ".wty-aaaaaa"
+        let socketAndMore = directory + ".wty-bbbbbb"
+        let otherSocket = directory + ".wty-cccccc"
+        try makePrivateDirectory(plainS, files: ["s"])
+        try makePrivateDirectory(socketAndMore, socket: true, files: ["t"])
+        try FileManager.default.createDirectory(atPath: otherSocket, withIntermediateDirectories: false)
+        try makeSocketFile(otherSocket + "/t")
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -7200)],
+                                              ofItemAtPath: otherSocket)
+
+        #expect(LocalSocketPaths.sweep(in: directory).isEmpty)
+        #expect(exists(plainS + "/s"))
+        #expect(exists(socketAndMore + "/s"))
+        #expect(exists(socketAndMore + "/t"))
+        #expect(exists(otherSocket + "/t"))
+    }
+
+    @Test func sweepKeepsALinkNamedLikeAPrivateDirectory() throws {
+        let directory = try makeDirectory()
+        defer { removeDirectory(directory) }
+        let outside = try makeDirectory()
+        defer { removeDirectory(outside) }
+        let target = outside + "old"
+        try makePrivateDirectory(target, socket: true)
+        let link = directory + ".wty-linked"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+
+        #expect(LocalSocketPaths.sweep(in: directory).isEmpty)
+        #expect(exists(link))
+        #expect(exists(target + "/s"))
+    }
+
+    @Test func sweepKeepsADirectoryNotNamedExactlyAsTheTemplate() throws {
+        let directory = try makeDirectory()
+        defer { removeDirectory(directory) }
+        let names = [".wty-abcde", ".wty-abcdefg", ".wty-abc_ef", ".wty-abc-ef", ".wtx-abcdef", "wty-abcdef",
+                     ".wty-abcdé"]
+        for name in names { try makePrivateDirectory(directory + name) }
+        #expect(LocalSocketPaths.sweep(in: directory).isEmpty)
+        for name in names { #expect(exists(directory + name)) }
     }
 
     @Test func sweepOfAMissingDirectoryRemovesNothing() {
