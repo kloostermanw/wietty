@@ -14,13 +14,22 @@ import WiettyCore
 /// exactly the grid asked for, and what `padding` has to mean for it to, is what
 /// this prints, one `IMPOSED` line per grid and variant.
 ///
-/// Four configurations run in one process, one surface each: the display's own
+/// Five configurations run in one process, one surface each: the display's own
 /// backing scale and the other one (1 or 2), each with the default window padding
-/// and with a padding that is not the default. The other scale is simulated: the
-/// window reports a backing scale factor that is not its screen's, which is what
-/// `GhosttySurfaceView.synchronizeMetrics` reads. The display's settings are never
-/// touched. The padding is written to the sandbox's `ghostty.cfg`, the overlay the
-/// host loads after the user's own Ghostty config, so it decides the value.
+/// and with a padding that is not the default, and the display's scale once more
+/// with a padding given as two values per axis and `window-padding-balance` on. The
+/// other scale is simulated: the window reports a backing scale factor that is not
+/// its screen's, which is what `GhosttySurfaceView.synchronizeMetrics` reads. The
+/// display's settings are never touched. The padding is written to the sandbox's
+/// `ghostty.cfg`, the overlay the host loads after the user's own Ghostty config, so
+/// it decides the value.
+///
+/// Each grid is set twice. First by hand, on the bare view, with the padding read
+/// four ways (`remainder`, `swept` and one point either side of it), which is the
+/// measurement the formula came from. Then through the API the pane uses (`api`):
+/// the view in a `SurfaceContainerView` as the pane holds it, the grid imposed with
+/// `impose(grid:on:)` and sized from `metrics(id:)`, whose padding comes from the
+/// configuration files rather than from the sweep.
 ///
 /// **This does not run in the normal suite, by design.** It needs a window and a
 /// Metal device. It runs only when `WIETTY_IMPOSED_GRID_CHECK=1` is in the
@@ -34,7 +43,11 @@ import WiettyCore
 
     /// A non default padding, in points per side. Odd and unequal on purpose, so a
     /// formula that confuses the two axes, or a side with the total, shows.
-    static let padding = (x: 13, y: 7)
+    static let padding = "window-padding-x = 13\nwindow-padding-y = 7\n"
+
+    /// Two values per axis (left and right, top and bottom), with balancing on,
+    /// which hands the leftover pixels to the padding after the grid is derived.
+    static let twoSidedPadding = "window-padding-x = 5,9\nwindow-padding-y = 3,8\nwindow-padding-balance = true\n"
 
     typealias Metrics = (columns: Int, rows: Int, widthPx: Int, heightPx: Int, cellWidthPx: Int, cellHeightPx: Int)
 
@@ -49,7 +62,8 @@ import WiettyCore
     private struct Configuration {
         let label: String
         let forcedScale: CGFloat?
-        let padding: (x: Int, y: Int)?
+        /// What the overlay holds, or nil for no overlay at all.
+        let padding: String?
     }
 
     @Test func aViewSizedForAGridShowsThatGrid() async throws {
@@ -72,12 +86,12 @@ import WiettyCore
             Configuration(label: "simulated/default", forcedScale: other, padding: nil),
             Configuration(label: "native/padded", forcedScale: nil, padding: Self.padding),
             Configuration(label: "simulated/padded", forcedScale: other, padding: Self.padding),
+            Configuration(label: "native/two-sided", forcedScale: nil, padding: Self.twoSidedPadding),
         ]
 
         for (index, configuration) in configurations.enumerated() {
             if let padding = configuration.padding {
-                try "window-padding-x = \(padding.x)\nwindow-padding-y = \(padding.y)\n"
-                    .write(to: overlay, atomically: true, encoding: .utf8)
+                try padding.write(to: overlay, atomically: true, encoding: .utf8)
             } else {
                 try? FileManager.default.removeItem(at: overlay)
             }
@@ -141,7 +155,9 @@ import WiettyCore
         let sweptY = try await smallestPixels(holding: probe.rows, cell: start.cellHeightPx, axis: \.rows,
                                               set: { view.setFrameSize(NSSize(width: 1000, height: CGFloat($0) / scale)) },
                                               id, host) - probe.rows * start.cellHeightPx
-        let configured = configuration.padding.map { "\($0.x)x\($0.y)pt per side" } ?? "default"
+        let configured = configuration.padding.map {
+            $0.split(separator: "\n").joined(separator: ", ")
+        } ?? "default"
         print("""
         IMPOSED-METRICS \(configuration.label): scale \(scale), padding config \(configured), \
         cell \(start.cellWidthPx)x\(start.cellHeightPx)px, at 1000x700pt: grid \(start.columns)x\(start.rows) \
@@ -183,6 +199,61 @@ import WiettyCore
                 }
             }
         }
+
+        // The same grids through the pane's own API: the view held by a container as
+        // the pane holds it, the grid imposed on the host, the size the host derives
+        // from its own metrics.
+        let container = SurfaceContainerView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        let content = try #require(window.contentView)
+        content.addSubview(container)
+        NSLayoutConstraint.activate([
+            container.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            container.topAnchor.constraint(equalTo: content.topAnchor),
+            container.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+        SurfaceContainer.attach(view, to: container)
+        content.layoutSubtreeIfNeeded()
+        _ = try await settled(id, host)
+        let metrics = try #require(host.metrics(id: id))
+        print("""
+        IMPOSED-API \(configuration.label): metrics cell \(metrics.cellWidth)x\(metrics.cellHeight)px \
+        padding \(metrics.paddingX)x\(metrics.paddingY)px scale \(metrics.scale), swept padding \(sweptX)x\(sweptY)px
+        """)
+        #expect(metrics.paddingX == sweptX && metrics.paddingY == sweptY,
+                "\(configuration.label): metrics padding \(metrics.paddingX)x\(metrics.paddingY), swept \(sweptX)x\(sweptY)")
+        #expect(metrics.cellWidth == start.cellWidthPx && metrics.cellHeight == start.cellHeightPx)
+        #expect(metrics.scale == Double(scale))
+
+        for grid in Self.grids {
+            host.impose(grid: grid, on: id)
+            content.layoutSubtreeIfNeeded()
+            let after = try await settled(id, host)
+            let child = try await childSize(directory, question: &question,
+                                            expecting: TerminalSize(cols: after.columns, rows: after.rows))
+            let expected = metrics.viewSize(for: grid)
+            let frame = view.frame
+            let surfaceExact = after.columns == grid.cols && after.rows == grid.rows
+            let childExact = child == grid
+            print("""
+            IMPOSED \(configuration.label) api: asked \(grid.cols)x\(grid.rows) \
+            surface \(after.columns)x\(after.rows) child \(child.map { "\($0.cols)x\($0.rows)" } ?? "none") \
+            \(surfaceExact && childExact ? "EXACT" : "OFF") scale \(scale) \
+            cell \(after.cellWidthPx)x\(after.cellHeightPx)px padding \(metrics.paddingX)x\(metrics.paddingY)px \
+            view \(frame.width)x\(frame.height)pt size \(after.widthPx)x\(after.heightPx)px
+            """)
+            #expect(surfaceExact, "\(configuration.label) api \(grid.cols)x\(grid.rows): surface \(after.columns)x\(after.rows)")
+            #expect(childExact, "\(configuration.label) api \(grid.cols)x\(grid.rows): child \(String(describing: child))")
+            #expect(Double(frame.width) == expected.width && Double(frame.height) == expected.height,
+                    "\(configuration.label) api \(grid.cols)x\(grid.rows): frame \(frame.size), expected \(expected)")
+            #expect(frame.maxY == container.bounds.maxY && frame.minX == 0)
+        }
+
+        // Cleared, the view fills the pane again.
+        host.impose(grid: nil, on: id)
+        content.layoutSubtreeIfNeeded()
+        #expect(view.frame == container.bounds, "\(configuration.label): cleared frame \(view.frame)")
     }
 
     // MARK: - Reading

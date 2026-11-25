@@ -106,12 +106,15 @@ private final class BridgedHost: TerminalSurfaceHosting {
     var onBell: (@MainActor (String) -> Void)?
     var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
     var onResized: (@MainActor (String, TerminalSize) -> Void)?
+    var onMetricsChanged: (@MainActor (String) -> Void)?
     var onCloseRequested: (@MainActor (String) -> Void)?
     var onInput: (@MainActor (String) -> Void)?
     var desktopNotifications: (effective: Bool, userConfig: Bool) { (true, true) }
     var graphemeClustering: Bool { true }
     func reloadConfig() {}
     func size(id: String) -> TerminalSize? { nil }
+    func metrics(id: String) -> SurfaceMetrics? { nil }
+    func impose(grid: TerminalSize?, on id: String) {}
 
     func createSurface(id: String, directory: URL, title: String?) throws {
         let command = try bridges.open(session: id)

@@ -69,7 +69,7 @@ import SwiftUI
 
     @Test func attachingPinsTheSurfaceToItsContainer() {
         let surface = NSView()
-        let container = NSView()
+        let container = SurfaceContainerView()
         SurfaceContainer.attach(surface, to: container)
         #expect(surface.superview === container)
         #expect(surface.translatesAutoresizingMaskIntoConstraints == false)
@@ -81,8 +81,8 @@ import SwiftUI
     /// rebuilt, because rebuilding is what would lose the scrollback.
     @Test func attachingElsewhereMovesTheSurfaceRatherThanCopyingIt() {
         let surface = NSView()
-        let first = NSView()
-        let second = NSView()
+        let first = SurfaceContainerView()
+        let second = SurfaceContainerView()
         SurfaceContainer.attach(surface, to: first)
         SurfaceContainer.attach(surface, to: second)
         #expect(surface.superview === second)
@@ -95,7 +95,7 @@ import SwiftUI
 
     /// A container handed a different terminal must not end up holding two.
     @Test func attachingASecondSurfaceEvictsTheFirst() {
-        let container = NSView()
+        let container = SurfaceContainerView()
         let first = NSView()
         let second = NSView()
         SurfaceContainer.attach(first, to: container)
@@ -116,7 +116,7 @@ import SwiftUI
     /// again, is an easy mistake and would fail this.
     @Test func dismantlingDetachesTheSurfaceAndLeavesItUsable() {
         let surface = NSView()
-        let container = NSView()
+        let container = SurfaceContainerView()
         SurfaceContainer.attach(surface, to: container)
         SurfaceContainer.dismantleNSView(container, coordinator: ())
         #expect(surface.superview == nil)
@@ -124,7 +124,7 @@ import SwiftUI
         // The constraints went with the view. One left behind here would be
         // unsatisfiable the moment the container is resized without it.
         #expect(container.constraints.isEmpty)
-        let second = NSView()
+        let second = SurfaceContainerView()
         SurfaceContainer.attach(surface, to: second)
         #expect(surface.superview === second)
         #expect(second.constraints.count == 4)

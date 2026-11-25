@@ -171,6 +171,27 @@ A surface that is not in the view hierarchy is not laid out, so it keeps the gri
 selected again. Two terminals in one window can therefore have different sizes, and the one on screen
 is always the one that matches the pane.
 
+### Metrics and an imposed size
+
+The pane can also show a grid that is not the one that fits it. `TerminalSurfaceHosting.metrics(id:)`
+answers the surface's cell size in pixels, its configured padding in pixels (both sides together) and
+the backing scale it renders at, as a `SurfaceMetrics`, which turns a grid into the size in points of
+a view that shows exactly it, `(cols * cell_width + padding_x) / scale` by the same for rows, and a
+pane size back into the largest grid that fits. `impose(grid:on:)` gives the surface's view that size,
+pinned to the top left of the pane (see "The local terminal in the pane" in
+`AsciiScreens/ContentView.md`); nil returns it to the pane's size. The host keeps the grid and sizes
+the view again whenever the metrics change, and reports such a change through `onMetricsChanged`,
+which is separate from `onResized` because moving to a display with another scale changes the metrics
+and not the grid. The arithmetic was measured exact in a real window (`scripts/imposed-grid-check.sh`).
+
+The padding is read from the configuration files the host loads (`GhosttyPadding`), because
+`ghostty_config_get` does not expose `window-padding-x` or `window-padding-y`. One value sets both
+sides, two set left and right (or top and bottom). `window-padding-balance` does not change how many
+cells a size holds. A configured value that cannot match what the surface reports (the pixels beyond
+its whole cells are the padding plus less than a cell) is logged and replaced by those pixels, which
+still size a view correctly. A reloaded configuration reads the padding again and every surface takes
+its metrics again.
+
 ## Drawing
 
 Redraw only when libghostty asks, coalesced onto one main queue turn. Measured idle CPU over five

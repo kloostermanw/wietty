@@ -18,6 +18,12 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// Scripted answers. A missing `size` stands for a surface with no grid yet,
     /// which is a real state: a view that has not been laid out has no columns.
     var sizes: [String: TerminalSize] = [:]
+    /// Scripted the way `sizes` is. A missing entry stands for a surface whose cell
+    /// size is not known yet, or one this host does not have.
+    var scriptedMetrics: [String: SurfaceMetrics] = [:]
+    /// Every `impose(grid:on:)`, in order, and what each surface has imposed now.
+    private(set) var imposeCalls: [(grid: TerminalSize?, id: String)] = []
+    private(set) var imposedGrids: [String: TerminalSize] = [:]
     var failNextCreate = false
     /// Runs inside `createSurface`, before it returns (and before a scripted failure
     /// throws), as a real host's bridge may attach to the stream while the surface is
@@ -30,6 +36,7 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     var onBell: (@MainActor (String) -> Void)?
     var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
     var onResized: (@MainActor (String, TerminalSize) -> Void)?
+    var onMetricsChanged: (@MainActor (String) -> Void)?
     var onCloseRequested: (@MainActor (String) -> Void)?
     var onInput: (@MainActor (String) -> Void)?
 
@@ -52,6 +59,11 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
 
     func view(id: String) -> NSView? { views[id] }
     func size(id: String) -> TerminalSize? { sizes[id] }
+    func metrics(id: String) -> SurfaceMetrics? { scriptedMetrics[id] }
+    func impose(grid: TerminalSize?, on id: String) {
+        imposeCalls.append((grid, id))
+        imposedGrids[id] = grid
+    }
 
     /// What this host claims libghostty resolved, and what it would have resolved
     /// without Wietty's overlay. Settable so a test can put the two out of step,
@@ -84,6 +96,10 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         onResized?(id, size)
     }
     func emitInput(_ id: String) { onInput?(id) }
+    func emitMetrics(_ id: String, _ metrics: SurfaceMetrics?) {
+        scriptedMetrics[id] = metrics
+        onMetricsChanged?(id)
+    }
 }
 
 extension DesktopNotificationSetting {
