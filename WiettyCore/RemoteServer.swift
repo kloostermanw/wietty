@@ -30,6 +30,7 @@ package final class RemoteServer {
     private let token: RemoteAccessToken
     private let host: String
     private let port: Int
+    private let oldClientGrace: Duration
     private let onStartupError: (@MainActor @Sendable (String) -> Void)?
     private var runTask: Task<Void, Never>?
 
@@ -39,16 +40,21 @@ package final class RemoteServer {
     /// no race.
     package private(set) var boundPort: Int?
 
-    /// - Parameter host: the address to bind, every interface unless a test binds
-    ///   loopback only.
+    /// - Parameters:
+    ///   - host: the address to bind, every interface unless a test binds
+    ///     loopback only.
+    ///   - oldClientGrace: how long the server waits for an old client to close
+    ///     after the notice before it closes itself. Shorter only in a test.
     package init(store: ProjectStore, streamer: any ScreenStreaming,
          token: RemoteAccessToken, host: String = "0.0.0.0", port: Int = RemoteServer.defaultPort,
+         oldClientGrace: Duration = RemoteServer.defaultOldClientGrace,
          onStartupError: (@MainActor @Sendable (String) -> Void)? = nil) {
         self.store = store
         self.streamer = streamer
         self.token = token
         self.host = host
         self.port = port
+        self.oldClientGrace = oldClientGrace
         self.onStartupError = onStartupError
     }
 
@@ -58,6 +64,7 @@ package final class RemoteServer {
         let host = self.host
         let store = self.store
         let streamer = self.streamer
+        let oldClientGrace = self.oldClientGrace
 
         // HTTP routes.
         let router = Router()
@@ -124,6 +131,7 @@ package final class RemoteServer {
                 // `protocol` parameter and is told to update, not attached.
                 guard let version = Self.query(request, "protocol") else {
                     for text in Self.oldClientNotice { try? await outbound.write(.text(text)) }
+                    await Self.awaitClose(of: inbound, grace: oldClientGrace)
                     return
                 }
                 guard version == String(StreamProtocol.version) else {
@@ -239,6 +247,30 @@ package final class RemoteServer {
         }
         return [json(["type": "data", "vt": text]), json(["type": "ended"])]
     }()
+
+    /// How long an old client is given to close after the notice.
+    package nonisolated static let defaultOldClientGrace: Duration = .seconds(10)
+
+    /// Drops whatever the client sends until it closes, or until `grace` has passed.
+    ///
+    /// The old client closes when it reads `ended`, and the close is left to it. A
+    /// close the server sends with the notice can be read by the client's
+    /// `URLSessionWebSocketTask` ahead of the two frames (it is when all three
+    /// arrive with the answer to the upgrade). The task answers it, the server
+    /// drops the connection, and the next input the terminal view sends fails the
+    /// task, which then hands its next receive that error instead of the frames it
+    /// holds: the client loses `ended` and reports a lost connection.
+    private nonisolated static func awaitClose(of inbound: WebSocketInboundStream,
+                                               grace: Duration) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                do { for try await _ in inbound.messages(maxSize: maxInboundMessage) {} } catch {}
+            }
+            group.addTask { try? await Task.sleep(for: grace) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
 
     /// One accepted version 2 viewer, from the hello to the close.
     ///
