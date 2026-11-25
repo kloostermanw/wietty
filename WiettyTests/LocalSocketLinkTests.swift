@@ -52,7 +52,9 @@ private final class ScriptedServer: @unchecked Sendable {
 
     init(frames: [StreamMessage]) throws {
         path = shortSocketPath("lss")
+        unlink(path)
         listenFd = socket(AF_UNIX, SOCK_STREAM, 0)
+        try #require(listenFd >= 0)
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
@@ -63,8 +65,12 @@ private final class ScriptedServer: @unchecked Sendable {
                 Darwin.bind(listenFd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        try #require(bound == 0)
-        try #require(Darwin.listen(listenFd, 1) == 0)
+        guard bound == 0, Darwin.listen(listenFd, 1) == 0 else {
+            let code = errno
+            Darwin.close(listenFd)
+            unlink(path)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
         let listener = listenFd
         call = BackgroundCall { [self] in
             let fd = Darwin.accept(listener, nil, nil)
@@ -251,7 +257,9 @@ private final class ScriptedServer: @unchecked Sendable {
         #expect(recorder.messages.dropFirst(2).allSatisfy { $0 == .data(chunk) })
     }
 
-    @Test func sendWritesOneDataFrameEachAndClaimOneResize() throws {
+    /// Input goes out in frames of at most 64 KiB, in order, and each claim as one
+    /// `resize`. The fake records one input per `data` frame the server read.
+    @Test func sendSplitsIntoFramesOfAtMost64KiBAndClaimWritesOneResize() throws {
         let streamer = LocalFakeStreamer()
         let server = try server(streamer)
         defer { server.stop() }
@@ -260,15 +268,51 @@ private final class ScriptedServer: @unchecked Sendable {
         defer { link.stop() }
         #expect(waitUntil { streamer.attachesReturned == 1 })
         let id = try #require(streamer.attaches.first?.id)
-        let big = [UInt8](repeating: 0xFF, count: 100_000)
+        let big = (0..<150_000).map { UInt8(truncatingIfNeeded: $0 * 7) }
         link.send([0x61, 0x62])
         link.send(big)
         link.send([0xC3, 0x28])
         link.claim(cols: 120, rows: 40)
-        #expect(waitUntil { streamer.inputs.count == 3 && streamer.claims.count == 1 })
-        #expect(streamer.inputs.map(\.bytes) == [[0x61, 0x62], big, [0xC3, 0x28]])
+        #expect(waitUntil { streamer.inputs.count == 5 && streamer.claims.count == 1 })
+        let max = LocalSocketLink.maxInputFrame
+        #expect(streamer.inputs.map(\.bytes) == [[0x61, 0x62], Array(big[0..<max]),
+                                                 Array(big[max..<(2 * max)]), Array(big[(2 * max)...]),
+                                                 [0xC3, 0x28]])
         #expect(streamer.inputs.allSatisfy { $0.session == "s1" })
         #expect(streamer.claims == [.init(id: id, cols: 120, rows: 40)])
+    }
+
+    /// The bridge claims from the main actor, and the server reads nothing while it
+    /// writes a snapshot to a pane that is not reading. Neither `send` nor `claim`
+    /// may wait for that: they queue. Shown by a writer blocked on a full socket.
+    @Test func sendAndClaimNeverBlockOnAServerThatIsNotReading() throws {
+        let streamer = LocalFakeStreamer()
+        // A snapshot far larger than both socket buffers: the server's reading thread
+        // stays inside the attach, writing it, while the link holds its first message.
+        let snapshot = [UInt8](repeating: 0x73, count: 4 << 20)
+        streamer.onAttach = [.resize(cols: 80, rows: 24, own: false), .snapshot(snapshot)]
+        let server = try server(streamer)
+        defer { server.stop() }
+        let recorder = LinkRecorder()
+        let gate = DispatchSemaphore(value: 0)
+        recorder.block(on: gate)
+        let link = started(server, streamer, recorder)
+        defer { link.stop() }
+        #expect(waitUntil { recorder.inside == 1 })
+        #expect(streamer.attachesReturned == 0)
+
+        // More input than the socket holds: the link's writer blocks on it.
+        let input = [UInt8](repeating: 0x69, count: 4 << 20)
+        let sending = BackgroundCall { link.send(input) }
+        #expect(sending.wait(1))
+        let claiming = BackgroundCall { link.claim(cols: 100, rows: 30) }
+        #expect(claiming.wait(1))
+
+        recorder.unblock()
+        gate.signal()
+        #expect(waitUntil(within: 10) { streamer.claims.count == 1 })
+        #expect(Array(streamer.inputs.map(\.bytes).joined()) == input)
+        #expect(streamer.claims.first?.cols == 100)
     }
 
     @Test func sendAndClaimBeforeStartAreDropped() throws {

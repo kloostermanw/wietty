@@ -691,26 +691,39 @@ Two types in the app are meant to make this Mac's own pane a local viewer of the
 uses them yet: the pane's helper still talks to `TerminalRelay`.
 
 `LocalSocketLink` is a client of `LocalStreamServer` for one session, behind the protocol
-`TerminalStreamLink`. `start()` connects and writes the `hello` on the calling thread; a reader
-thread of its own then decodes frames and calls `onMessage` with each, in order, reading the socket
-again only once the callback has returned. The server's `hello` is consumed. An `ended`, an `error`, a
-closed socket and a first frame that is not a `hello` each end it, once, through `onEnded`, with the
-package's `TerminalEndReason`. `send` and `claim` write one frame each, whole and blocking, never
-interleaved. `stop()` fires no `onEnded`, and from outside a callback it returns only once no
-callback runs, so nothing arrives after it.
+`TerminalStreamLink`. `start()` returns at once: a reader thread of its own connects and then decodes
+frames and calls `onMessage` with each, in order, reading the socket again only once the callback has
+returned; a writer thread writes what `start`, `send` and `claim` queued, the `hello` first. The
+server's `hello` is consumed. An `ended`, an `error`, a closed socket and a first frame that is not a
+`hello` each end it, once, through `onEnded`, with the package's `TerminalEndReason`. `send` queues
+input in frames of at most 64 KiB and `claim` one `resize`; neither waits for the server, and the
+queue is not bounded (it holds what was typed or pasted and the server has not read yet). `stop()`
+fires no `onEnded`, and from outside a callback it returns only once no callback runs, so nothing
+arrives after it.
 
 `TerminalBridge` owns the raw socket `wietty-pty` connects to (bound by `PrivateSocket.listen`, which
 the server uses too: mode 0600, close on exec, no SIGPIPE) and accepts one client. It starts its link
 only when the helper has connected, writes the payloads of `snapshot`, `repaint` and `data` to the
 helper unchanged, hands `resize` to `onResize` and the link's end to `onEnded`, and sends the
-helper's bytes to `link.send`. A claim made before the link starts is remembered and sent when it
-does. The helper going away stops the link; the link ending keeps the helper, so `reconnect(with:)`
-can attach a new link to the same surface.
+helper's bytes to `link.send` (dropped while no link is live). Claims made while no link is live are
+all kept, in order, up to 64, and sent to the next link that starts; they are not folded, because the
+server answers each one and the owner counts the answers. The helper going away stops the link and
+calls `onHelperGone`; the link ending keeps the helper, so `reconnect(with:)` can attach a new link to
+the same surface. The owner calls `stop()` in every case.
 
-Neither holds anything. The bridge writes to the helper inside the link's `onMessage`, with a
+It is meant to be called from the main actor, so `init`, `claim` and `reconnect` never wait for a
+write, to the helper or to the server. `reconnect` stops the old link on a queue of the bridge's own,
+and decides which link may write to the helper under the lock every helper write holds, so nothing of
+the old link follows the new link's first write. `stop()` waits only for an `onResize` or `onEnded`
+that is running. The callbacks run on the bridge's and the link's threads and must hop to the main
+thread asynchronously: the surface's pty read thread can wait on a mailbox only the main thread
+drains, and while it waits the helper is not read.
+
+Neither buffers the stream. The bridge writes to the helper inside the link's `onMessage`, with a
 blocking write, so a surface that stops reading fills the helper's socket, which holds the link's
 thread, which fills the link's socket, which holds the server's blocking write on the pty's thread.
-The pane would therefore be lossless end to end, at the cost the local viewer section above
+What the link holds meanwhile is the frames that one read of 64 KiB carried and at most one partial
+frame. The pane would therefore be lossless end to end, at the cost the local viewer section above
 describes. `LocalSocketLinkTests` and `TerminalBridgeTests` cover both, the latter once end to end
 with the real server, link, bridge and bundled helper.
 

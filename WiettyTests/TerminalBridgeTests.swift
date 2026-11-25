@@ -15,6 +15,7 @@ private final class FakeLink: TerminalStreamLink, @unchecked Sendable {
     private var stopCount = 0
     private var sent: [[UInt8]] = []
     private var claimed: [[Int]] = []
+    private var stopGate: DispatchSemaphore?
 
     var onMessage: (@Sendable (StreamMessage) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return messageHandler }
@@ -31,7 +32,13 @@ private final class FakeLink: TerminalStreamLink, @unchecked Sendable {
     var claims: [[Int]] { lock.lock(); defer { lock.unlock() }; return claimed }
 
     func start() { lock.lock(); startCount += 1; lock.unlock() }
-    func stop() { lock.lock(); stopCount += 1; lock.unlock() }
+    func stop() {
+        lock.lock(); stopCount += 1; let gate = stopGate; lock.unlock()
+        _ = gate?.wait(timeout: .now() + 10)
+    }
+    /// From now on `stop()` waits on `gate` (at most ten seconds), as a real link's
+    /// does for a callback blocked on the helper.
+    func blockStop(on gate: DispatchSemaphore) { lock.lock(); stopGate = gate; lock.unlock() }
     func send(_ bytes: [UInt8]) { lock.lock(); sent.append(bytes); lock.unlock() }
     func claim(cols: Int, rows: Int) { lock.lock(); claimed.append([cols, rows]); lock.unlock() }
 
@@ -43,6 +50,8 @@ private final class BridgeEvents: @unchecked Sendable {
     private let lock = NSLock()
     private var resizeList: [[Int]] = []
     private var endList: [TerminalEndReason] = []
+    private var goneCount = 0
+    var gone: Int { lock.lock(); defer { lock.unlock() }; return goneCount }
     var resizes: [[Int]] { lock.lock(); defer { lock.unlock() }; return resizeList }
     var ends: [TerminalEndReason] { lock.lock(); defer { lock.unlock() }; return endList }
 
@@ -52,6 +61,9 @@ private final class BridgeEvents: @unchecked Sendable {
         }
         bridge.onEnded = { [self] reason in
             lock.lock(); endList.append(reason); lock.unlock()
+        }
+        bridge.onHelperGone = { [self] in
+            lock.lock(); goneCount += 1; lock.unlock()
         }
     }
 }
@@ -166,18 +178,33 @@ private final class BridgeEvents: @unchecked Sendable {
         #expect(waitUntil { link.stops == 1 })
     }
 
-    @Test func aClaimBeforeTheLinkStartsIsSentWhenItStarts() throws {
+    /// The server answers every claim once and the owner counts the answers, so the
+    /// claims made before the link starts are all sent, in order, not folded.
+    @Test func everyClaimBeforeTheLinkStartsIsSentInOrderWhenItStarts() throws {
         let link = FakeLink()
         let bridge = try TerminalBridge(helperSocketPath: shortSocketPath("tb"), link: link)
         defer { bridge.stop() }
         bridge.claim(cols: 90, rows: 20)
         bridge.claim(cols: 100, rows: 30)
+        bridge.claim(cols: 90, rows: 20)
         #expect(link.claims.isEmpty)
         let helper = try UnixTestSocket(connectingTo: bridge.helperSocketPath)
         defer { helper.close() }
-        #expect(waitUntil { link.claims == [[100, 30]] })
+        #expect(waitUntil { link.claims.count == 3 })
+        #expect(link.claims == [[90, 20], [100, 30], [90, 20]])
         bridge.claim(cols: 120, rows: 40)
-        #expect(link.claims == [[100, 30], [120, 40]])
+        #expect(link.claims == [[90, 20], [100, 30], [90, 20], [120, 40]])
+    }
+
+    @Test func atMostSixtyFourEarlyClaimsAreKeptTheNewest() throws {
+        let link = FakeLink()
+        let bridge = try TerminalBridge(helperSocketPath: shortSocketPath("tb"), link: link)
+        defer { bridge.stop() }
+        for cols in 1...70 { bridge.claim(cols: cols, rows: 10) }
+        let helper = try UnixTestSocket(connectingTo: bridge.helperSocketPath)
+        defer { helper.close() }
+        #expect(waitUntil { link.claims.count == 64 })
+        #expect(link.claims == (7...70).map { [$0, 10] })
     }
 
     @Test func reconnectStopsTheOldLinkStartsTheNewOneAndKeepsTheHelper() throws {
@@ -187,30 +214,113 @@ private final class BridgeEvents: @unchecked Sendable {
         events.attach(to: bridge)
         defer { bridge.stop() }
         bridge.claim(cols: 100, rows: 30)
+        #expect(old.claims == [[100, 30]])
         old.end(.connectionLost)
+        // No link is live: kept for the next one.
+        bridge.claim(cols: 110, rows: 35)
+        #expect(old.claims == [[100, 30]])
 
         let new = FakeLink()
         bridge.reconnect(with: new)
-        #expect(old.stops == 1)
+        #expect(waitUntil { old.stops == 1 })
         #expect(new.starts == 1)
-        // The last claim goes to the new stream too.
-        #expect(new.claims == [[100, 30]])
+        // Only what was kept; the claim the old link carried is not sent again.
+        #expect(new.claims == [[110, 35]])
 
         // The old link is not heard from again.
         old.deliver(.data([0x01]))
+        old.deliver(.resize(cols: 1, rows: 1, own: false))
         old.end(.sessionEnded)
         new.deliver(.snapshot([0x1B, 0x63, 0x41]))
         #expect(helper.read(3) == [0x1B, 0x63, 0x41])
         #expect(events.ends == [.connectionLost])
+        #expect(events.resizes.isEmpty)
 
         helper.write([0x62])
         #expect(waitUntil { new.sends == [[0x62]] })
         #expect(old.sends.isEmpty)
     }
 
+    /// `reconnect` is called from the main actor, and the old link's `stop()` waits
+    /// for a callback that may be blocked on a surface that is not reading.
+    @Test func reconnectReturnsAtOnceWhenTheOldLinksStopBlocks() throws {
+        let old = FakeLink()
+        let (bridge, helper) = try connected(old)
+        defer { helper.close() }
+        defer { bridge.stop() }
+        let gate = DispatchSemaphore(value: 0)
+        old.blockStop(on: gate)
+        let new = FakeLink()
+        let reconnecting = BackgroundCall { bridge.reconnect(with: new) }
+        #expect(reconnecting.wait(1))
+        #expect(new.starts == 1)
+        #expect(waitUntil { old.stops == 1 })
+        gate.signal()
+    }
+
+    /// The race the write lock closes: an old link's message that is waiting to write
+    /// when `reconnect` swaps the link is never written, so nothing of the old link
+    /// follows the new link's snapshot.
+    @Test func nothingOfTheOldLinkReachesTheHelperAfterAReconnect() throws {
+        let old = FakeLink()
+        let (bridge, helper) = try connected(old)
+        defer { helper.close() }
+        defer { bridge.stop() }
+        // A write in progress, blocked: far more than the socket holds.
+        let big = [UInt8](repeating: 0x6F, count: 4 << 20)
+        let inProgress = BackgroundCall { old.deliver(.data(big)) }
+        #expect(!inProgress.wait(0.3))
+        // A second message of the old link, waiting behind it. Given time to get as
+        // far as it can; it is blocked either way, which is what is checked.
+        let waiting = BackgroundCall { old.deliver(.data([0x58, 0x58])) }
+        #expect(!waiting.wait(0.3))
+
+        let new = FakeLink()
+        let reconnecting = BackgroundCall { bridge.reconnect(with: new) }
+        #expect(reconnecting.wait(1))
+        let snapshot: [UInt8] = [0x1B, 0x63, 0x4E]
+        let newWrite = BackgroundCall { new.deliver(.snapshot(snapshot)) }
+
+        let received = helper.read(big.count + snapshot.count, within: 20)
+        #expect(inProgress.wait())
+        #expect(waiting.wait())
+        #expect(newWrite.wait())
+        // The write in progress completes, then the new snapshot, and nothing else.
+        #expect(received.count == big.count + snapshot.count)
+        #expect(Array(received.suffix(snapshot.count)) == snapshot)
+        #expect(!received.contains(0x58))
+        #expect(staysSilent(helper.fd, for: 0.2))
+    }
+
+    @Test func aHelperThatGoesAwayIsReportedOnce() throws {
+        let link = FakeLink()
+        let events = BridgeEvents()
+        let (bridge, helper) = try connected(link)
+        events.attach(to: bridge)
+        defer { bridge.stop() }
+        helper.close()
+        #expect(waitUntil { events.gone == 1 })
+        #expect(link.stops == 1)
+        Thread.sleep(forTimeInterval: 0.1)   // room for a second report to show
+        #expect(events.gone == 1)
+    }
+
+    @Test func stopIsNotReportedAsTheHelperGoingAway() throws {
+        let link = FakeLink()
+        let events = BridgeEvents()
+        let (bridge, helper) = try connected(link)
+        events.attach(to: bridge)
+        bridge.stop()
+        #expect(helper.seesEnd())
+        Thread.sleep(forTimeInterval: 0.1)   // room for a report to show
+        #expect(events.gone == 0)
+        #expect(link.stops == 1)
+    }
+
     @Test func theHelperSocketIsPrivateCloseOnExecQuietAndForOneClient() throws {
         let link = FakeLink()
         let (bridge, helper) = try connected(link)
+        defer { bridge.stop() }
         let path = bridge.helperSocketPath
         var info = stat()
         #expect(lstat(path, &info) == 0)

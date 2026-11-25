@@ -5,66 +5,71 @@ import WiettyShared
 
 /// A terminal's stream from this Mac's own `LocalStreamServer`, on its Unix socket.
 ///
-/// `start()` connects and writes `hello(protocol: 2, session:, resize: .reflow)` on
-/// the calling thread, before any other frame, then hands the socket to a reader
-/// thread of the link's own. A failed connect ends the link on that thread too, as
-/// `.connectionLost`.
+/// No call on it waits for the server: `start`, `send` and `claim` return at once,
+/// whatever the server is doing. Only `stop()` waits, and only for a callback that is
+/// running (see `stop()`).
 ///
-/// ## The reader thread
+/// ## Threads
 ///
-/// One per `start()`. It reads the socket, decodes frames with a `StreamFrameReader`
-/// that allows a message up to `StreamProtocol.maxMessageSize` (a snapshot is one
-/// message), and calls `onMessage` for each, in order. It reads again only when the
-/// callback has returned: a callback that blocks (the bridge writing to a surface that
-/// is not reading) leaves the next frame on the socket, the socket fills, and the
-/// server's blocking write on the pty's thread waits. Nothing is buffered here beyond
-/// the frames that one `read` happened to carry.
+/// Each `start()` makes two threads. The reader connects, then reads the socket,
+/// decodes frames with a `StreamFrameReader` that allows a message up to
+/// `StreamProtocol.maxMessageSize` (a snapshot is one message), and calls `onMessage`
+/// for each, in order. It reads again only when the callback has returned: a callback
+/// that blocks (the bridge writing to a surface that is not reading) leaves the next
+/// frame on the socket, the socket fills, and the server's blocking write on the pty's
+/// thread waits. What this link holds meanwhile is the frames one `read` of 64 KiB
+/// happened to carry and at most one partial frame.
 ///
-/// The first frame must be a version 2 `hello`, which is consumed. After it:
-/// `ended` ends the link as `.sessionEnded`, `error` as `.refused`, a closed socket or
-/// a frame the reader refuses as `.connectionLost`. A first frame that is not `hello`
-/// ends it as `.serverTooOld`, a newer `hello` as `.refused(code: "protocol")`, as the
-/// package's `TerminalStreamConnection` treats them.
+/// The writer writes the outbox, in order, with blocking writes. The first frame in it
+/// is `hello(protocol: 2, session:, resize: .reflow)`, put there by `start()`, so it
+/// precedes every `send` and `claim`. `send` and `claim` only append to the outbox:
+/// one `resize` frame for a claim, and for input one `data` frame per 64 KiB (the
+/// server refuses an inbound frame over 1 MiB), appended together so another call's
+/// frames never land between them. The outbox is not bounded: it holds input the
+/// server has not read yet, which is what was typed or pasted, and claims. A failed
+/// write ends the link as `.connectionLost` through the reader.
 ///
-/// ## Writing
+/// ## Ends
 ///
-/// `send` and `claim` write one frame each, whole, with a blocking write on the
-/// calling thread, under a lock of their own so two calls' frames never interleave.
-/// The server reads its socket promptly, so this blocks only for as long as the
-/// server's reading thread is busy; when it is held (it writes the snapshot during the
-/// attach before it reads), a write larger than the socket's buffer waits for it. A
-/// failed write ends the link as `.connectionLost` through the reader. `send` splits
-/// nothing: an input larger than the server's `maxInboundMessage` would make the
-/// server drop the connection, so it is dropped here instead. The helper reads at most
-/// a few kilobytes at a time, so that does not happen in practice.
+/// The first frame must be a version 2 `hello`, which is consumed. After it: `ended`
+/// ends the link as `.sessionEnded`, `error` as `.refused`, a closed socket or a frame
+/// the reader refuses as `.connectionLost` (since the server's fix round, a pane whose
+/// control write stalls for 5 seconds is disconnected, which arrives here as this). A
+/// first frame that is not `hello` ends it as `.serverTooOld`, a newer `hello` as
+/// `.refused(code: "protocol")`, as the package's `TerminalStreamConnection` treats
+/// them. A failed connect ends it as `.connectionLost`. `onEnded` runs on the reader
+/// thread, once. After an end, `send` and `claim` are dropped.
 ///
 /// ## Descriptor lifetime
 ///
-/// The socket is closed only by the reader thread, as it exits, and only once
-/// it holds the write lock, so it is never closed under a `read` or a `write`.
-/// Everything else (an end, `stop()`, a failed write) only shuts it down, under
-/// the state lock and while it is still open, which releases a blocked `read` or
-/// `write` at once and never touches a number already closed and reused.
+/// The socket is closed only by the reader thread, as it exits, after the writer has
+/// exited. Everything else (an end, `stop()`, a failed write) only shuts it down,
+/// under the lock and while it is open, which releases a blocked `read` or `write` at
+/// once and never touches a number already closed and reused.
 final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
     private enum Phase {
         case idle, awaitingHello, streaming, ended, stopped
+
+        var isLive: Bool { self == .awaitingHello || self == .streaming }
     }
+
+    /// The largest `data` frame `send` writes. The server takes up to 1 MiB.
+    static let maxInputFrame = 64 << 10
 
     let path: String
     let session: String
 
-    private let lock = NSLock()
+    /// Guards everything below, and wakes the writer.
+    private let lock = NSCondition()
     private var phase: Phase = .idle
     private var fd: Int32 = -1
     /// Whether `fd` is still this link's. Cleared only by the reader thread's close.
     private var open = false
+    private var outbox: [[UInt8]] = []
     private var messageHandler: (@Sendable (StreamMessage) -> Void)?
     private var endHandler: (@Sendable (TerminalEndReason) -> Void)?
     private var reader: Thread?
 
-    /// Held for each frame written, so frames never interleave; the close takes it to
-    /// wait for a write in progress.
-    private let writeLock = NSLock()
     /// Held for each callback; `stop()` takes it to wait for one in progress.
     private let callbackLock = NSLock()
 
@@ -73,119 +78,121 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
         self.session = session
     }
 
+    /// Called on the link's reader thread. See the protocol for what it may do.
     var onMessage: (@Sendable (StreamMessage) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return messageHandler }
         set { lock.lock(); messageHandler = newValue; lock.unlock() }
     }
 
+    /// Called on the link's reader thread, once.
     var onEnded: (@Sendable (TerminalEndReason) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return endHandler }
         set { lock.lock(); endHandler = newValue; lock.unlock() }
     }
 
-    /// Connects, says hello, and starts reading. Does nothing when started already
-    /// or stopped.
+    /// Queues the hello and starts the threads that connect, write and read. Returns at
+    /// once. Does nothing when started already or stopped.
     func start() {
+        guard let hello = try? StreamCodec.checkedSocketFrame(
+            for: .hello(protocolVersion: StreamProtocol.version, session: session, resize: .reflow))
+        else { return }
         lock.lock()
         guard phase == .idle else { lock.unlock(); return }
         phase = .awaitingHello
-        lock.unlock()
-
-        let connected = Self.connect(to: path)
-        // The hello goes out before any `send` or `claim` can: they wait on the write
-        // lock, and they find the socket only once it is published under it.
-        writeLock.lock()
-        lock.lock()
-        let live = phase == .awaitingHello
-        if live, connected >= 0 {
-            fd = connected
-            open = true
-        }
-        lock.unlock()
-        guard live else {
-            writeLock.unlock()
-            if connected >= 0 { close(connected) }
-            return
-        }
-        if connected >= 0 {
-            let hello = StreamMessage.hello(protocolVersion: StreamProtocol.version,
-                                            session: session, resize: .reflow)
-            if let frame = try? StreamCodec.checkedSocketFrame(for: hello),
-               !Self.writeAll(connected, frame) {
-                shutDown()
-            }
-        }
-        writeLock.unlock()
-
-        let thread = Thread { [self] in read(connected) }
-        thread.name = "eu.kloosterman.wietty.local-link"
-        lock.lock()
+        outbox = [hello]
+        let thread = Thread { [self] in run() }
+        thread.name = "eu.kloosterman.wietty.local-link.reader"
         reader = thread
         lock.unlock()
         thread.start()
     }
 
-    /// Closes the connection. Fires no `onEnded`. Idempotent. See the type's protocol
-    /// for what it waits for.
+    /// Closes the connection. Fires no `onEnded`. Idempotent.
+    ///
+    /// Waits for a callback that is running, so that after it returns none runs and
+    /// none comes; called from inside a callback it cannot wait for that one, returns
+    /// at once, and nothing comes after it either. It waits for nothing else: not for
+    /// the server, not for the socket to close (the reader thread closes it a moment
+    /// later).
     func stop() {
         lock.lock()
         phase = .stopped
+        outbox = []
         if open { shutdown(fd, SHUT_RDWR) }
+        lock.broadcast()
         let readerThread = reader
         lock.unlock()
-        // Waits for a callback in progress. From inside one it would wait for itself.
         guard Thread.current !== readerThread else { return }
         callbackLock.lock()
         callbackLock.unlock()
     }
 
+    /// Input, byte exact. Never blocks: queued for the writer, in frames of at most
+    /// `maxInputFrame` bytes. Dropped before `start()` and after an end or a stop.
     func send(_ bytes: [UInt8]) {
-        write(.data(bytes))
-    }
-
-    /// Claims the grid at this size. `own` means nothing upstream and is sent as false.
-    func claim(cols: Int, rows: Int) {
-        write(.resize(cols: cols, rows: rows, own: false))
-    }
-
-    // MARK: Writing
-
-    private func write(_ message: StreamMessage) {
-        guard let frame = try? StreamCodec.checkedSocketFrame(
-            for: message, maxPayload: LocalStreamServer.maxInboundMessage) else { return }
-        writeLock.lock()
-        defer { writeLock.unlock() }
-        lock.lock()
-        let live = (phase == .awaitingHello || phase == .streaming) && open
-        let socket = fd
-        lock.unlock()
-        guard live else { return }
-        // Open for the whole write: only the reader closes it, and only under the
-        // write lock. A failure is seen by the reader as the end of the socket.
-        if !Self.writeAll(socket, frame) { shutDown() }
-    }
-
-    private static func writeAll(_ fd: Int32, _ bytes: [UInt8]) -> Bool {
-        var offset = 0
-        return bytes.withUnsafeBytes { raw in
-            while offset < raw.count {
-                let written = Darwin.write(fd, raw.baseAddress! + offset, raw.count - offset)
-                if written > 0 { offset += written; continue }
-                // An interrupted write has copied nothing and is not a failure.
-                if written < 0, errno == EINTR { continue }
-                return false
-            }
-            return true
+        var frames: [[UInt8]] = []
+        var start = 0
+        while start < bytes.count {
+            let end = min(start + Self.maxInputFrame, bytes.count)
+            frames.append(StreamCodec.socketFrame(for: .data(Array(bytes[start..<end]))))
+            start = end
         }
+        enqueue(frames)
     }
 
-    // MARK: Reading
+    /// Claims the grid at this size; `own` is sent as false. Never blocks, as `send`.
+    func claim(cols: Int, rows: Int) {
+        enqueue([StreamCodec.socketFrame(for: .resize(cols: cols, rows: rows, own: false))])
+    }
 
-    /// The reader thread's body. Ends the link (unless stopped) and closes the socket
-    /// before it returns.
+    private func enqueue(_ frames: [[UInt8]]) {
+        guard !frames.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard phase.isLive else { return }
+        outbox += frames
+        lock.signal()
+    }
+
+    // MARK: The reader thread
+
+    /// Connects, runs the writer, reads until the end, and closes the socket.
+    private func run() {
+        let socket = Self.connect(to: path)
+        lock.lock()
+        guard phase.isLive else {
+            lock.unlock()
+            if socket >= 0 { close(socket) }
+            return
+        }
+        guard socket >= 0 else {
+            lock.unlock()
+            return end(.connectionLost)
+        }
+        fd = socket
+        open = true
+        lock.unlock()
+
+        let writerDone = DispatchSemaphore(value: 0)
+        let writer = Thread { [self] in
+            write(socket)
+            writerDone.signal()
+        }
+        writer.name = "eu.kloosterman.wietty.local-link.writer"
+        writer.start()
+
+        read(socket)
+        // `read` returns only once the link has ended or stopped, both of which shut
+        // the socket down and wake the writer, so this wait is short.
+        writerDone.wait()
+        lock.lock()
+        open = false
+        fd = -1
+        lock.unlock()
+        close(socket)
+    }
+
     private func read(_ socket: Int32) {
-        defer { closeSocket() }
-        guard socket >= 0 else { return end(.connectionLost) }
         var frames = StreamFrameReader(maxPayload: StreamProtocol.maxMessageSize)
         var buffer = [UInt8](repeating: 0, count: 1 << 16)
         while true {
@@ -255,9 +262,11 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
     /// Ends the link for `reason`, once, unless it was stopped.
     private func end(_ reason: TerminalEndReason) {
         lock.lock()
-        guard phase == .awaitingHello || phase == .streaming else { lock.unlock(); return }
+        guard phase.isLive else { lock.unlock(); return }
         phase = .ended
+        outbox = []
         if open { shutdown(fd, SHUT_RDWR) }
+        lock.broadcast()
         lock.unlock()
         // As `deliver`: a `stop()` from now on either waits for this or prevents it.
         callbackLock.lock()
@@ -270,25 +279,39 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
         handler?(reason)
     }
 
-    /// Makes a blocked read or write fail. Safe from any thread.
-    private func shutDown() {
-        lock.lock()
-        if open { shutdown(fd, SHUT_RDWR) }
-        lock.unlock()
+    // MARK: The writer thread
+
+    /// Writes the outbox until the link is over or a write fails. The socket is open
+    /// throughout: the reader closes it only after this has returned.
+    private func write(_ socket: Int32) {
+        while true {
+            lock.lock()
+            while outbox.isEmpty && phase.isLive { lock.wait() }
+            guard phase.isLive else { lock.unlock(); return }
+            let frame = outbox.removeFirst()
+            lock.unlock()
+            guard Self.writeAll(socket, frame) else {
+                // The reader sees the end of the socket and ends the link.
+                lock.lock()
+                if open { shutdown(socket, SHUT_RDWR) }
+                lock.unlock()
+                return
+            }
+        }
     }
 
-    /// Only the reader thread, as it exits. By then the socket is shut down, so a
-    /// write in progress fails and lets go of the write lock.
-    private func closeSocket() {
-        writeLock.lock()
-        lock.lock()
-        if open {
-            open = false
-            close(fd)
-            fd = -1
+    private static func writeAll(_ fd: Int32, _ bytes: [UInt8]) -> Bool {
+        var offset = 0
+        return bytes.withUnsafeBytes { raw in
+            while offset < raw.count {
+                let written = Darwin.write(fd, raw.baseAddress! + offset, raw.count - offset)
+                if written > 0 { offset += written; continue }
+                // An interrupted write has copied nothing and is not a failure.
+                if written < 0, errno == EINTR { continue }
+                return false
+            }
+            return true
         }
-        lock.unlock()
-        writeLock.unlock()
     }
 
     // MARK: Connecting
@@ -296,7 +319,7 @@ final class LocalSocketLink: TerminalStreamLink, @unchecked Sendable {
     /// A connected socket, or -1.
     private static func connect(to path: String) -> Int32 {
         let bytes = Array(path.utf8)
-        guard bytes.count < 104 else { return -1 }
+        guard bytes.count < LocalSocketPaths.sunPathLimit else { return -1 }
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return -1 }
         // macOS has no SOCK_CLOEXEC: as close to the socket call as it can be.
