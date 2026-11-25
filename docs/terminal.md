@@ -633,7 +633,9 @@ buffers grow, and their WebSocket viewers are resynchronised afterwards. Apart f
 in the middle of its first snapshot, this needs the viewer's transport to refuse a message of a few
 dozen bytes, which means a socket buffer that is already full on a terminal that is producing
 nothing. The transport's owner should therefore give the socket a send buffer large enough for
-control messages; `LocalStreamServer` gives each accepted socket 256 KiB.
+control messages; `LocalStreamServer` gives each accepted socket 256 KiB. It also bounds the
+rest: a frame other than `data` that the socket accepts no byte of for 5 seconds ends the
+connection, so a pane that stopped reading parks the delivery queue for 5 seconds at most.
 
 `PaneStreamLocalViewerTests`
 covers the thread, the backpressure, the order under a race with an attach and with grid changes into

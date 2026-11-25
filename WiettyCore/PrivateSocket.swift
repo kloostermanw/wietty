@@ -4,29 +4,56 @@ import Darwin
 /// A listening Unix socket whose file only this user can reach, shared by the local
 /// stream server and the pane's bridge.
 package enum PrivateSocket {
-    /// Binds and listens at `path`, with the socket file never reachable by anyone else,
-    /// and returns the listening descriptor: `FD_CLOEXEC`, `SO_NOSIGPIPE` and
-    /// `O_NONBLOCK`, so it can be accepted from on a dispatch source.
-    ///
-    /// The mode of a socket file comes from the umask at `bind`, which is process
-    /// wide, and `fchmod` does not reach the file of a socket. So the socket is
-    /// bound inside a fresh directory of mode 0700 next to `path` (`mkdtemp`), set
-    /// to 0600 there, and only then renamed onto `path`, which also replaces a
-    /// stale file atomically. While its mode is wider, nobody but this user can
-    /// reach it, because nobody else can enter the directory.
-    package static func listen(at path: String, backlog: Int32) throws -> Int32 {
+    /// Which file a socket was bound as: an owner unlinks only that file, and not one
+    /// another process has put at the path since.
+    package typealias Identity = (device: dev_t, inode: ino_t)
+
+    /// The name `mkdtemp` makes the private bind directory from, next to the socket.
+    /// `LocalSocketPaths.sweep` removes one a crash left behind.
+    package static let directoryPrefix = ".wty-"
+    static let directoryTemplate = directoryPrefix + "XXXXXX"
+    /// What is bound inside the private directory.
+    static let boundName = "s"
+
+    /// Throws unless `path` is absolute and both it and the bind path made for it fit
+    /// `sun_path`. A relative path would put the private directory's template at the
+    /// root of the filesystem, and a path that fits while its bind path does not
+    /// would fail only when it is bound.
+    package static func check(_ path: String) throws {
+        guard path.hasPrefix("/") else { throw TerminalRelayError.relativeSocketPath(path) }
         guard path.utf8.count < LocalSocketPaths.sunPathLimit else {
             throw TerminalRelayError.socketPathTooLong(path)
         }
-        let directory = (path as NSString).deletingLastPathComponent
-        var template = Array((directory + "/.wty-XXXXXX").utf8CString)
-        guard let made = mkdtemp(&template) else { throw TerminalRelayError.bindFailed(errno) }
-        let privateDirectory = String(cString: made)
-        defer { rmdir(privateDirectory) }
-        let bindPath = privateDirectory + "/s"
+        let bindPath = template(for: path) + "/" + boundName
         guard bindPath.utf8.count < LocalSocketPaths.sunPathLimit else {
             throw TerminalRelayError.socketPathTooLong(bindPath)
         }
+    }
+
+    private static func template(for path: String) -> String {
+        let directory = (path as NSString).deletingLastPathComponent
+        return (directory.hasSuffix("/") ? directory : directory + "/") + directoryTemplate
+    }
+
+    /// Binds and listens at `path`, with the socket file never reachable by anyone else,
+    /// and returns the listening descriptor (`FD_CLOEXEC`, `SO_NOSIGPIPE` and
+    /// `O_NONBLOCK`, so it can be accepted from on a dispatch source) and the file's
+    /// identity.
+    ///
+    /// The mode of a socket file comes from the umask at `bind`, which is process
+    /// wide, and `fchmod` does not reach the file of a socket (EINVAL on macOS). So the
+    /// socket is bound inside a fresh directory of mode 0700 next to `path`
+    /// (`mkdtemp`), set to 0600 there, listened on, and only then renamed onto `path`,
+    /// which also replaces a stale file atomically. While its mode is wider, nobody but
+    /// this user can reach it, because nobody else can enter the directory; and from
+    /// the moment it has its public name a `connect` finds a listener.
+    package static func listen(at path: String, backlog: Int32) throws -> (fd: Int32, identity: Identity) {
+        try check(path)
+        var template = Array(template(for: path).utf8CString)
+        guard let made = mkdtemp(&template) else { throw TerminalRelayError.bindFailed(errno) }
+        let privateDirectory = String(cString: made)
+        defer { rmdir(privateDirectory) }
+        let bindPath = privateDirectory + "/" + boundName
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw TerminalRelayError.socketFailed(errno) }
@@ -54,29 +81,21 @@ package enum PrivateSocket {
         }
         guard bound == 0 else { throw fail(TerminalRelayError.bindFailed) }
         guard chmod(bindPath, 0o600) == 0 else { throw fail(TerminalRelayError.bindFailed) }
-        guard rename(bindPath, path) == 0 else { throw fail(TerminalRelayError.bindFailed) }
+        // Taken before the rename, which keeps the inode, and from the file itself
+        // (`lstat`): without it `stop` could not recognise its own socket.
+        var info = stat()
+        guard lstat(bindPath, &info) == 0 else { throw fail(TerminalRelayError.bindFailed) }
         // Accepting runs on a dispatch source and must never block on a client
         // that went away between being readable and being accepted.
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
-        guard Darwin.listen(fd, backlog) == 0 else {
-            let code = errno
-            close(fd)
-            Darwin.unlink(path)
-            throw TerminalRelayError.listenFailed(code)
-        }
-        return fd
-    }
-
-    /// The device and inode of the file at `path`, so an owner can later unlink only
-    /// the file it bound and not one another process has put at the path since.
-    package static func identity(of path: String) -> (device: dev_t, inode: ino_t) {
-        var info = stat()
-        stat(path, &info)
-        return (info.st_dev, info.st_ino)
+        // Listening before the rename: the public name never exists without a listener.
+        guard Darwin.listen(fd, backlog) == 0 else { throw fail(TerminalRelayError.listenFailed) }
+        guard rename(bindPath, path) == 0 else { throw fail(TerminalRelayError.bindFailed) }
+        return (fd, (info.st_dev, info.st_ino))
     }
 
     /// Unlinks `path` if it is still the file `identity` names.
-    package static func unlink(_ path: String, ifStill identity: (device: dev_t, inode: ino_t)) {
+    package static func unlink(_ path: String, ifStill identity: Identity) {
         var info = stat()
         if lstat(path, &info) == 0, info.st_dev == identity.device, info.st_ino == identity.inode {
             Darwin.unlink(path)

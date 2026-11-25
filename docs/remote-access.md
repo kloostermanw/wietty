@@ -224,21 +224,40 @@ missing `own` as `false`. A `resize` whose `cols` or `rows` is outside 1 to
 (four byte big endian length, type byte, payload).
 
 **The local socket.** `LocalStreamServer` speaks that framing on a Unix socket at
-`<tmp>/wty-<pid>.sock` (`LocalSocketPaths`), for the Mac's own panes. The file
-has mode 0600, and a peer that is not this user (`getpeereid`) is closed before a
-byte is read. The first frame must be a `hello` carrying `protocol` 2, a
-`session`, and optionally `resize` (missing means `reflow`). Anything else is
-answered with one `error` and closed, and nothing is attached: code `hello` for a
-first frame that is not a `hello` (or that the reader refuses), `protocol` for
-another version, `session` for a `hello` without a session. A client that sends
-nothing for 5 seconds is closed with no reply. After the `hello` the order is the
-WebSocket's: the server's `hello`, `resize`, `snapshot`, then `data`, and a session
-that names no live terminal gets `hello` and `ended`, after which the server
-closes. The client is a local viewer of the hub (see `docs/terminal.md`): every
-frame is written whole and blocking, on the thread the hub writes from, and
-nothing is ever dropped. Inbound, a message may be up to 1 MiB; a frame the reader
-refuses after the `hello` closes the socket with no reply. Nothing in the app
-starts this server yet.
+`<tmp>/wty-<pid>.sock` (`LocalSocketPaths`), for the Mac's own panes. The path
+must be absolute. The file has mode 0600, and a peer that is not this user
+(`getpeereid`) is closed before a byte is read. At most 64 connections are served
+at once; one more is closed at accept with no reply.
+
+The first frame must be a `hello` carrying `protocol` 2, a `session`, and
+optionally `resize` (missing means `reflow`). A first message that is anything
+else is answered with one `error` and closed, and nothing is attached: code
+`hello` for a first message that is not a `hello`, and for a first frame the
+reader refuses (a zero length, or a length over 1 MiB); `protocol` for another
+version; `session` for a `hello` without a session. A frame the codec skips (an
+unknown type, JSON it cannot parse, a `resize` out of range) is no message at
+all: it gets no `error`, and the server goes on waiting for the `hello`. The
+whole `hello` must have arrived within 5 seconds of the accept; a client that
+sends nothing, trickles bytes, sends half a `hello` or only frames the codec
+skips is closed at that point with no reply.
+
+After the `hello` the order is the WebSocket's: the server's `hello`, `resize`,
+`snapshot`, then `data`, and a session that names no live terminal gets `hello`
+and `ended`, after which the server closes. The client is a local viewer of the
+hub (see `docs/terminal.md`): nothing is ever dropped, and every frame is written
+whole on the thread the hub writes from. `data` is written blocking with no
+limit, so a pane that does not read holds back its terminal's output, and with
+it the child. Every other message (the `hello`, `resize`, `snapshot`, `repaint`,
+`ended`, an `error`) is written with a progress deadline: if the socket accepts
+no byte for 5 seconds while such a frame is being written, the server closes the
+connection. The deadline restarts whenever bytes are accepted, so a pane that
+reads slowly but steadily keeps its connection however long a snapshot takes. A
+frame cut off this way is never completed: the client sees the connection lost
+in the middle of a frame, never a corrupt stream, and has to connect again. This
+is what keeps a pane that stopped reading from parking the hub's delivery queue,
+which every remote viewer of every terminal shares. Inbound, a message may be up
+to 1 MiB; a frame the reader refuses after the `hello` closes the socket with no
+reply. Nothing in the app starts this server yet.
 
 **Order.** `hello`, then `resize` and `snapshot`, then live `data`. A session
 that names no live terminal gets `hello` and `ended`. When no snapshot can be

@@ -49,7 +49,7 @@ final class TerminalBridge: @unchecked Sendable {
     private let queue = DispatchQueue(label: "eu.kloosterman.wietty.bridge")
     private var listenFd: Int32
     private var listenSource: DispatchSourceRead?
-    private let boundFile: (device: dev_t, inode: ino_t)
+    private let boundFile: PrivateSocket.Identity
 
     private var helperFd: Int32 = -1
     /// Whether a helper has ever been accepted. Only one ever is.
@@ -93,9 +93,9 @@ final class TerminalBridge: @unchecked Sendable {
     init(helperSocketPath: String, link: any TerminalStreamLink) throws {
         self.helperSocketPath = helperSocketPath
         self.link = link
-        let fd = try PrivateSocket.listen(at: helperSocketPath, backlog: 1)
+        let (fd, identity) = try PrivateSocket.listen(at: helperSocketPath, backlog: 1)
         listenFd = fd
-        boundFile = PrivateSocket.identity(of: helperSocketPath)
+        boundFile = identity
 
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         source.setEventHandler { [weak self] in self?.acceptAll(fd) }

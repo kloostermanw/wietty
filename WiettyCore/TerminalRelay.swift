@@ -3,6 +3,8 @@ import Darwin
 
 package enum TerminalRelayError: Error, Equatable {
     case socketPathTooLong(String)
+    /// A socket path that is not absolute.
+    case relativeSocketPath(String)
     case socketFailed(Int32)
     case bindFailed(Int32)
     case listenFailed(Int32)
