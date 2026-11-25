@@ -190,14 +190,8 @@ WS /attach?session=<id>&token=<t>&protocol=2&resize=repaint
   and in the JSON the ESC appears as `\u001b`. A version 1 client shows the line
   in red and the session as ended. These two frames, built by hand in the
   route, are the only version 1 code left. Nothing is attached.
-  The server then leaves the close to the client, which closes when it reads
-  `ended`, and drops whatever the client sends meanwhile. Only a client that has
-  not closed after 10 seconds is closed by the server. A close sent with the two
-  frames could be read by the client's `URLSessionWebSocketTask` ahead of them
-  (it is, when all three arrive with the answer to the upgrade). The task answers
-  it, the server drops the connection, and the next input the terminal view
-  sends fails the task, which then loses the unread `ended` and reports a lost
-  connection instead of an ended session.
+  The server then leaves the close to the client, as it does after `ended` in
+  version 2 (see "Ending" below): the client closes when it reads `ended`.
 - `protocol` present and not `2`: one `error` with code `protocol`, then the
   server closes. Nothing is attached.
 - `session` missing (with `protocol=2`): one `error` with code `session`, then the
@@ -216,7 +210,7 @@ WS /attach?session=<id>&token=<t>&protocol=2&resize=repaint
 | server to viewer | `snapshot` | binary | VT bytes | a full reset (`ESC c`), then history and screen |
 | server to viewer | `repaint` | binary | VT bytes | the visible screen again, history untouched |
 | server to viewer | `data` | binary | raw bytes | the child's output, byte exact |
-| server to viewer | `ended` | JSON | none | the terminal has stopped; the server closes after it |
+| server to viewer | `ended` | JSON | none | the terminal has stopped; the viewer closes after it |
 | viewer to server | `data` | binary | raw bytes | input, byte exact |
 | viewer to server | `resize` | JSON | `cols`, `rows`, `own` | a claim: "I am active, this is my grid" |
 
@@ -363,9 +357,26 @@ to limit itself (the serving Mac's pane sends at most one claim per 50 ms while 
 window is dragged); a client that floods claims slows every viewer, and nothing on
 the server stops it. This is a known limit.
 
-**Ending.** After `ended` or `error` the server closes the socket. When the
-viewer closes, or its socket fails, the server detaches it from the hub, and so
-it does when the server stops. The server pings every viewer every 30 seconds; a
+**Ending.** After `error` the server closes the socket. After `ended` it leaves
+the close to the viewer, which closes when it reads `ended` (the package's
+`TerminalStreamConnection`, so the iPad and a remote pane on another Mac, and the
+browser client all do), and drops whatever the viewer sends meanwhile. Only a viewer
+that has not closed 10 seconds after `ended` is closed by the server, and a server
+that stops closes it at once. The same holds for the notice to an old client. A
+close sent right after `ended` could be read by the client's
+`URLSessionWebSocketTask` ahead of frames it has not handed over yet. That happens
+when they arrive together, as `hello` and `ended` do for a session that is gone,
+and as the old client notice does with the answer to the upgrade. The task answers
+the close, the server drops the connection, and the next thing the client sends (a
+claim or input it held until the `hello`, or a keystroke) fails the task, which
+then loses the unread `ended` and reports a lost connection instead of an ended
+session. An owner that reconnects on a lost connection would then try again. A
+refusal needs no grace: the package's client sends nothing before the `hello`, so
+there is no send to fail, and a browser's `WebSocket` hands over every message
+before it reports the close.
+
+When the viewer closes, or its socket fails, the server detaches it from the hub,
+and so it does when the server stops. The server pings every viewer every 30 seconds; a
 viewer that has not answered a ping by the time the next one is due is closed with
 1001 (going away) and detached. The 30 seconds are set explicitly in
 `RemoteServer`, not left to the WebSocket library's default.
