@@ -77,10 +77,8 @@ package final class LocalStreamServer: @unchecked Sendable {
         self.streamer = streamer
         self.helloTimeout = helloTimeout
         self.peerCheck = peerCheck
-        let fd = try Self.listen(at: path)
-        var info = stat()
-        stat(path, &info)
-        boundFile = (info.st_dev, info.st_ino)
+        let fd = try PrivateSocket.listen(at: path, backlog: 16)
+        boundFile = PrivateSocket.identity(of: path)
         listenFd = fd
     }
 
@@ -110,63 +108,8 @@ package final class LocalStreamServer: @unchecked Sendable {
 
     // MARK: Listening
 
-    /// Binds and listens, with the socket file never reachable by anyone else.
-    ///
-    /// The mode of a socket file comes from the umask at `bind`, which is process
-    /// wide, and `fchmod` does not reach the file of a socket. So the socket is
-    /// bound inside a fresh directory of mode 0700 next to `path` (`mkdtemp`), set
-    /// to 0600 there, and only then renamed onto `path`, which also replaces a
-    /// stale file atomically. While its mode is wider, nobody but this user can
-    /// reach it, because nobody else can enter the directory.
-    private static func listen(at path: String) throws -> Int32 {
-        let directory = (path as NSString).deletingLastPathComponent
-        var template = Array((directory + "/.wty-XXXXXX").utf8CString)
-        guard let made = mkdtemp(&template) else { throw TerminalRelayError.bindFailed(errno) }
-        let privateDirectory = String(cString: made)
-        defer { rmdir(privateDirectory) }
-        let bindPath = privateDirectory + "/s"
-        guard bindPath.utf8.count < LocalSocketPaths.sunPathLimit else {
-            throw TerminalRelayError.socketPathTooLong(bindPath)
-        }
-
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw TerminalRelayError.socketFailed(errno) }
-        func fail(_ error: (Int32) -> TerminalRelayError) -> TerminalRelayError {
-            let code = errno
-            close(fd)
-            unlink(bindPath)
-            return error(code)
-        }
-        // macOS has no SOCK_CLOEXEC, so this follows the socket call as closely as
-        // it can: a child spawned in between would inherit the listener.
-        _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
-        var suppressSigpipe: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &suppressSigpipe, socklen_t(MemoryLayout<Int32>.size))
-
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(bindPath.utf8)
-        withUnsafeMutableBytes(of: &addr.sun_path) { $0.copyBytes(from: bytes) }
-        addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-        let bound = withUnsafePointer(to: &addr) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard bound == 0 else { throw fail(TerminalRelayError.bindFailed) }
-        guard chmod(bindPath, 0o600) == 0 else { throw fail(TerminalRelayError.bindFailed) }
-        guard rename(bindPath, path) == 0 else { throw fail(TerminalRelayError.bindFailed) }
-        // Accepting runs on a dispatch source and must never block on a client
-        // that went away between being readable and being accepted.
-        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
-        guard Darwin.listen(fd, 16) == 0 else {
-            let code = errno
-            close(fd)
-            unlink(path)
-            throw TerminalRelayError.listenFailed(code)
-        }
-        return fd
-    }
+    // The socket is bound by `PrivateSocket.listen`, which keeps its file out of
+    // reach of anyone else from the moment it exists.
 
     /// Starts accepting connections. Does nothing after `stop`, or when started.
     package func start() {
@@ -261,10 +204,7 @@ package final class LocalStreamServer: @unchecked Sendable {
         } else if !watched, listen >= 0 {
             close(listen)
         }
-        var info = stat()
-        if lstat(path, &info) == 0, info.st_dev == boundFile.device, info.st_ino == boundFile.inode {
-            unlink(path)
-        }
+        PrivateSocket.unlink(path, ifStill: boundFile)
     }
 }
 

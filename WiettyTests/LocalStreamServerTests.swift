@@ -41,7 +41,7 @@ private final class Background: @unchecked Sendable {
 ///
 /// Honours the contract `LocalStreamServer` depends on: `detach` waits for a
 /// `write` in progress, and no `write` starts after it.
-private final class LocalFakeStreamer: ScreenStreaming, @unchecked Sendable {
+final class LocalFakeStreamer: ScreenStreaming, @unchecked Sendable {
     struct Attach: Equatable {
         let session: String
         let resize: ResizeMode
