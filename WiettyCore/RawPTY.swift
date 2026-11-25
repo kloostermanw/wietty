@@ -406,8 +406,9 @@ package final class RawPTY: @unchecked Sendable {
         }
     }
 
-    /// Applies the surface's geometry. Idempotent, and safe to call on a pty
-    /// whose child has already exited: the ioctl simply fails.
+    /// Applies a grid a viewer claimed, handed here by the resizer the hub calls
+    /// for a claim (the spawn size is set by `forkpty`, not here). Idempotent, and
+    /// safe to call on a pty whose child has already exited: the ioctl simply fails.
     package func resize(to size: TerminalSize) {
         var window = winsize(ws_row: UInt16(size.rows), ws_col: UInt16(size.cols),
                             ws_xpixel: 0, ws_ypixel: 0)

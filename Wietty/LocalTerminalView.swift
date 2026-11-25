@@ -54,9 +54,9 @@ enum GhosttyPaneState: Equatable {
 /// "Process exited. Press any key to close the terminal." to that last screen, and
 /// the key it asks for closes nothing useful here, so the pane shows a stopped
 /// screen with Restart instead (issue #70). The surface stays alive behind it, off
-/// screen, and the last screen it showed was recorded at the reap, so `readOutput`
-/// and the MCP server still get that screen (though not its scrollback, which
-/// only an on-screen surface can reach).
+/// screen. `readOutput` and the MCP server read the terminal's screen model, which
+/// the reap keeps until the row is closed, so they still get that last screen and
+/// the history before it.
 struct LocalTerminalView: View {
     /// `TerminalStack.setupError`: what is wrong with the terminal, if anything.
     let setupError: String?

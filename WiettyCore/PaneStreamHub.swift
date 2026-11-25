@@ -1,9 +1,9 @@
 import Foundation
 import WiettyShared
 
-/// Fans a terminal's output out to every viewer of it: the browser, the iPad and
-/// another Mac's remote pane all consume the same byte stream, so a rendering fault
-/// is fixed once.
+/// Fans a terminal's output out to every viewer of it: this Mac's own pane, the
+/// browser, the iPad and another Mac's remote pane all consume the same byte
+/// stream, so a rendering fault is fixed once.
 ///
 /// The bytes are the child's own, exactly: nothing is decoded, replaced or held
 /// back. A viewer's terminal decodes them, as it would from any pty.

@@ -609,3 +609,10 @@ The serving Mac's own panes use the local socket, which takes no token. It is
 reachable only by this user: its file has mode 0600 and the server closes any
 peer of another user before reading a byte. Every process this user runs can
 connect to it and read or type into any terminal whose session id it knows.
+That is new with the local socket. Before it, each terminal had a socket of
+its own that took exactly one client, its surface's helper, and closed a
+second. Two things narrowed at the same time: the children Wietty spawns no
+longer inherit the app's open descriptors (and the helper, which libghostty
+spawns, closes the ones it inherited as its first act), and the helper's
+arguments, which any process can read, no longer carry part of the session id,
+because a bridge's socket is named by the app's pid and a sequence number.
