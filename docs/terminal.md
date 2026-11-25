@@ -790,6 +790,28 @@ async-signal-safe calls. This is measured, not defensive: the `xcodebuild test` 
 made `terminate()` a no-op under the test host. In production it would leak whatever signal state the
 process that launched Wietty happened to leave behind into the user's shell.
 
+**A child inherits every descriptor that is not `FD_CLOEXEC`, and almost none in Wietty are.** So the
+child closes every descriptor from 3 up to `getdtablesize()`, read before the fork, and keeps only the
+pty on 0, 1 and 2. Before that, a shell started with `[0, 1, 2]` plus the app's listening sockets, its
+viewers' connections and its open files, and so did everything the shell ran (issue 85). That matters
+most for the local stream socket, which serves terminals with no token: a child holding its listener
+could accept a viewer's connection, and one holding an accepted connection could read a terminal. The
+new sockets do set `FD_CLOEXEC`, but Darwin has no `SOCK_CLOEXEC`, so a fork on another thread between
+the `socket` (or `accept`) and the `fcntl` would still hand the descriptor over; closing in the child
+makes that window irrelevant. On Darwin `getdtablesize()` is the soft `RLIMIT_NOFILE` clamped to
+`kern.maxfilesperproc`, and no descriptor can be numbered above it. The loop costs about 10 ms at the
+61440 a developer machine allows and well under a millisecond at the 256 an app opened from the Finder
+gets. It is deliberately not capped lower, since a cap would leak whatever is numbered above it.
+
+The other spawn sites get the same answer by other means. `PTYProcessLauncher` (managed processes,
+tests and checks) sets `POSIX_SPAWN_CLOEXEC_DEFAULT`, so its child keeps only the pty slave its file
+actions put on 0, 1 and 2. `ProcessCommandRunner` (the git and freshness probes) uses Foundation's
+`Process`, which already closes everything above 2. `InheritedDescriptorTests` holds all three to it
+with a listening socket and a file open and not `FD_CLOEXEC`. The one spawn Wietty does not control is
+libghostty starting the `wietty-pty` helper: what the surface library passes on is its own choice. The
+helper is Wietty's own binary, it starts nothing, and it uses no descriptor but its standard streams
+and the socket it opens itself.
+
 **`proc_name` refuses a `MAXCOMLEN + 1` buffer.** It copies all 32 bytes of `proc_bsdinfo.pbi_name`,
 so it needs `2 * MAXCOMLEN` plus a terminator; handed less it returns 0 with `ENOMEM` and no name for
 any process on any machine, which reports every terminal's foreground job as unknown and silently
@@ -815,8 +837,8 @@ whether to emit truecolor would otherwise fall back to 256.
 Everything the child needs is built before the fork, because between fork and exec only
 async-signal-safe calls are legal: the child inherits one thread but every lock the parent held, so
 touching the Swift runtime there can deadlock. That is why argv and the environment are already C
-arrays and why the child block calls nothing but `signal`, `sigprocmask`, `chdir`, `execve` and
-`_exit`.
+arrays and why the child block calls nothing but `signal`, `sigprocmask`, `close`, `chdir`, `execve`
+and `_exit`.
 
 `nil` from `foregroundJobName()` is an answer callers must respect rather than read as "no job".
 `ProjectStore.activate` types `claude` into a Claude row whose agent it believes is idle, so a failed

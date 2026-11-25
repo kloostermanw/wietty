@@ -65,9 +65,14 @@ package struct PTYProcessLauncher: ProcessLaunching {
         posix_spawn_file_actions_addclose(&actions, master)
 
         // 3. Spawn attrs: new process group (leader), so killpg targets the tree.
+        // `POSIX_SPAWN_CLOEXEC_DEFAULT` closes every descriptor in the child that
+        // the file actions above do not set up, so the child gets the slave on 0,
+        // 1 and 2 and none of the app's sockets or files (issue 85). Nothing
+        // else is meant to reach it: the master and the slave's own number are
+        // closed there anyway.
         var attr: posix_spawnattr_t? = nil
         posix_spawnattr_init(&attr)
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
         posix_spawnattr_setpgroup(&attr, 0)
 
         // 4. Build argv: `<shell> -l -c "cd <dir> && (command)"`.

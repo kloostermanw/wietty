@@ -19,6 +19,8 @@ package protocol CommandRunning: Sendable {
 }
 
 package struct ProcessCommandRunner: CommandRunning {
+    package init() {}
+
     package func run(_ executable: String, _ arguments: [String], workingDirectory: URL?) -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)

@@ -165,8 +165,8 @@ package final class RawPTY: @unchecked Sendable {
         // thread but every lock the parent held, so allocating, retaining, or
         // otherwise touching the Swift runtime there can deadlock outright. That
         // is why the argv and environment are C arrays already, and why the child
-        // block below calls nothing but `signal`, `sigprocmask`, `chdir`, `execve`
-        // and `_exit`, every one of which is async-signal-safe.
+        // block below calls nothing but `signal`, `sigprocmask`, `close`, `chdir`,
+        // `execve` and `_exit`, every one of which is async-signal-safe.
         //
         // `-l` for a login shell so PATH and shell setup match a terminal the user
         // opened themselves. With a command, `-i` is deliberately absent: an
@@ -203,6 +203,16 @@ package final class RawPTY: @unchecked Sendable {
             free(cDirectory)
         }
 
+        // The highest descriptor the child might have inherited, read before the
+        // fork for the same reason the strings are built here. Darwin's
+        // `getdtablesize` is the soft `RLIMIT_NOFILE` clamped to
+        // `kern.maxfilesperproc`, and no descriptor can be numbered at or above
+        // it. Closing every one up to it costs about 10 ms at the 61440 a
+        // developer's machine allows, and well under a millisecond at the 256 an
+        // app launched from the Finder gets, which is why it is not capped lower:
+        // a cap would leak whatever is numbered above it.
+        let descriptorLimit = getdtablesize()
+
         var window = winsize(ws_row: UInt16(size.rows), ws_col: UInt16(size.cols),
                             ws_xpixel: 0, ws_ypixel: 0)
         var master: Int32 = -1
@@ -231,6 +241,19 @@ package final class RawPTY: @unchecked Sendable {
             var unblocked = sigset_t()
             sigemptyset(&unblocked)
             sigprocmask(SIG_SETMASK, &unblocked, nil)
+            // The child keeps the pty on 0, 1 and 2 and nothing else. Almost no
+            // descriptor in this app is `FD_CLOEXEC`, so without this the shell
+            // and everything it starts would hold the app's listening sockets,
+            // its viewers' connections and its open files (issue 85). The ones
+            // that are marked still leave a window, since Darwin has no
+            // `SOCK_CLOEXEC` and a fork on another thread can land between the
+            // `socket` and the `fcntl`. `close` is async-signal-safe, and closing
+            // a number that is not open is a harmless `EBADF`.
+            var descriptor: Int32 = 3
+            while descriptor < descriptorLimit {
+                close(descriptor)
+                descriptor += 1
+            }
             _ = chdir(cDirectory)
             execve(cShell, cArgv, cEnv)
             // Only reachable if execve failed. 127 is what a shell reports for a
