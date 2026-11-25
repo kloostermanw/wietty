@@ -376,6 +376,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         let view = GhosttySurfaceView(frame: NSRect(x: 0, y: 0, width: 800, height: 480),
                                       host: self,
                                       id: id)
+        // The user's keys, clicks, pastes and drops, to the pane's grid.
+        view.onUserAction = { [weak self] in self?.userActed(in: id) }
 
         var config = ghostty_surface_config_new()
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
@@ -952,7 +954,8 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     /// Borrowed, and nil once the host has freed it.
     var surfaceHandle: ghostty_surface_t? { surface }
 
-    init(frame: NSRect, host: GhosttySurfaceHost, id: String) {
+    /// - Parameter host: nil only in a test, for a view with no surface behind it.
+    init(frame: NSRect, host: GhosttySurfaceHost?, id: String) {
         self.host = host
         self.id = id
         super.init(frame: frame)
@@ -1035,11 +1038,20 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     /// The grid that fits the pane this surface is shown in, at its metrics: what the
     /// pane claims. Nil while the surface is not on display (not in a pane in a
     /// window, or in one with no size yet) or its metrics are not known.
-    var ownGrid: TerminalSize? {
+    var ownGrid: TerminalSize? { ownGrid(at: metrics) }
+
+    /// The same at these metrics. The CONTAINER's bounds, never this view's own: an
+    /// imposed size gives this view another frame, and that must not feed back into
+    /// the grid the pane claims.
+    func ownGrid(at metrics: SurfaceMetrics?) -> TerminalSize? {
         guard window != nil, let pane = superview as? SurfaceContainerView,
               pane.bounds.width > 0, pane.bounds.height > 0, let metrics else { return nil }
         return metrics.grid(fitting: Double(pane.bounds.width), Double(pane.bounds.height))
     }
+
+    /// Called on every key, click, paste and drop; the host points it at the pane's
+    /// grid (`OwnPaneGrid.userActed`).
+    var onUserAction: (@MainActor () -> Void)?
 
     /// The pane around this surface changed size.
     func paneSizeDidChange() {
@@ -1240,7 +1252,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         // after, so gating on which key it was would buy nothing.
         host?.onInput?(id)
         // And takes the grid back if another viewer had it.
-        host?.userActed(in: id)
+        onUserAction?()
         let action: ghostty_input_action_e =
             event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         let composingBefore = marked.isComposing
@@ -1453,7 +1465,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     /// drag. Sent straight to the surface, which is the only path it has.
     fileprivate func sendText(_ text: String) {
         guard let surface, !text.isEmpty else { return }
-        host?.userActed(in: id)
+        onUserAction?()
         text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
     }
 
@@ -1568,7 +1580,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         // Clicking a terminal is how a user says "type here", and the pane cannot
         // know which of several surfaces that is.
         window?.makeFirstResponder(self)
-        host?.userActed(in: id)
+        onUserAction?()
         sendMouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT)
     }
 
@@ -1577,7 +1589,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        host?.userActed(in: id)
+        onUserAction?()
         sendMouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT)
     }
 
@@ -1586,7 +1598,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     }
 
     override func otherMouseDown(with event: NSEvent) {
-        host?.userActed(in: id)
+        onUserAction?()
         sendMouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE)
     }
 
@@ -1650,7 +1662,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     /// asked for it, and what runs the unsafe paste check. It reaches the host's
     /// `read_clipboard_cb`, which is why that callback has to be real.
     @objc func paste(_ sender: Any?) {
-        host?.userActed(in: id)
+        onUserAction?()
         perform(binding: "paste_from_clipboard")
     }
 

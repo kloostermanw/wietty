@@ -208,8 +208,13 @@ final class PaneBridges {
         let path = try LocalSocketPaths.bridge(Self.nextSequence())
         let bridge = try OwnPaneBridge(session: session, serverPath: serverPath,
                                        helperSocketPath: path, backoff: backoff)
+        // Claims made between a link's end and the grid's reset never reach the next
+        // link (see `TerminalBridge.holdsClaimsUntilReset`).
+        bridge.bridge.holdsClaimsUntilReset = true
         let grid = OwnPaneGrid(claim: { [weak bridge] size in
             bridge?.bridge.claim(cols: size.cols, rows: size.rows) ?? false
+        }, resetClaims: { [weak bridge] in
+            bridge?.bridge.resetClaims()
         }, impose: impose)
         // From the link's thread to the main actor, asynchronously and never waiting
         // (the bridge's threading rule). One main queue, so the hops keep the
@@ -291,6 +296,7 @@ final class PaneBridges {
 final class OwnPaneGrid {
     private var model: PaneGrid
     private let claim: (TerminalSize) -> Bool
+    private let resetClaims: () -> Void
     private let impose: @MainActor (TerminalSize?) -> Void
     private let clock: () -> UInt64
     private var onDisplay = false
@@ -298,19 +304,27 @@ final class OwnPaneGrid {
     private var stopped = false
 
     /// - Parameter claim: sends a claim; whether the bridge accepted it.
+    /// - Parameter resetClaims: drops the claims the bridge held since the link ended
+    ///   (`TerminalBridge.resetClaims()`), called as the count starts over.
     /// - Parameter impose: shows a grid in the view, nil for the pane's own size.
     init(debounce: UInt64 = 50_000_000,
          claim: @escaping (TerminalSize) -> Bool,
+         resetClaims: @escaping () -> Void = {},
          impose: @escaping @MainActor (TerminalSize?) -> Void,
          clock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
         model = PaneGrid(debounce: debounce)
         self.claim = claim
+        self.resetClaims = resetClaims
         self.impose = impose
         self.clock = clock
     }
 
     /// Whether the pane owns the grid. For tests.
     var isOwner: Bool { model.isOwner }
+    /// Claims accepted on this link and not answered yet. For tests.
+    var awaitingAnswers: Int { model.awaitingAnswers }
+    /// Claims the bridge accepted, ever. For tests.
+    private(set) var claimsAccepted = 0
 
     /// The grid that fits the pane now, or nil when the surface is not on display.
     func paneChanged(ownGrid: TerminalSize?) {
@@ -344,6 +358,9 @@ final class OwnPaneGrid {
     /// The link was lost and is being made again, after the hop to the main actor.
     func linkLost() {
         guard !stopped else { return }
+        // The bridge first: what it held since the end is dropped with the count that
+        // held it, before the claim made again below goes out.
+        resetClaims()
         apply(model.linkEnded(now: clock()))
     }
 
@@ -360,7 +377,12 @@ final class OwnPaneGrid {
         case .none:
             break
         case .claim(let grid):
-            apply(claim(grid) ? model.claimAccepted() : model.claimRefused())
+            if claim(grid) {
+                claimsAccepted += 1
+                apply(model.claimAccepted())
+            } else {
+                apply(model.claimRefused())
+            }
         case .scheduleDebounce(let after):
             debounce?.cancel()
             let item = DispatchWorkItem { [weak self] in

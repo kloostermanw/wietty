@@ -104,6 +104,9 @@ final class TerminalBridge: @unchecked Sendable {
     private var stoppedLink: ObjectIdentifier?
     private var pendingClaims: [(cols: Int, rows: Int)] = []
     private var stopped = false
+    private var holdsClaims = false
+    /// A link ended and the owner has not called `resetClaims()` since.
+    private var claimsHeld = false
     private var resizeHandler: (@Sendable (_ cols: Int, _ rows: Int, _ own: Bool) -> Void)?
     private var endHandler: (@Sendable (TerminalEndReason) -> Void)?
     private var helperGoneHandler: (@Sendable () -> Void)?
@@ -193,6 +196,30 @@ final class TerminalBridge: @unchecked Sendable {
         return helperOpen ? helperFd : nil
     }
 
+    /// Whether claims are held from a link's end until the owner calls `resetClaims()`.
+    /// Off by default. The own pane turns it on: its count of unanswered claims is
+    /// reset on the main actor some time after the end, and a claim made in between
+    /// (counted in the count that is about to be thrown away) must not reach the next
+    /// link, or that link answers it and the fresh count sees one answer more than it
+    /// made claims.
+    var holdsClaimsUntilReset: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return holdsClaims }
+        set { lock.lock(); holdsClaims = newValue; lock.unlock() }
+    }
+
+    /// The owner has reset its count of unanswered claims after a link's end: every
+    /// claim held since that end is dropped (none of them will be answered, and the
+    /// owner no longer counts them), and claims go to the live link again. Never
+    /// blocks. Nothing to do when no claims are held.
+    func resetClaims() {
+        lock.lock()
+        if claimsHeld {
+            claimsHeld = false
+            pendingClaims = []
+        }
+        lock.unlock()
+    }
+
     /// Claims the grid at this size. Never blocks: the link queues the write.
     ///
     /// Returns whether the claim was accepted: sent to the live link, or kept for the
@@ -206,7 +233,9 @@ final class TerminalBridge: @unchecked Sendable {
     /// and between a link's end and the next `reconnect`) they are all kept, in order,
     /// up to `maxPendingClaims` (the oldest dropped beyond that, which the owner can
     /// only meet by claiming thousands of times while disconnected), and sent to the
-    /// next link that starts. A claim is not sent again to a link `reconnect` starts:
+    /// next link that starts. With `holdsClaimsUntilReset`, claims made from a link's
+    /// end until `resetClaims()` are kept the same way and then dropped, never sent.
+    /// A claim is not sent again to a link `reconnect` starts:
     /// after a reconnect the owner claims again if it still owns the grid.
     @discardableResult
     func claim(cols: Int, rows: Int) -> Bool {
@@ -215,7 +244,7 @@ final class TerminalBridge: @unchecked Sendable {
         defer { control.unlock() }
         lock.lock()
         let current = link
-        let live = !stopped && liveLink == ObjectIdentifier(current)
+        let live = !stopped && !claimsHeld && liveLink == ObjectIdentifier(current)
         if !live, !stopped {
             pendingClaims.append((cols, rows))
             if pendingClaims.count > Self.maxPendingClaims {
@@ -458,8 +487,9 @@ final class TerminalBridge: @unchecked Sendable {
         guard !stopped, helperAlive, startedLink != id else { lock.unlock(); return }
         startedLink = id
         liveLink = id
-        let claims = pendingClaims
-        pendingClaims = []
+        // Held claims stay held: `resetClaims()` drops them.
+        let claims = claimsHeld ? [] : pendingClaims
+        if !claimsHeld { pendingClaims = [] }
         lock.unlock()
 
         current.onMessage = { [weak self] message in self?.received(message, from: id) }
@@ -488,6 +518,9 @@ final class TerminalBridge: @unchecked Sendable {
         lock.lock()
         let current = !stopped && ObjectIdentifier(link) == id
         if liveLink == id { liveLink = nil }
+        // Before the owner hears of the end, so no claim made after it can reach the
+        // next link until the owner has reset (`holdsClaimsUntilReset`).
+        if current, holdsClaims { claimsHeld = true }
         let handler = endHandler
         lock.unlock()
         guard current else { return }

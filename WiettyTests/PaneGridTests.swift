@@ -199,12 +199,33 @@ private struct Pane {
         #expect(pane.imposed == [grid(80, 24), nil])
     }
 
-    /// Another viewer's grid that happens to be the own grid needs no imposed size.
-    @Test func anotherViewersGridEqualToTheOwnGridShowsThePane() {
+    /// Another viewer's grid that happens to be the own grid is imposed all the same:
+    /// a pane that is not the owner never lets its view follow the window, so a drag
+    /// or a font change cannot reflow the surface before an impose lands.
+    @Test func anotherViewersGridEqualToTheOwnGridIsImposedToo() {
         var pane = Pane.owning(grid(100, 30))
         pane.server(grid(100, 30), own: false)
         #expect(!pane.model.isOwner)
-        #expect(pane.imposed.isEmpty)
+        #expect(pane.imposed == [grid(100, 30)])
+        pane.own(grid(110, 30))
+        #expect(pane.imposed == [grid(100, 30)])
+    }
+
+    /// The rule as built for the time a claim is outstanding: the view fills the pane
+    /// from the moment the claim is accepted, before any answer, and stays so while
+    /// answers are due or a debounced claim waits (`viewWhileClaimsOutstanding`).
+    @Test func whileAClaimIsOutstandingTheViewFillsThePane() {
+        var pane = Pane.notOwning(grid(100, 30), imposed: grid(80, 24))
+        pane.advance(200 * ms)
+        pane.act()
+        #expect(pane.model.awaitingAnswers == 1)
+        #expect(pane.imposed == [grid(80, 24), nil])
+        // Debounced claim waiting, answer still due: still the pane's size.
+        pane.advance(10 * ms)
+        pane.own(grid(120, 30))
+        #expect(pane.debounces.count == 1)
+        pane.server(grid(100, 30), own: true)
+        #expect(pane.imposed == [grid(80, 24), nil])
     }
 
     /// Another viewer's claim handled between two of ours: not the last word, so not
@@ -248,11 +269,10 @@ private struct Pane {
         #expect(pane.claims == claims)
         #expect(pane.debounces.isEmpty)
         #expect(pane.imposed == [grid(80, 24)])
-        // A pane that grows or shrinks onto the imposed grid shows its own size.
+        // A pane that grows or shrinks onto the imposed grid keeps it imposed.
         pane.own(grid(80, 24))
-        #expect(pane.imposed == [grid(80, 24), nil])
         pane.own(grid(81, 24))
-        #expect(pane.imposed == [grid(80, 24), nil, grid(80, 24)])
+        #expect(pane.imposed == [grid(80, 24)])
     }
 
     /// While not the owner, a user action claims the own grid at once, even within
@@ -427,5 +447,82 @@ private struct Pane {
         pane.model.wentOffDisplay()
         pane.server(grid(80, 24), own: false)
         #expect(pane.imposed == [grid(80, 24)])
+    }
+}
+
+/// What an `OwnPaneGrid` asked of its bridge and its host, in order. Main actor only.
+@MainActor
+private final class GridCalls {
+    enum Call: Equatable {
+        case claim(TerminalSize)
+        case reset
+        case impose(TerminalSize?)
+    }
+    private(set) var calls: [Call] = []
+    var claims: [TerminalSize] {
+        calls.compactMap { if case let .claim(grid) = $0 { grid } else { nil } }
+    }
+    func add(_ call: Call) { calls.append(call) }
+}
+
+/// `OwnPaneGrid`, the glue: a real main queue timer for the debounce, and the order in
+/// which it talks to the bridge when the link was lost.
+@MainActor
+@Suite struct OwnPaneGridTests {
+    private func grid(_ calls: GridCalls, debounce: UInt64 = 50_000_000) -> OwnPaneGrid {
+        OwnPaneGrid(debounce: debounce,
+                    claim: { size in calls.add(.claim(size)); return true },
+                    resetClaims: { calls.add(.reset) },
+                    impose: { size in calls.add(.impose(size)) })
+    }
+
+    private func eventually(within seconds: Double = 3, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return condition()
+    }
+
+    /// Two changes of the pane inside the debounce after a claim: the timer fires on
+    /// the main queue and claims the last value, once.
+    @Test func theDebounceTimerClaimsTheLastValue() async {
+        let calls = GridCalls()
+        let pane = grid(calls, debounce: 30_000_000)
+        defer { pane.stop() }
+        pane.paneChanged(ownGrid: TerminalSize(cols: 100, rows: 30))
+        pane.paneChanged(ownGrid: TerminalSize(cols: 110, rows: 30))
+        pane.paneChanged(ownGrid: TerminalSize(cols: 120, rows: 31))
+        #expect(calls.claims == [TerminalSize(cols: 100, rows: 30)])
+        #expect(await eventually { calls.claims.count == 2 })
+        #expect(calls.claims == [TerminalSize(cols: 100, rows: 30), TerminalSize(cols: 120, rows: 31)])
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(calls.claims.count == 2)
+    }
+
+    /// A stopped grid's timer claims nothing.
+    @Test func aStoppedGridsTimerClaimsNothing() async {
+        let calls = GridCalls()
+        let pane = grid(calls, debounce: 20_000_000)
+        pane.paneChanged(ownGrid: TerminalSize(cols: 100, rows: 30))
+        pane.paneChanged(ownGrid: TerminalSize(cols: 110, rows: 30))
+        pane.stop()
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(calls.claims == [TerminalSize(cols: 100, rows: 30)])
+    }
+
+    /// When the link was lost the bridge drops what it held before the owner claims
+    /// again, so the next link answers exactly the claims the fresh count holds.
+    @Test func aLostLinkResetsTheBridgeBeforeClaimingAgain() {
+        let calls = GridCalls()
+        let pane = grid(calls)
+        defer { pane.stop() }
+        pane.paneChanged(ownGrid: TerminalSize(cols: 100, rows: 30))
+        pane.resizeReceived(TerminalSize(cols: 100, rows: 30), own: true)
+        pane.linkLost()
+        #expect(calls.calls == [.claim(TerminalSize(cols: 100, rows: 30)), .reset,
+                                .claim(TerminalSize(cols: 100, rows: 30))])
+        #expect(pane.awaitingAnswers == 1)
     }
 }

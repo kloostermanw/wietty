@@ -264,6 +264,34 @@ private final class BridgeEvents: @unchecked Sendable {
         #expect(old.sends.isEmpty)
     }
 
+    /// The own pane's reconnect: claims made after the link ended and before the owner
+    /// reset its count are counted in the count it throws away, so the next link must
+    /// never get them, or it answers more claims than the fresh count made and the pane
+    /// briefly shows the older grid. Held through the reconnect, dropped by the reset;
+    /// claims after the reset go to the new link.
+    @Test func claimsBetweenAnEndAndTheOwnersResetNeverReachTheNextLink() throws {
+        let old = FakeLink()
+        let (bridge, helper) = try connected(old)
+        defer { bridge.stop(); helper.close() }
+        bridge.holdsClaimsUntilReset = true
+        bridge.claim(cols: 100, rows: 30)
+        old.end(.connectionLost)
+        #expect(bridge.claim(cols: 110, rows: 30))
+        let new = FakeLink()
+        bridge.reconnect(with: new)
+        #expect(waitUntil { new.starts == 1 })
+        #expect(bridge.claim(cols: 120, rows: 30))
+        #expect(new.claims.isEmpty)
+        bridge.resetClaims()
+        #expect(bridge.claim(cols: 130, rows: 30))
+        #expect(new.claims == [[130, 30]])
+        #expect(old.claims == [[100, 30]])
+        // A second reset with nothing held changes nothing.
+        bridge.resetClaims()
+        bridge.claim(cols: 140, rows: 30)
+        #expect(new.claims == [[130, 30], [140, 30]])
+    }
+
     /// `reconnect` is called from the main actor, and the old link's `stop()` waits
     /// for a callback that may be blocked on a surface that is not reading.
     @Test func reconnectReturnsAtOnceWhenTheOldLinksStopBlocks() throws {
