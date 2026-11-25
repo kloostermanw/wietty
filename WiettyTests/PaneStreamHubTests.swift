@@ -263,7 +263,8 @@ private func bytes(_ text: String) -> [UInt8] { Array(text.utf8) }
     /// reflows by itself gets nothing more. A claim that did not move the grid is
     /// answered to its claimant alone.
     @Test func aGridChangeTellsEveryViewerAndRepaintsOnlyThoseThatAskedForIt() {
-        let hub = PaneStreamHub()
+        // Paced, so the claims sent back to back are each handled at once.
+        let hub = PaneStreamHub(claimClock: ClaimTimers.paced())
         hub.onRepaint = { _ in (size: TerminalSize(cols: 100, rows: 30), frame: bytes("SCREEN")) }
         let repainted = Sink()
         let reflowing = Sink()

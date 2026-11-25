@@ -171,10 +171,13 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
 @Suite struct PaneStreamLocalViewerTests {
     private static let session = "gt:local"
 
-    private func wired(_ size: TerminalSize,
-                       timer: Bool = false) throws -> (hub: PaneStreamHub, model: GhosttyVtScreenModel) {
+    ///   - pacedClaims: a claim clock that paces every claim, so a test that races
+    ///     claims against the stream has each one handled rather than held.
+    private func wired(_ size: TerminalSize, timer: Bool = false,
+                       pacedClaims: Bool = false) throws -> (hub: PaneStreamHub, model: GhosttyVtScreenModel) {
         let model = try GhosttyVtScreenModel(size: size)
-        let hub = PaneStreamHub(startTimer: timer)
+        let hub = pacedClaims ? PaneStreamHub(startTimer: timer, claimClock: ClaimTimers.paced())
+                              : PaneStreamHub(startTimer: timer)
         hub.onIngest = { _, chunk in model.write(chunk) }
         hub.onSnapshot = { _ in model.snapshotFrame() }
         hub.onRepaint = { _ in model.repaintFrame() }
@@ -297,7 +300,7 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         var random = SystemRandomNumberGenerator()
         let lines = 1_200
         for round in 0..<12 {
-            let (hub, model) = try wired(TerminalSize(cols: 80, rows: 24))
+            let (hub, model) = try wired(TerminalSize(cols: 80, rows: 24), pacedClaims: true)
             let chunks = numberedChunks(upTo: lines, using: &random)
             let session = Self.session
             let log = LocalLog()

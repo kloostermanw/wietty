@@ -581,6 +581,95 @@ final class ClaimTimers: @unchecked Sendable {
         #expect(dataBytes(Array(messages[(answer + 1)...])) == Array("after".utf8))
     }
 
+    /// A replaced claim's answer never overtakes a byte accepted before it: output
+    /// written after the claims and before the release reaches a queued claimant,
+    /// and the other viewers, ahead of the first answer the release sends.
+    @Test func aReplacedClaimsAnswerFollowsTheBytesBeforeIt() throws {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
+        let third = TerminalSize(cols: 80, rows: 24)
+        claim(hub, claimant, Self.large)
+        claim(hub, claimant, Self.small)
+        claim(hub, claimant, third)
+        hub.waitForPendingDeliveries()
+
+        // Left in the buffer, as `PaneStreamClaimTests.writeOutstanding` does: a
+        // primer flushed first makes the session not quiet, so the payload is not
+        // sent on a flush of its own and only the release can take it.
+        hub.write(session: "gt:1", bytes: Array("p".utf8))
+        hub.flush()
+        let quiet = hub.quietFlushes(session: "gt:1")
+        hub.write(session: "gt:1", bytes: Array("between".utf8))
+        try #require(hub.quietFlushes(session: "gt:1") == quiet, "the write was quiet")
+        timers.advance(milliseconds: 50)
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+
+        #expect(timeline.messages(of: "claimant") == [own(Self.large), .data(Array("p".utf8)),
+                                                      .data(Array("between".utf8)),
+                                                      own(Self.large), own(third)])
+        #expect(timeline.messages(of: "other") == [other(Self.large), .data(Array("p".utf8)),
+                                                   .data(Array("between".utf8)), other(third)])
+    }
+
+    /// A claim that arrives after the interval is over while one is still held
+    /// (its timer due but not yet run) replaces the held claim rather than being
+    /// handled at once, which would overtake it. No second timer is started.
+    @Test func aClaimAfterTheIntervalReplacesAClaimStillHeld() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        let third = TerminalSize(cols: 80, rows: 24)
+        claim(hub, claimant, Self.large)
+        hub.waitForPendingDeliveries()
+        timers.advance(milliseconds: 10)
+        claim(hub, claimant, Self.small)
+        hub.waitForPendingDeliveries()
+        timers.advance(milliseconds: 60)
+        claim(hub, claimant, third)
+        hub.waitForPendingDeliveries()
+        #expect(timeline.messages(of: "claimant") == [own(Self.large)])
+        #expect(timers.count == 1)
+
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+        // One replaced claim, answered with the grid in force, then the held one.
+        #expect(timeline.messages(of: "claimant") == [own(Self.large), own(Self.large), own(third)])
+        #expect(claims(timeline) == [Self.large, third])
+        #expect(timers.count == 1)
+    }
+
+    /// A timer that runs late does not push the viewer's next interval back: the
+    /// held claim counts as handled when it was due, not when it ran.
+    @Test func aLateTimerCountsTheHeldClaimAsHandledWhenItWasDue() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        claim(hub, claimant, Self.large)
+        hub.waitForPendingDeliveries()
+        timers.advance(milliseconds: 10)
+        claim(hub, claimant, Self.small)
+        hub.waitForPendingDeliveries()
+        // Due 50 ms after the first claim; it runs 30 ms late.
+        timers.advance(milliseconds: 70)
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+        #expect(timeline.messages(of: "claimant") == [own(Self.large), own(Self.small)])
+
+        // 100 ms after the first claim: 50 after the held one was due, so handled
+        // at once, though only 20 ms after its timer ran.
+        timers.advance(milliseconds: 20)
+        claim(hub, claimant, Self.large)
+        hub.waitForPendingDeliveries()
+        #expect(timers.count == 1)
+        #expect(timeline.messages(of: "claimant") == [own(Self.large), own(Self.small), own(Self.large)])
+    }
+
     /// The timer fires once: handling the held claim schedules nothing, and its work
     /// run a second time finds nothing held. The next claim inside the interval
     /// after that is held again, on a timer of its own.

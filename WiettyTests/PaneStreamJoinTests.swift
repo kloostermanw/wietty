@@ -100,10 +100,13 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
     ///   attach inside it, and inside it is exactly where a hub that accepted a
     ///   chunk before the model had it would hand out a paint that is one chunk
     ///   short. Stretching it makes that window wide enough to hit every time.
-    private func wired(_ size: TerminalSize,
-                       parseDelay: UInt32 = 0) throws -> (hub: PaneStreamHub, model: GhosttyVtScreenModel) {
+    ///   - pacedClaims: a claim clock that paces every claim, so a test that races
+    ///     claims against the stream has each one handled rather than held.
+    private func wired(_ size: TerminalSize, parseDelay: UInt32 = 0,
+                       pacedClaims: Bool = false) throws -> (hub: PaneStreamHub, model: GhosttyVtScreenModel) {
         let model = try GhosttyVtScreenModel(size: size)
-        let hub = PaneStreamHub(startTimer: true)
+        let hub = pacedClaims ? PaneStreamHub(startTimer: true, claimClock: ClaimTimers.paced())
+                              : PaneStreamHub(startTimer: true)
         hub.onIngest = { _, bytes in
             if parseDelay > 0 { usleep(parseDelay) }
             model.write(bytes)
@@ -188,7 +191,7 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
         var random = SystemRandomNumberGenerator()
         let lines = 1_500
         for round in 0..<40 {
-            let (hub, model) = try wired(TerminalSize(cols: 80, rows: 24))
+            let (hub, model) = try wired(TerminalSize(cols: 80, rows: 24), pacedClaims: true)
             let chunks = Self.chunks(upTo: lines, using: &random)
             let session = Self.session
             let log = ViewerLog()
