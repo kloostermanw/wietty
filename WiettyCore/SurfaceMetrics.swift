@@ -39,12 +39,31 @@ package struct SurfaceMetrics: Equatable, Sendable {
 
     /// The size in points of a view that shows exactly this grid.
     ///
-    /// Always on the device pixel grid: the pixel count is whole, so dividing it by
-    /// the scale gives a size that converts back to the same pixels. The `ceil` is
-    /// the rounding rule spelled out rather than a value that changes anything today:
-    /// were the pixel count ever fractional, up is the only safe direction.
+    /// Never a pixel short: the result times the scale, rounded down as the surface
+    /// rounds its view's size (`synchronizeMetrics`), is at least the pixels the
+    /// grid needs, at any scale. At scales 1 and 2 that is exactly those pixels.
+    /// Safe for any `Int` input: the arithmetic is in `Double`, so a grid of
+    /// nonsense size gives a huge size rather than a trap (callers clamp first;
+    /// see `clamped(_:maxPixels:)`).
     package func viewSize(for grid: TerminalSize) -> (width: Double, height: Double) {
-        (points(grid.cols * cellWidth + paddingX), points(grid.rows * cellHeight + paddingY))
+        (points(Double(grid.cols) * Double(cellWidth) + Double(paddingX)),
+         points(Double(grid.rows) * Double(cellHeight) + Double(paddingY)))
+    }
+
+    /// `grid`, made no larger than what fits `maxPixels` device pixels on each
+    /// side at these metrics, and at least 1 by 1.
+    ///
+    /// For the renderer's texture limit: a surface whose view needs more pixels
+    /// than a texture can hold cannot be drawn. A grid clamped here shows fewer
+    /// columns or rows than the grid asked for, which looks the same as clipping a
+    /// larger view: the cells beyond the limit are not shown.
+    package func clamped(_ grid: TerminalSize, maxPixels: Int) -> TerminalSize {
+        func fit(_ cells: Int, cell: Int, padding: Int) -> Int {
+            guard cell > 0 else { return max(1, cells) }
+            return min(max(1, cells), max(1, (maxPixels - padding) / cell))
+        }
+        return TerminalSize(cols: fit(grid.cols, cell: cellWidth, padding: paddingX),
+                            rows: fit(grid.rows, cell: cellHeight, padding: paddingY))
     }
 
     /// The largest grid that fits a pane of this size in points. At least 1 by 1.
@@ -58,8 +77,20 @@ package struct SurfaceMetrics: Equatable, Sendable {
                      rows: cells(in: height, cell: cellHeight, padding: paddingY))
     }
 
-    private func points(_ pixels: Int) -> Double {
-        Double(pixels).rounded(.up) / scale
+    /// The smallest point size that is not short of `pixels` once multiplied back
+    /// by the scale and rounded down. A plain quotient can land just below the
+    /// pixel boundary for some scales (1.75 does), so it is nudged up one ulp at a
+    /// time until it is not; at scales 1 and 2 the quotient is exact and untouched.
+    private func points(_ pixels: Double) -> Double {
+        let whole = pixels.rounded(.up)
+        guard scale > 0, whole.isFinite else { return whole }
+        var points = whole / scale
+        var nudges = 0
+        while (points * scale).rounded(.down) < whole, nudges < 8 {
+            points = points.nextUp
+            nudges += 1
+        }
+        return points
     }
 
     /// Whole cells in `points`, counted the way the surface counts them: its pixel

@@ -189,10 +189,30 @@ and not the grid. The arithmetic was measured exact in a real window (`scripts/i
 The padding is read from the configuration files the host loads (`GhosttyPadding`), because
 `ghostty_config_get` does not expose `window-padding-x` or `window-padding-y`. One value sets both
 sides, two set left and right (or top and bottom). `window-padding-balance` does not change how many
-cells a size holds. A configured value that cannot match what the surface reports (the pixels beyond
-its whole cells are the padding plus less than a cell) is logged and replaced by those pixels, which
-still size a view correctly. A reloaded configuration reads the padding again and every surface takes
-its metrics again.
+cells a size holds. The configured value is checked against what the surface itself reports: every
+report bounds the true padding (the pixels beyond its whole cells are the padding plus less than a
+cell), each surface keeps the intersection of those bounds across reports (`PaddingWindow`), and a
+configured value outside them is logged once and replaced by the upper bound, which is never below
+the true padding, so the pane never claims a column or row more than it can show. The bounds start
+over when the cell size, the scale or the configuration changes. With a grid imposed, a surface that
+shows another grid at its imposed size is logged and sized again from the narrowed bounds, at most
+twice per grid.
+
+A reload reads the padding again and every surface takes its metrics again; a surface without a
+window keeps the scale it last rendered at. Measured with the imposed grid check: libghostty does not
+change the padding of a surface that already exists, so after a reload that changes it, an open
+terminal's reports disprove the new value and its metrics keep the padding it really uses.
+
+`impose(grid:on:)` holds a grid to what can be shown: at least 1 by 1, at most the stream protocol's
+10,000 per side, and at most what fits Metal's largest texture side, 16384 pixels (measured on an M4:
+a 16385 wide texture is refused), at the surface's cell size and scale. Past that bound the view shows
+fewer columns or rows than the grid in force, which looks the same as clipping.
+
+The margin around a smaller grid is the colour the terminal draws its background in: the configured
+`background` at the configured `background-opacity` (both read through `ghostty_config_get`), or the
+colour a program set with `OSC 11`, which libghostty reports as a colour change action per surface
+(and reports the configured colour again on `OSC 111`). It is painted only where the surface leaves
+the pane uncovered; with nothing imposed the container paints nothing.
 
 ## Drawing
 

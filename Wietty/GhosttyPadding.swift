@@ -94,3 +94,45 @@ struct GhosttyPadding: Equatable {
         if key == "window-padding-x" { (left, right) = pair } else { (top, bottom) = pair }
     }
 }
+
+/// What a surface's own reports prove about its true padding on one axis, gathered
+/// across observations.
+///
+/// Each report of a surface of more than one cell says the pixels beyond its whole
+/// cells, `remainder = pixels - cells * cell`, and the true padding always lies in
+/// `[remainder - cell + 1, remainder]`. Every such window holds it, so their
+/// intersection narrows as the view takes other sizes: `upper` is the smallest
+/// remainder seen and `lower` the largest `remainder - cell + 1`.
+///
+/// The configured padding is used only while it lies inside. Otherwise `upper`,
+/// which is never below the true padding: a size computed with it can be up to a
+/// cell less a pixel too large, which still shows exactly the grid, and a grid
+/// derived from a pane with it can be one column short but never one too many,
+/// so the pane never claims more than it can show. A configured value below the
+/// true padding by less than a cell can pass a single window; it is caught as soon
+/// as another size narrows the bounds above it, and the closed loop in
+/// `GhosttySurfaceView` catches it when it makes an imposed grid come out wrong.
+///
+/// Starts over when the cell size, the scale or the configuration changes, since
+/// the true padding may have moved with them.
+struct PaddingWindow: Equatable {
+    private(set) var lower = 0
+    private(set) var upper = Int.max
+
+    /// Narrows the bounds by one report. A surface of a single cell may have been
+    /// clamped up to it, and proves nothing.
+    mutating func observe(pixels: Int, cells: Int, cell: Int) {
+        guard cells > 1, cell > 0 else { return }
+        let remainder = pixels - cells * cell
+        guard remainder >= 0 else { return }
+        upper = min(upper, remainder)
+        lower = max(lower, remainder - cell + 1)
+    }
+
+    /// The padding to use: `configured` while the reports allow it, else `upper`.
+    func padding(configured: Int) -> Int {
+        guard upper != Int.max else { return configured }
+        guard lower <= upper else { return upper }
+        return (lower...upper).contains(configured) ? configured : upper
+    }
+}

@@ -72,9 +72,14 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// `reloadConfig()`, so `metrics(id:)` always carries the current value.
     fileprivate private(set) var padding = GhosttyPadding.ghosttyDefault
 
-    /// The configuration's `background`, which the pane draws around a grid smaller
-    /// than itself. Resolved again on every `reloadConfig()`.
-    fileprivate private(set) var marginColor = NSColor.black
+    /// The configuration's `background` and `background-opacity`, which the pane
+    /// draws around a grid smaller than itself. Resolved again on every
+    /// `reloadConfig()`.
+    fileprivate private(set) var background = NSColor.black
+    fileprivate private(set) var backgroundOpacity = 1.0
+    /// Counts configuration loads, so a surface knows its padding bounds were
+    /// gathered under another configuration.
+    fileprivate private(set) var configGeneration = 0
 
     /// The action and wakeup callbacks are C function pointers and cannot
     /// capture, so the one host is reached through this. Weak on purpose: a
@@ -116,7 +121,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         let config = Self.buildConfig()
         self.config = config
         padding = GhosttyPadding.resolveHostConfiguration()
-        marginColor = Self.background(in: config) ?? .black
+        background = Self.background(in: config) ?? .black
+        backgroundOpacity = Self.backgroundOpacity(in: config)
 
         var runtime = ghostty_runtime_config_s()
         runtime.userdata = nil
@@ -267,13 +273,18 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         if let previous = config { ghostty_config_free(previous) }
         config = rebuilt
         padding = GhosttyPadding.resolveHostConfiguration()
-        marginColor = Self.background(in: rebuilt) ?? .black
-        // A new padding changes the metrics, and with them the size an imposed grid
-        // needs and the grid the view's present size holds, so each surface takes
-        // its metrics again. A font change arrives later on its own, as a cell size
-        // action.
+        background = Self.background(in: rebuilt) ?? .black
+        backgroundOpacity = Self.backgroundOpacity(in: rebuilt)
+        configGeneration += 1
+        // Each surface takes its metrics again under the new configuration: its
+        // padding bounds start over and the configured padding is checked afresh.
+        // Measured, libghostty keeps an existing surface's padding through a reload,
+        // so a changed one is disproved by the surface's reports and the metrics keep
+        // what it really uses. A surface with no window keeps its last scale. A font
+        // change arrives later on its own, as a cell size action.
         for surface in surfaces.values {
-            surface.view.marginColor = marginColor
+            surface.view.configuredBackground = background
+            surface.view.backgroundOpacity = backgroundOpacity
             surface.view.synchronizeMetrics()
         }
     }
@@ -286,6 +297,36 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         ghostty_config_load_file(config, file.path)
         ghostty_config_finalize(config)
         return background(in: config)
+    }
+
+    /// What a configuration made of one file alone resolves for
+    /// `background-opacity`, for the suite.
+    static func backgroundOpacity(loading file: URL) -> Double {
+        let config = ghostty_config_new()
+        defer { ghostty_config_free(config) }
+        ghostty_config_load_file(config, file.path)
+        ghostty_config_finalize(config)
+        return backgroundOpacity(in: config)
+    }
+
+    /// libghostty's resolved `background-opacity`, which `ghostty_config_get`
+    /// exposes as a `double` (measured on the pinned 1.3.2: 1.0 by default, 0.75 for
+    /// a file setting 0.75; read as a `float` it gives 0). 1 when the getter refuses.
+    private static func backgroundOpacity(in config: ghostty_config_t?) -> Double {
+        guard let config else { return 1 }
+        var value = 1.0
+        let key = "background-opacity"
+        let found = key.withCString { ghostty_config_get(config, &value, $0, UInt(strlen($0))) }
+        return found ? value : 1
+    }
+
+    /// The colour a colour change action carries, when it is the background's: a
+    /// program set it with `OSC 11`, or reset it (libghostty then reports the
+    /// configured colour). Nil for the foreground or the cursor. Takes the kind's
+    /// raw value so the suite can call it without GhosttyKit.
+    nonisolated static func background(changeKind kind: Int32, r: UInt8, g: UInt8, b: UInt8) -> NSColor? {
+        guard kind == GHOSTTY_ACTION_COLOR_KIND_BACKGROUND.rawValue else { return nil }
+        return NSColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1)
     }
 
     /// libghostty's resolved `background`, which `ghostty_config_get` exposes as
@@ -361,7 +402,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         }
         surfaces[id] = Surface(view: view, handle: handle)
         if let title { setTitle(title, for: id) }
-        view.marginColor = marginColor
+        view.configuredBackground = background
+        view.backgroundOpacity = backgroundOpacity
         view.adopt(surface: handle)
     }
 
@@ -396,25 +438,6 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
 
     func impose(grid: TerminalSize?, on id: String) {
         surfaces[id]?.view.imposedGrid = grid
-    }
-
-    /// The padding a surface's metrics carry, in pixels on one axis: the configured
-    /// value, unless what the surface reports proves it wrong.
-    ///
-    /// A check rather than a source. The pixels left over beyond whole cells
-    /// (`pixels - cells * cell`) are always the true padding plus from zero to one
-    /// cell less a pixel, so a configured value outside that window cannot be what
-    /// libghostty uses: the files were read differently from how libghostty read
-    /// them (a theme that sets padding, say). The remainder is used instead, which is
-    /// never smaller than the true padding and less than a cell larger, so a view
-    /// sized with it still shows exactly its grid (the imposed grid measurement's
-    /// `remainder` lines). Skipped for a surface of a single column or row, which
-    /// libghostty may have clamped up to one.
-    nonisolated static func checkedPadding(configured: Int, pixels: Int, cells: Int, cell: Int) -> Int {
-        guard cells > 1, cell > 0 else { return configured }
-        let remainder = pixels - cells * cell
-        guard remainder >= 0, !(remainder - cell + 1 ... remainder).contains(configured) else { return configured }
-        return remainder
     }
 
     /// Everything `ghostty_surface_size` reports for one surface, in pixels, or nil
@@ -541,6 +564,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         case notification(title: String, body: String)
         case title(String)
         case cellSize
+        case background(r: UInt8, g: UInt8, b: UInt8)
     }
 
     /// libghostty's runtime action callback. Called on whichever thread raised
@@ -584,6 +608,11 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
             // The font metrics changed, so the grid has to be derived again even
             // though the view did not move.
             event = .cellSize
+        case GHOSTTY_ACTION_COLOR_CHANGE:
+            // Only the background matters here: it is the margin's colour.
+            let change = action.action.color_change
+            guard change.kind == GHOSTTY_ACTION_COLOR_KIND_BACKGROUND else { return false }
+            event = .background(r: change.r, g: change.g, b: change.b)
         case GHOSTTY_ACTION_SET_TITLE:
             guard let pointer = action.action.set_title.title else { return false }
             event = .title(String(cString: pointer))
@@ -629,6 +658,9 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
             onTitle?(id, title)
         case .cellSize:
             surface.view.synchronizeMetrics()
+        case .background(let r, let g, let b):
+            surface.view.programBackground = Self.background(
+                changeKind: GHOSTTY_ACTION_COLOR_KIND_BACKGROUND.rawValue, r: r, g: g, b: b)
         }
     }
 
@@ -841,21 +873,69 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     /// The backing scale `synchronizeMetrics` last handed libghostty, so the scale
     /// the surface renders at. Nil before the first one.
     private var renderScale: Double?
-    /// Whether this surface already logged a configured padding it proved wrong.
+    /// The surface's metrics as of the last `synchronizeMetrics`. Stored there, not
+    /// derived on read, so reading them has no side effect.
+    private(set) var metrics: SurfaceMetrics?
+    /// What this surface's reports prove about its true padding, per axis, and what
+    /// those bounds were gathered for: the cell size, the scale and the host's
+    /// configuration generation. A change of any starts them over.
+    private var paddingWindows = (x: PaddingWindow(), y: PaddingWindow())
+    private var paddingWindowsKey: [Double]?
+    /// Each logged once per surface, as they are found on every layout pass.
     private var reportedPaddingMismatch = false
+    private var reportedClamp = false
+    /// How many times the closed loop corrected the imposed size for the grid it
+    /// is imposing now. Bounded, so a surface that will not settle cannot loop.
+    private var corrections = 0
+    private static let maxCorrections = 2
 
-    /// The grid imposed on this surface, kept whether or not it is on display.
+    /// The grid imposed on this surface, kept whether or not it is on display. As
+    /// asked: the size it gets is that of `shownGrid`, which is this clamped.
     var imposedGrid: TerminalSize? {
-        didSet { if imposedGrid != oldValue { refreshImposedSize() } }
+        didSet {
+            guard imposedGrid != oldValue else { return }
+            corrections = 0
+            refreshImposedSize()
+        }
     }
-    /// The size in points that shows `imposedGrid` at the current metrics, which
-    /// the pane's container applies. Nil with no grid imposed, or with metrics not
+    /// The grid the view is sized for: `imposedGrid` held to at least 1 by 1, at
+    /// most the protocol's 10,000 per side, and at most what the renderer's texture
+    /// can hold at the current metrics (`maxTexturePixels`). Past that bound the view
+    /// shows fewer columns or rows than the grid in force, which looks like clipping.
+    private(set) var shownGrid: TerminalSize?
+    /// The size in points that shows `shownGrid` at the current metrics, which the
+    /// pane's container applies. Nil with no grid imposed, or with metrics not
     /// known yet.
     private(set) var imposedSize: CGSize?
-    /// The configuration's background colour, set by the host, for the margin the
-    /// pane's container draws.
-    var marginColor: NSColor = .black {
-        didSet { if marginColor != oldValue { container?.surfaceSizingDidChange() } }
+
+    /// Metal's largest 2D texture side, in pixels. Measured on this machine's M4:
+    /// a 16384 wide texture is made, a 16385 wide one is refused by validation.
+    /// libghostty renders the surface's whole pixel size into one such texture.
+    static let maxTexturePixels = 16_384
+
+    /// The configuration's background colour and opacity, set by the host.
+    var configuredBackground: NSColor = .black {
+        didSet { if configuredBackground != oldValue { container?.surfaceSizingDidChange() } }
+    }
+    var backgroundOpacity: Double = 1 {
+        didSet { if backgroundOpacity != oldValue { container?.surfaceSizingDidChange() } }
+    }
+    /// The background a program set (`OSC 11`, or the configured colour again
+    /// after a reset), as libghostty reported it with a colour change action.
+    var programBackground: NSColor? {
+        didSet { if programBackground != oldValue { container?.surfaceSizingDidChange() } }
+    }
+    /// The colour the terminal draws its background in, for the margin the pane's
+    /// container draws around a smaller grid.
+    var marginColor: NSColor {
+        Self.marginColor(configured: configuredBackground, program: programBackground,
+                         opacity: backgroundOpacity)
+    }
+
+    /// The program's background when it set one, else the configured one, at the
+    /// configured `background-opacity` (which libghostty applies to both).
+    static func marginColor(configured: NSColor, program: NSColor?, opacity: Double) -> NSColor {
+        (program ?? configured).withAlphaComponent(CGFloat(min(1, max(0, opacity))))
     }
     private var container: SurfaceContainerView? { superview as? SurfaceContainerView }
 
@@ -922,26 +1002,34 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         host?.report(grid: grid, for: id)
     }
 
-    /// The cell size libghostty derived, the configured padding at the scale it was
-    /// last given, and that scale. Nil before the first `synchronizeMetrics` that had
-    /// a size to send, which `adopt` makes, so in practice from `createSurface` on.
-    var metrics: SurfaceMetrics? {
-        guard let surface, let renderScale, let host else { return nil }
+    /// Takes the surface's metrics afresh: the cell size libghostty derived, the
+    /// padding (configured, unless this surface's own reports rule it out; see
+    /// `PaddingWindow`), and the scale it was just given. Nil when libghostty reports
+    /// no cell, which does not happen after `adopt`'s first synchronisation, so in
+    /// practice metrics are known from `createSurface` on.
+    private func takeMetrics(scale: Double) {
+        guard let surface, let host else { metrics = nil; return }
         let size = ghostty_surface_size(surface)
-        guard size.cell_width_px > 0, size.cell_height_px > 0 else { return nil }
-        let configured = host.padding.pixels(scale: renderScale)
-        let paddingX = GhosttySurfaceHost.checkedPadding(configured: configured.x, pixels: Int(size.width_px),
-                                                         cells: Int(size.columns), cell: Int(size.cell_width_px))
-        let paddingY = GhosttySurfaceHost.checkedPadding(configured: configured.y, pixels: Int(size.height_px),
-                                                         cells: Int(size.rows), cell: Int(size.cell_height_px))
-        // Once per surface: this is read on every layout pass of a live resize.
+        let cellWidth = Int(size.cell_width_px), cellHeight = Int(size.cell_height_px)
+        guard cellWidth > 0, cellHeight > 0 else { metrics = nil; return }
+        let key = [Double(cellWidth), Double(cellHeight), scale, Double(host.configGeneration)]
+        if key != paddingWindowsKey {
+            paddingWindowsKey = key
+            paddingWindows = (PaddingWindow(), PaddingWindow())
+            reportedPaddingMismatch = false
+        }
+        paddingWindows.x.observe(pixels: Int(size.width_px), cells: Int(size.columns), cell: cellWidth)
+        paddingWindows.y.observe(pixels: Int(size.height_px), cells: Int(size.rows), cell: cellHeight)
+        let configured = host.padding.pixels(scale: scale)
+        let paddingX = paddingWindows.x.padding(configured: configured.x)
+        let paddingY = paddingWindows.y.padding(configured: configured.y)
         if paddingX != configured.x || paddingY != configured.y, !reportedPaddingMismatch {
             reportedPaddingMismatch = true
             GhosttySurfaceHost.log.fault(
                 "configured padding \(configured.x)x\(configured.y)px does not fit surface \(self.id, privacy: .public); using \(paddingX)x\(paddingY)px")
         }
-        return SurfaceMetrics(cellWidth: Int(size.cell_width_px), cellHeight: Int(size.cell_height_px),
-                              paddingX: paddingX, paddingY: paddingY, scale: renderScale)
+        metrics = SurfaceMetrics(cellWidth: cellWidth, cellHeight: cellHeight,
+                                 paddingX: paddingX, paddingY: paddingY, scale: scale)
     }
 
     /// The grid that fits the pane this surface is shown in, at its metrics: what the
@@ -958,10 +1046,25 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         host?.paneChanged(for: id)
     }
 
+    /// `grid` held to the protocol's range and, at these metrics, to what the
+    /// renderer's texture can hold.
+    static func shownGrid(for grid: TerminalSize, metrics: SurfaceMetrics?) -> TerminalSize {
+        let range = TerminalBridge.claimRange
+        let held = TerminalSize(cols: min(max(grid.cols, range.lowerBound), range.upperBound),
+                                rows: min(max(grid.rows, range.lowerBound), range.upperBound))
+        return metrics?.clamped(held, maxPixels: maxTexturePixels) ?? held
+    }
+
     /// Recomputes the imposed size from the metrics as they stand and, when it
     /// moved, asks the container to apply it.
     private func refreshImposedSize() {
-        let size = imposedGrid.flatMap { grid in
+        shownGrid = imposedGrid.map { Self.shownGrid(for: $0, metrics: metrics) }
+        if let imposedGrid, let shownGrid, shownGrid != imposedGrid, !reportedClamp {
+            reportedClamp = true
+            GhosttySurfaceHost.log.error(
+                "grid \(imposedGrid.cols)x\(imposedGrid.rows) imposed on \(self.id, privacy: .public) is shown as \(shownGrid.cols)x\(shownGrid.rows)")
+        }
+        let size = shownGrid.flatMap { grid in
             metrics.map { metrics -> CGSize in
                 let points = metrics.viewSize(for: grid)
                 return CGSize(width: points.width, height: points.height)
@@ -970,6 +1073,20 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         guard size != imposedSize else { return }
         imposedSize = size
         container?.surfaceSizingDidChange()
+    }
+
+    /// The closed loop: with a grid imposed and the view at its size, the surface
+    /// must show exactly that grid. When it does not, the padding in use was wrong;
+    /// this observation has already narrowed the padding bounds, so sizing again
+    /// from the new metrics corrects it. At most `maxCorrections` times per grid.
+    private func checkImposedGrid() {
+        guard let shownGrid, let imposedSize, bounds.size == imposedSize,
+              let grid = currentGrid(), grid != shownGrid else { return }
+        GhosttySurfaceHost.log.fault(
+            "surface \(self.id, privacy: .public) shows \(grid.cols)x\(grid.rows) at the size of \(shownGrid.cols)x\(shownGrid.rows)")
+        guard corrections < Self.maxCorrections else { return }
+        corrections += 1
+        refreshImposedSize()
     }
 
     /// The metrics may have moved: the imposed size follows them, and a change is
@@ -1026,7 +1143,11 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     ///   `createSurface` is still on its caller's stack. See `adopt`.
     func synchronizeMetrics(reportGrid: Bool = true) {
         guard let surface, bounds.width > 0, bounds.height > 0 else { return }
-        let scale = Double(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0)
+        // A surface with no window keeps the scale it last rendered at: a hidden
+        // terminal synchronised by a configuration reload must not move to the main
+        // screen's scale (another grid, on a machine with mixed displays).
+        let scale = window.map { Double($0.backingScaleFactor) }
+            ?? renderScale ?? Double(NSScreen.main?.backingScaleFactor ?? 2.0)
         renderScale = scale
         ghostty_surface_set_content_scale(surface, scale, scale)
         ghostty_surface_set_size(surface,
@@ -1034,6 +1155,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
                                  UInt32((bounds.height * scale).rounded(.down)))
         // The layer libghostty attached, never a cached one of our own.
         layer?.contentsScale = scale
+        takeMetrics(scale: scale)
 
         // Every grid change is reported. A report, not a claim: nothing resizes the
         // pty from it (decision P4). The pane claims from the grid that fits it,
@@ -1043,6 +1165,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
             host?.report(grid: grid, for: id)
         }
         noteMetrics(report: reportGrid)
+        checkImposedGrid()
         requestRedraw()
     }
 

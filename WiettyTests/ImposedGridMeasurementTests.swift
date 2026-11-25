@@ -29,7 +29,12 @@ import WiettyCore
 /// measurement the formula came from. Then through the API the pane uses (`api`):
 /// the view in a `SurfaceContainerView` as the pane holds it, the grid imposed with
 /// `impose(grid:on:)` and sized from `metrics(id:)`, whose padding comes from the
-/// configuration files rather than from the sweep.
+/// configuration files rather than from the sweep. Then, through the same API, the
+/// paths that need a real surface (`IMPOSED-EXTRA` lines, not counted): a grid
+/// imposed while the view is off screen and applied when it is shown, a move to the
+/// other scale and back with a grid imposed, a reload that changes the padding (last
+/// configuration), and a program setting and resetting the background (first
+/// configuration), which the margin follows.
 ///
 /// **This does not run in the normal suite, by design.** It needs a window and a
 /// Metal device. It runs only when `WIETTY_IMPOSED_GRID_CHECK=1` is in the
@@ -114,7 +119,12 @@ import WiettyCore
         let script = """
         i=0
         while :; do
-          while [ ! -e "\(directory.path)/ask.$i" ]; do sleep 0.02; done
+          while [ ! -e "\(directory.path)/ask.$i" ]; do
+            # A background colour set and reset on request (OSC 11, OSC 111).
+            if [ -e "\(directory.path)/osc11" ]; then rm "\(directory.path)/osc11"; printf '\\033]11;#102030\\007'; fi
+            if [ -e "\(directory.path)/osc111" ]; then rm "\(directory.path)/osc111"; printf '\\033]111\\007'; fi
+            sleep 0.02
+          done
           stty size > "\(directory.path)/answer.$i.part"
           mv "\(directory.path)/answer.$i.part" "\(directory.path)/answer.$i"
           i=$((i+1))
@@ -254,6 +264,94 @@ import WiettyCore
         host.impose(grid: nil, on: id)
         content.layoutSubtreeIfNeeded()
         #expect(view.frame == container.bounds, "\(configuration.label): cleared frame \(view.frame)")
+
+        // The paths a pane takes that need a real surface. Not counted among the
+        // `IMPOSED` lines; each prints an `IMPOSED-EXTRA` line and is asserted.
+        func check(_ name: String, _ grid: TerminalSize) async throws {
+            content.layoutSubtreeIfNeeded()
+            let after = try await settled(id, host)
+            let child = try await childSize(directory, question: &question,
+                                            expecting: TerminalSize(cols: after.columns, rows: after.rows))
+            let now = try #require(host.metrics(id: id))
+            let expected = now.viewSize(for: grid)
+            let exact = after.columns == grid.cols && after.rows == grid.rows && child == grid
+            print("""
+            IMPOSED-EXTRA \(configuration.label) \(name): asked \(grid.cols)x\(grid.rows) \
+            surface \(after.columns)x\(after.rows) child \(child.map { "\($0.cols)x\($0.rows)" } ?? "none") \
+            \(exact ? "EXACT" : "OFF") scale \(now.scale) cell \(now.cellWidth)x\(now.cellHeight)px \
+            padding \(now.paddingX)x\(now.paddingY)px view \(view.frame.width)x\(view.frame.height)pt
+            """)
+            #expect(exact, "\(configuration.label) \(name): surface \(after.columns)x\(after.rows) child \(String(describing: child))")
+            #expect(Double(view.frame.width) == expected.width && Double(view.frame.height) == expected.height,
+                    "\(configuration.label) \(name): frame \(view.frame.size), expected \(expected)")
+        }
+
+        // Imposed while off screen, applied when shown.
+        let offscreen = TerminalSize(cols: 97, rows: 31)
+        view.removeFromSuperview()
+        host.impose(grid: offscreen, on: id)
+        SurfaceContainer.attach(view, to: container)
+        try await check("offscreen-then-shown", offscreen)
+
+        // The window moves to the other scale with a grid imposed: the host sizes the
+        // view again from the new metrics, with no new impose, and back.
+        let scaled = TerminalSize(cols: 80, rows: 24)
+        host.impose(grid: scaled, on: id)
+        try await check("before-scale-change", scaled)
+        let before = window.forcedScale
+        window.forcedScale = scale == 1 ? 2 : 1
+        view.viewDidChangeBackingProperties()
+        try await check("after-scale-change", scaled)
+        #expect(host.metrics(id: id)?.scale == Double(window.backingScaleFactor))
+        window.forcedScale = before
+        view.viewDidChangeBackingProperties()
+        try await check("scale-restored", scaled)
+
+        // A reload that changes the configured padding. Measured (fix round 1 of
+        // task 7): libghostty does not change the padding of a surface that already
+        // exists, so the configured 26x14 px is disproved by the surface's own reports
+        // and the metrics keep the padding it really uses, which is what keeps the
+        // imposed grid exact. Last configuration only, so the others start clean.
+        if configuration.label == "native/two-sided" {
+            try Self.padding.write(to: GhosttyOverrideFile.defaultURL, atomically: true, encoding: .utf8)
+            host.reloadConfig()
+            let reloaded = TerminalSize(cols: 120, rows: 34)
+            host.impose(grid: reloaded, on: id)
+            try await check("after-reload", reloaded)
+            let now = try #require(host.metrics(id: id))
+            print("IMPOSED-EXTRA \(configuration.label) reload: configured now 26x14px, metrics padding \(now.paddingX)x\(now.paddingY)px, swept before \(sweptX)x\(sweptY)px")
+            #expect(now.paddingX == sweptX && now.paddingY == sweptY,
+                    "after reload: padding \(now.paddingX)x\(now.paddingY), the surface's \(sweptX)x\(sweptY)")
+        }
+
+        // A program sets the background (OSC 11): the margin follows; a reset
+        // (OSC 111) brings back the configured colour. First configuration only.
+        if number == 0, let surfaceView = view as? GhosttySurfaceView {
+            let configured = surfaceView.marginColor
+            FileManager.default.createFile(atPath: directory.appendingPathComponent("osc11").path, contents: nil)
+            let set = try await waitForMargin(surfaceView) { $0 != configured }
+            FileManager.default.createFile(atPath: directory.appendingPathComponent("osc111").path, contents: nil)
+            let reset = try await waitForMargin(surfaceView) { $0 == configured }
+            let rgb = { (c: NSColor) -> String in
+                let s = c.usingColorSpace(.sRGB) ?? c
+                return String(format: "%02x%02x%02x", Int((s.redComponent * 255).rounded()),
+                              Int((s.greenComponent * 255).rounded()), Int((s.blueComponent * 255).rounded()))
+            }
+            print("IMPOSED-EXTRA \(configuration.label) colour: configured \(rgb(configured)) after OSC 11 \(rgb(set)) after OSC 111 \(rgb(reset))")
+            #expect(rgb(set) == "102030")
+            #expect(rgb(reset) == rgb(configured))
+            #expect(container.margin?.color == reset || container.margin == nil)
+        }
+    }
+
+    /// The surface's margin colour once it satisfies `done`, or the last one seen
+    /// after ten seconds.
+    private func waitForMargin(_ view: GhosttySurfaceView, _ done: (NSColor) -> Bool) async throws -> NSColor {
+        let deadline = Date().addingTimeInterval(10)
+        while !done(view.marginColor), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        return view.marginColor
     }
 
     // MARK: - Reading

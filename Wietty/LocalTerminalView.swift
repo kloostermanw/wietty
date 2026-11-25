@@ -230,8 +230,12 @@ struct SurfaceContainer: NSViewRepresentable {
 /// keeps the first responder and libghostty sees one resize.
 ///
 /// The container clips to its bounds, so a grid larger than the pane is cut off at
-/// its right and bottom edges and never scrolls, and draws the terminal's background
-/// colour, so a smaller one sits in a margin of that colour.
+/// its right and bottom edges and never scrolls. Where an imposed grid leaves part
+/// of the pane uncovered, and only there, it paints the terminal's background
+/// colour (with the configured `background-opacity`), so a smaller grid sits in a
+/// margin of that colour. Behind the surface it paints nothing, and with nothing
+/// imposed it paints nothing at all: a translucent terminal blends over the window
+/// exactly as it did before the container could size it.
 final class SurfaceContainerView: NSView {
     /// The surface this container holds, if any.
     private(set) weak var surface: NSView?
@@ -292,11 +296,39 @@ final class SurfaceContainerView: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         notifyPaneSize()
+        needsDisplay = true
     }
 
     override func layout() {
         super.layout()
         notifyPaneSize()
+        needsDisplay = true
+    }
+
+    /// The colour of the margin and the parts of the pane it covers: the strip to the
+    /// right of the surface and the strip below it, in this view's coordinates. Nil
+    /// while nothing is imposed or the surface covers the whole pane.
+    var margin: (color: NSColor, rects: [NSRect])? {
+        guard appliedSize != nil, let surface, let sized = surface as? GridSizedSurface else { return nil }
+        let frame = surface.frame
+        var rects: [NSRect] = []
+        if frame.maxX < bounds.maxX {
+            rects.append(NSRect(x: frame.maxX, y: bounds.minY,
+                                width: bounds.maxX - frame.maxX, height: bounds.height))
+        }
+        // Unflipped: below the surface is from the bottom up to its lower edge.
+        if frame.minY > bounds.minY {
+            rects.append(NSRect(x: bounds.minX, y: bounds.minY,
+                                width: min(frame.maxX, bounds.maxX) - bounds.minX,
+                                height: frame.minY - bounds.minY))
+        }
+        return rects.isEmpty ? nil : (sized.marginColor, rects)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let margin else { return }
+        margin.color.setFill()
+        margin.rects.forEach { $0.intersection(dirtyRect).fill(using: .copy) }
     }
 
     /// Tells the surface the pane's size changed: a window resize, the sidebar, full
@@ -344,10 +376,8 @@ final class SurfaceContainerView: NSView {
         appliedSize = wanted
     }
 
-    /// The terminal's background colour behind the surface, which is what shows in
-    /// the margin around a smaller grid. Clear for a surface that has no opinion.
+    /// The margin is drawn in `draw(_:)` from `margin`; this asks for that draw.
     private func refreshMargin() {
-        layer?.backgroundColor = (surface as? GridSizedSurface)?.marginColor.cgColor
-            ?? NSColor.clear.cgColor
+        needsDisplay = true
     }
 }
