@@ -8,7 +8,7 @@ import Darwin
 /// second Wietty running alongside, and need not guess from the file's age.
 package enum LocalSocketPaths {
     /// `sockaddr_un.sun_path` is this many bytes, terminator included.
-    static let sunPathLimit = 104
+    package static let sunPathLimit = 104
 
     /// `<tmp>/wty-<pid>.sock`
     package static func server(pid: pid_t = getpid(),

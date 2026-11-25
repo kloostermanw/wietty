@@ -9,10 +9,13 @@ import WiettyShared
 ///   is read from the connection, so a consumer that blocks holds the server back.
 /// - The server's `hello` is consumed and never delivered, and neither is `ended` or
 ///   `error`: those end the link and arrive as `onEnded`, once.
+/// - `start()`, `send` and `claim` never block the caller on the server: they queue
+///   what they write. `send` and `claim` are dropped before `start()` and after an
+///   end or a stop.
 /// - `stop()` fires no `onEnded`. Called from outside a callback, it returns only when
-///   no callback is running, and none comes after it. Called from inside one, it
-///   cannot wait for that one, and nothing comes after it returns.
-/// - `send` and `claim` are dropped before `start()` and after an end or a stop.
+///   no callback is running, and none comes after it; so it waits for a running
+///   callback, and for nothing else. Called from inside one, it cannot wait for that
+///   one, and nothing comes after it returns.
 protocol TerminalStreamLink: AnyObject, Sendable {
     var onMessage: (@Sendable (StreamMessage) -> Void)? { get set }
     var onEnded: (@Sendable (TerminalEndReason) -> Void)? { get set }

@@ -12,12 +12,25 @@ import WiettyShared
 /// `onResize` and the link's end to `onEnded`, neither to the helper; bytes from the
 /// helper go to `link.send` unchanged.
 ///
+/// ## Using it from the main actor
+///
+/// `init`, `claim` and `reconnect` never block: none of them waits for a write to the
+/// helper or to the server. `stop()` waits only for an `onResize` or `onEnded` that is
+/// running (see `stop()`). The callbacks run on threads of the bridge and its link,
+/// never on the main thread, and must never wait synchronously on the main thread:
+/// hop with `DispatchQueue.main.async` or a `Task`, never `.sync`. The reason is the
+/// surface. Its pty read thread can wait on a mailbox only the main thread drains
+/// (a title change, the clipboard, the bell), and while it waits it does not read the
+/// helper, so a write to the helper does not return. A callback that waits on the
+/// main thread, while the main thread waits on that callback (in `stop()`), or on a
+/// write to the helper, would never return.
+///
 /// ## Order of events
 ///
 /// `init` binds and listens, and returns. The link is started only when the helper
 /// has connected: earlier, its snapshot and live output would have to be held for a
-/// surface that is not reading yet. A `claim` before that is remembered, the last
-/// one, and sent when the link starts; it is sent again to a link `reconnect` starts.
+/// surface that is not reading yet. Claims made while no link is live are kept (see
+/// `claim`) and sent to the next link that starts.
 ///
 /// ## No buffering
 ///
@@ -29,9 +42,15 @@ import WiettyShared
 ///
 /// ## Ends
 ///
-/// The helper going away (the surface was destroyed) stops the link, and nothing more
-/// is started after it. The link ending does not touch the helper: it is reported
-/// through `onEnded`, and `reconnect(with:)` can attach a new link to the same helper.
+/// The helper going away (the surface was destroyed) stops the link, nothing more is
+/// started after it, and `onHelperGone` is called once. The link ending does not touch
+/// the helper: it is reported through `onEnded`, and `reconnect(with:)` can attach a
+/// new link to the same helper. Bytes read from the helper while no link is live
+/// (between an end and the reconnect) are dropped, as the link drops them.
+///
+/// The owner must call `stop()`, also after `onHelperGone`. `deinit` alone does not
+/// end a bridge whose helper is connected: the thread reading the helper keeps the
+/// bridge alive until the helper goes away.
 ///
 /// ## Threads and descriptors
 ///
@@ -40,13 +59,22 @@ import WiettyShared
 /// own, which is the only one that closes the helper's socket, as it exits, holding
 /// the write lock; writes to it run on the link's thread under that lock. Everything
 /// else only shuts the socket down while it is open, which releases a blocked read or
-/// write at once. Nothing here is on the main actor.
+/// write at once. A link that `reconnect` replaced is stopped on a queue of the
+/// bridge's own. Nothing here is on the main actor.
 final class TerminalBridge: @unchecked Sendable {
     /// The raw socket `wietty-pty` is told to connect to.
     let helperSocketPath: String
 
+    /// The most claims kept while no link is live; beyond it the oldest is dropped.
+    static let maxPendingClaims = 64
+    /// How long accepting pauses when the process is out of descriptors or memory.
+    static let acceptRetryDelay: DispatchTimeInterval = .milliseconds(100)
+
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "eu.kloosterman.wietty.bridge")
+    /// Where a link `reconnect` replaced is stopped, since its `stop()` waits for a
+    /// callback that may be blocked on the helper.
+    private let retiring = DispatchQueue(label: "eu.kloosterman.wietty.bridge.retiring")
     private var listenFd: Int32
     private var listenSource: DispatchSourceRead?
     private let boundFile: PrivateSocket.Identity
@@ -62,30 +90,46 @@ final class TerminalBridge: @unchecked Sendable {
     private var link: any TerminalStreamLink
     /// The link that has been started, so it is started once.
     private var startedLink: ObjectIdentifier?
-    /// The link the bridge has stopped last, so the helper going away after `stop()`
-    /// does not stop it a second time.
+    /// The link that has started and not ended: claims go straight to it.
+    private var liveLink: ObjectIdentifier?
+    /// The link the bridge has stopped last, so it is not stopped twice.
     private var stoppedLink: ObjectIdentifier?
-    private var lastClaim: (cols: Int, rows: Int)?
+    private var pendingClaims: [(cols: Int, rows: Int)] = []
     private var stopped = false
     private var resizeHandler: (@Sendable (_ cols: Int, _ rows: Int, _ own: Bool) -> Void)?
     private var endHandler: (@Sendable (TerminalEndReason) -> Void)?
+    private var helperGoneHandler: (@Sendable () -> Void)?
 
-    /// Held while a link is started or claimed through, so a claim cannot reach a
-    /// link that is about to start (and drop it), and claims go out in order. Never
-    /// held while a link is stopped: `stop()` waits for a callback, and a callback may
-    /// call `claim`.
+    /// Held while a link is started or claimed through, so a claim cannot reach a link
+    /// that is about to start, and claims go out in order. Nothing that can block is
+    /// done under it: a link's `start` and `claim` return at once.
     private let control = NSLock()
-    /// Held for each write to the helper; the close takes it to wait for one.
+    /// Held for each write to the helper; the close takes it to wait for one, and the
+    /// check of which link may write is made under it.
     private let helperWriteLock = NSLock()
 
+    /// A `resize` from the server: the grid in force, and whether this pane claimed it.
+    /// Called on the link's thread, one at a time with the stream. Must not wait
+    /// synchronously on the main thread (see the type's doc); `stop()` waits for it.
     var onResize: (@Sendable (_ cols: Int, _ rows: Int, _ own: Bool) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return resizeHandler }
         set { lock.lock(); resizeHandler = newValue; lock.unlock() }
     }
 
+    /// The current link ended. Called on the link's thread, once per link. The helper
+    /// is kept; call `reconnect(with:)` for a new link (from here is fine, it never
+    /// blocks). Must not wait synchronously on the main thread; `stop()` waits for it.
     var onEnded: (@Sendable (TerminalEndReason) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return endHandler }
         set { lock.lock(); endHandler = newValue; lock.unlock() }
+    }
+
+    /// The helper went away (the surface was destroyed) and the link was stopped.
+    /// Called once, on the bridge's helper thread, and not after `stop()`. The owner
+    /// must still call `stop()`. Must not wait synchronously on the main thread.
+    var onHelperGone: (@Sendable () -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return helperGoneHandler }
+        set { lock.lock(); helperGoneHandler = newValue; lock.unlock() }
     }
 
     /// Binds and listens at `helperSocketPath` (mode 0600, replacing a stale file),
@@ -118,46 +162,67 @@ final class TerminalBridge: @unchecked Sendable {
         return helperOpen ? helperFd : nil
     }
 
-    /// Claims the grid at this size. Before the link has started it is remembered (the
-    /// last one) and sent when it starts.
+    /// Claims the grid at this size. Never blocks: the link queues the write.
+    ///
+    /// Every claim is answered by the server once, and the owner counts the answers,
+    /// so claims are never folded. While no link is live (before the helper connects,
+    /// and between a link's end and the next `reconnect`) they are all kept, in order,
+    /// up to `maxPendingClaims` (the oldest dropped beyond that), and sent to the next
+    /// link that starts. A claim is not sent again to a link `reconnect` starts: after
+    /// a reconnect the owner claims again if it still owns the grid.
     func claim(cols: Int, rows: Int) {
         control.lock()
         defer { control.unlock() }
         lock.lock()
-        lastClaim = (cols, rows)
         let current = link
-        let started = startedLink == ObjectIdentifier(current) && !stopped
+        let live = !stopped && liveLink == ObjectIdentifier(current)
+        if !live, !stopped {
+            pendingClaims.append((cols, rows))
+            if pendingClaims.count > Self.maxPendingClaims {
+                pendingClaims.removeFirst(pendingClaims.count - Self.maxPendingClaims)
+            }
+        }
         lock.unlock()
-        if started { current.claim(cols: cols, rows: rows) }
+        if live { current.claim(cols: cols, rows: rows) }
     }
 
-    /// Makes the link again after a lost connection, keeping the helper.
+    /// Makes the link again after a lost connection, keeping the helper. Never blocks.
     ///
-    /// The old link is stopped first, which waits for a callback of it in progress
-    /// unless this is called from inside one (as from `onEnded`, the expected place);
-    /// nothing of it reaches the helper afterwards. The new link is started at once if
-    /// the helper is connected, else when it connects, and is sent the last claim.
+    /// From the moment this is called nothing of the old link reaches the helper, the
+    /// pane or `onEnded`, except a write to the helper already in progress, which
+    /// completes before the new link's first. The old link is stopped on a queue of
+    /// the bridge's own, so a callback of it blocked on the helper does not hold this
+    /// caller. The new link is started at once if the helper is connected, else when it
+    /// connects, and is sent the claims kept while no link was live.
     func reconnect(with newLink: any TerminalStreamLink) {
         lock.lock()
         let old = link
         link = newLink
+        liveLink = nil
+        let stopOld = stoppedLink != ObjectIdentifier(old)
         stoppedLink = ObjectIdentifier(old)
         lock.unlock()
-        old.stop()
+        if stopOld { retiring.async { old.stop() } }
         control.lock()
         startLinkIfReady()
         control.unlock()
     }
 
     /// Stops the link, closes the helper's connection and the listener, and removes the
-    /// socket file. Idempotent. Does not wait for the helper: its socket is shut down
-    /// first, which fails a write to it that is blocked, so the link's callback returns
-    /// and the link's `stop()` does not wait on a surface that is not reading.
+    /// socket file. Idempotent.
+    ///
+    /// Never waits for the helper: its socket is shut down first, which fails a write
+    /// to it that is blocked. It does wait, through the link's `stop()`, for an
+    /// `onResize` or `onEnded` that is running, unless called from inside one; which is
+    /// why those must never wait on the main thread. It does not wait for a link
+    /// `reconnect` replaced. No callback is called after it returns.
     func stop() {
         lock.lock()
         guard !stopped else { lock.unlock(); return }
         stopped = true
         helperAlive = false
+        liveLink = nil
+        pendingClaims = []
         if helperOpen { shutdown(helperFd, SHUT_RDWR) }
         let current = link
         let stopLink = stoppedLink != ObjectIdentifier(current)
@@ -180,7 +245,11 @@ final class TerminalBridge: @unchecked Sendable {
         while true {
             let fd = Darwin.accept(listener, nil, nil)
             if fd < 0 {
-                if errno == EINTR || errno == ECONNABORTED { continue }
+                let code = errno
+                if code == EINTR || code == ECONNABORTED { continue }
+                if code == EMFILE || code == ENFILE || code == ENOMEM || code == ENOBUFS {
+                    pauseAccepting()
+                }
                 return
             }
             // `accept` does not carry FD_CLOEXEC over: the helper is spawned by
@@ -217,7 +286,23 @@ final class TerminalBridge: @unchecked Sendable {
         }
     }
 
-    /// The helper's reader thread: its bytes to the link, until it goes away.
+    /// Stops accepting for `acceptRetryDelay`, as `LocalStreamServer` does: out of
+    /// descriptors (or memory) the listener stays readable, and the source would fire
+    /// again at once and spin the queue.
+    private func pauseAccepting() {
+        lock.lock()
+        let source = listenSource
+        lock.unlock()
+        guard let source else { return }
+        // On the source's own queue, inside its handler. A source must not be
+        // released while suspended, so the resume holds it; a `stop` meanwhile
+        // cancels it, and its cancel handler (the close) runs once it is resumed.
+        source.suspend()
+        queue.asyncAfter(deadline: .now() + Self.acceptRetryDelay) { source.resume() }
+    }
+
+    /// The helper's reader thread: its bytes to the link, until it goes away. Bytes
+    /// read while no link is live are dropped by the link.
     private func readHelper(_ fd: Int32) {
         var buffer = [UInt8](repeating: 0, count: 1 << 16)
         while true {
@@ -233,10 +318,11 @@ final class TerminalBridge: @unchecked Sendable {
     }
 
     /// The surface is gone, or the bridge stopped. Closes the helper's socket, once no
-    /// write uses it, and stops the link.
+    /// write uses it, stops the link, and tells the owner unless it stopped the bridge.
     private func helperGone(_ fd: Int32) {
         lock.lock()
         helperAlive = false
+        liveLink = nil
         if helperOpen { shutdown(fd, SHUT_RDWR) }
         lock.unlock()
         helperWriteLock.lock()
@@ -250,18 +336,24 @@ final class TerminalBridge: @unchecked Sendable {
         let current = link
         let stopLink = stoppedLink != ObjectIdentifier(current)
         stoppedLink = ObjectIdentifier(current)
+        let report = stopped ? nil : helperGoneHandler
         lock.unlock()
         helperWriteLock.unlock()
         if stopLink { current.stop() }
+        report?()
     }
 
-    /// Writes `bytes` to the helper in full, blocking until it has taken them.
-    private func writeToHelper(_ bytes: [UInt8]) {
+    /// Writes `bytes` to the helper in full, blocking until it has taken them, if the
+    /// link `id` is still the bridge's. Checked under the write lock, so once
+    /// `reconnect` has swapped the link no message of the old one is written, and the
+    /// only old write that can follow the swap is one already in progress, which the
+    /// new link's first write waits for.
+    private func writeToHelper(_ bytes: [UInt8], from id: ObjectIdentifier) {
         helperWriteLock.lock()
         defer { helperWriteLock.unlock() }
         lock.lock()
         let fd = helperFd
-        let live = helperOpen
+        let live = helperOpen && !stopped && ObjectIdentifier(link) == id
         lock.unlock()
         guard live else { return }
         var offset = 0
@@ -284,35 +376,36 @@ final class TerminalBridge: @unchecked Sendable {
 
     // MARK: The link
 
-    /// Starts the current link if the helper is there and it has not been started.
-    /// Called with `control` held.
+    /// Starts the current link if the helper is there and it has not been started, and
+    /// sends it the claims kept meanwhile. Called with `control` held; never blocks.
     private func startLinkIfReady() {
         lock.lock()
         let current = link
         let id = ObjectIdentifier(current)
         guard !stopped, helperAlive, startedLink != id else { lock.unlock(); return }
         startedLink = id
-        let claim = lastClaim
+        liveLink = id
+        let claims = pendingClaims
+        pendingClaims = []
         lock.unlock()
 
         current.onMessage = { [weak self] message in self?.received(message, from: id) }
         current.onEnded = { [weak self] reason in self?.ended(reason, from: id) }
         current.start()
-        if let claim { current.claim(cols: claim.cols, rows: claim.rows) }
+        for claim in claims { current.claim(cols: claim.cols, rows: claim.rows) }
     }
 
     /// On the link's thread. Blocks for as long as the helper takes the bytes.
     private func received(_ message: StreamMessage, from id: ObjectIdentifier) {
-        lock.lock()
-        let current = !stopped && ObjectIdentifier(link) == id
-        let resize = resizeHandler
-        lock.unlock()
-        guard current else { return }
         switch message {
         case .snapshot(let bytes), .repaint(let bytes), .data(let bytes):
-            writeToHelper(bytes)
+            writeToHelper(bytes, from: id)
         case let .resize(cols, rows, own):
-            resize?(cols, rows, own)
+            lock.lock()
+            let current = !stopped && ObjectIdentifier(link) == id
+            let resize = resizeHandler
+            lock.unlock()
+            if current { resize?(cols, rows, own) }
         case .hello, .error, .ended:
             break
         }
@@ -321,6 +414,7 @@ final class TerminalBridge: @unchecked Sendable {
     private func ended(_ reason: TerminalEndReason, from id: ObjectIdentifier) {
         lock.lock()
         let current = !stopped && ObjectIdentifier(link) == id
+        if liveLink == id { liveLink = nil }
         let handler = endHandler
         lock.unlock()
         guard current else { return }
