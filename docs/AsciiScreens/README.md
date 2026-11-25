@@ -136,8 +136,10 @@ with an `NSView` and cannot exist without one, so the view belongs to
 `GhosttySurfaceHost` for the terminal's whole life and this container only moves
 it in and out of the window. It creates nothing and frees nothing, which is what
 lets a terminal keep running while another is on screen. Its `SurfaceContainerView`
-pins the view to the top left and either lets it fill the pane or gives it the size
-of an imposed grid, clipped, in a margin of the terminal's background colour.
+pins the view to the top left and either lets it fill the pane (while the pane holds
+the terminal's grid) or gives it the size of the grid another viewer claimed, cut off
+at the pane's edges when larger, in a margin of the terminal's background colour when
+smaller.
 `../terminal.md` covers the rest.
 
 ## Inventory

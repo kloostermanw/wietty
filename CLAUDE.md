@@ -15,16 +15,19 @@ in `wietty-shared`, so a protocol change must not be applied twice.
 
 Which side of the remote protocol lives where decides which repo a bug belongs in:
 
-- **Served side, only here.** `RemoteServer`, `WorkspaceSerializer`, `RemoteAccessToken`, and the
-  terminal itself: `GhosttyService`, `TerminalRelay`, `RawPTY`, `PaneStreamHub`, the server's own
-  screen model (`TerminalScreenModel`, `GhosttyVtTerminal`), `GhosttySurfaceHost` and the bundled
-  `wietty-pty` helper. All of those are in the `WiettyCore` target except `GhosttySurfaceHost`,
-  which stays in the app because it is the one type that touches an `NSView`. A rendering or
-  streaming fault reaches every client of the stream (the browser, the iPad, and another Mac's
-  remote pane), so reproduce it here before suspecting a client. This app's own pane is one of them
-  too since phase 3 of issue #84: its libghostty surface is fed from the stream, through
-  `LocalStreamServer` and the pane's `TerminalBridge`. So a fault seen only in the pane is the
-  surface's or the bridge's, and one seen by every client is the stream's or the model's.
+- **Served side, only here.** `RemoteServer`, `LocalStreamServer`, `WorkspaceSerializer`,
+  `RemoteAccessToken`, and the terminal itself: `GhosttyService`, `RawPTY`, `TerminalRelay` (which
+  only reads the pty; input reaches the pty through the writer the service registers),
+  `PaneStreamHub`, the server's own screen model (`TerminalScreenModel`, `GhosttyVtTerminal`),
+  `GhosttySurfaceHost` with the pane's bridge, and the bundled `wietty-pty` helper. All of those
+  are in the `WiettyCore` target except `GhosttySurfaceHost` and the bridge, which stay in the app
+  because the surface is the one thing that touches an `NSView`. A rendering or streaming fault
+  reaches every client of the stream (the browser, the iPad, another Mac's remote pane, and this
+  app's own pane), so reproduce it here before suspecting a client. This app's own pane is a client
+  of the stream like the others: its libghostty surface is fed from the stream, through
+  `LocalStreamServer`, the pane's `LocalSocketLink` and its `TerminalBridge`. So a fault seen in the
+  pane and in every other client is the stream's or the model's, and one seen only in the pane is
+  the surface's or the bridge's.
 
 - **Controlling side, in `wietty-shared`.** `RemoteWorkspaceStore`, `RemoteWorkspacesController`,
   `RemoteTerminalConnection`, `RemoteSnapshotDecoder`, `RemoteConnection`, `SecretStore`. This app
@@ -55,7 +58,10 @@ The app is split in two, and the split is enforced by the compiler rather than b
   not start. That is the point: phase 5 of issue #84 makes it a separate process, and the boundary
   is being held years before the process is cut.
 - **`Wietty/`** is the frontend: every view, `WiettyApp`, `GhosttySurfaceHost`, `UIPreferences`,
-  `ServerRuntime`, `TerminalSelection`.
+  `ServerRuntime`, `TerminalSelection`, and the pane's side of the terminal stream: the bridge each
+  surface's helper connects to (`TerminalBridge`, made per surface by `OwnPaneBridge` and
+  `PaneBridges`), its link to `LocalStreamServer` (`LocalSocketLink`, behind `TerminalStreamLink`),
+  and what decides when the pane claims the grid (`PaneGrid`, carried out by `OwnPaneGrid`).
 
 Members the app or the tests need are `package`, never `public`. The three targets share a
 `SWIFT_PACKAGE_NAME`, so `package` reaches all of them and nothing outside sees a line of it. A
