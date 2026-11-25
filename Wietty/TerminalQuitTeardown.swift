@@ -2,16 +2,17 @@ import AppKit
 import Foundation
 import WiettyCore
 
-/// Tears every terminal down when the app quits, because nothing else will.
+/// Tears every terminal down when the app quits, because nothing else will, and
+/// stops the local socket server.
 ///
 /// A PTY the app spawned cannot outlive it usefully, and an object still alive at
-/// exit gets no `deinit`, so without this the relay's socket file is left in the
-/// temp directory for an hour until `GhosttyStack.clearStaleSockets` sweeps it, and
-/// the shell only dies because its master happened to close. Synchronous delivery is
-/// required, hence `queue: nil`: an `OperationQueue` hop may not run before the
-/// process is gone.
+/// exit gets no `deinit`, so without this every pane's bridge socket and the server's
+/// socket would be left in the temp directory until the next launch's
+/// `LocalSocketPaths.sweep` found their owner gone, and the shell would only die
+/// because its master happened to close. Synchronous delivery is required, hence
+/// `queue: nil`: an `OperationQueue` hop may not run before the process is gone.
 ///
-/// A type of its own, owned by `TerminalStack`, rather than a few lines inside
+/// A type of its own, owned by `ServerRuntime`, rather than a few lines inside
 /// `GhosttyStack`. Two reasons. `NSApplication` is the last thing keeping that stack
 /// tied to AppKit, and it is on its way to a target that never imports it. And the
 /// owner has to be something with a `deinit`, which `TerminalStack` is not: it is a
@@ -26,13 +27,13 @@ final class TerminalQuitTeardown {
     /// hands it straight back.
     private nonisolated(unsafe) let token: NSObjectProtocol
 
-    /// - Parameter service: held weakly, so an observer that outlives this cannot
-    ///   resurrect the service and the terminals hanging off it.
-    init(service: GhosttyService) {
+    /// - Parameter stack: held weakly, so an observer that outlives this cannot
+    ///   resurrect the stack and the terminals hanging off it.
+    init(stack: GhosttyStack) {
         token = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
-        ) { [weak service] _ in
-            MainActor.assumeIsolated { service?.closeAll() }
+        ) { [weak stack] _ in
+            MainActor.assumeIsolated { stack?.shutDown() }
         }
     }
 

@@ -156,6 +156,52 @@ import WiettyCore
     /// The surface's grid once it has stopped moving. A new surface is created
     /// against a placeholder frame and takes the window's on a later layout pass,
     /// and bytes written before that would be reflowed by the resize.
+    /// libghostty runs a surface's `command` through a shell, so the command the app
+    /// builds for a pane (`PaneBridges.command`) has to reach a real surface as one
+    /// executable with one argument, paths with a space and a single quote included.
+    /// The stand in for the helper records its arguments; nothing else is checked.
+    @Test func aSurfaceRunsThePanesCommandAsOneProgramWithOneArgument() async throws {
+        let directory = TestScratch.root
+            .appendingPathComponent("wietty coexistence's \(UUID().uuidString.prefix(6))")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let record = directory.appendingPathComponent("argv")
+        let script = directory.appendingPathComponent("wietty pty's helper")
+        try """
+        #!/bin/sh
+        {
+          printf '%s\\n' "$#"
+          for argument in "$@"; do printf '[%s]\\n' "$argument"; done
+        } > "\(record.path).part"
+        mv "\(record.path).part" "\(record.path)"
+        exec sleep 600
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let socket = "/tmp/a b'c $HOME `x`.sock"
+
+        let host = try GhosttySurfaceHost()
+        let id = "command-quoting"
+        try host.createSurface(id: id, command: PaneBridges.command(helper: script.path, socket: socket),
+                               directory: directory, title: nil)
+        defer { host.destroySurface(id: id) }
+        let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 600, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let view = try #require(host.view(id: id))
+        view.frame = NSRect(origin: .zero, size: window.contentLayoutRect.size)
+        window.contentView?.addSubview(view)
+        window.orderFrontRegardless()
+        defer { window.close() }
+
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline, !FileManager.default.fileExists(atPath: record.path) {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let recorded = try String(contentsOf: record, encoding: .utf8)
+        print("COEXISTENCE: the surface ran the pane's command with \(recorded.debugDescription)")
+        #expect(recorded == "1\n[\(socket)]\n")
+    }
+
     private func settledSize(of id: String, in host: GhosttySurfaceHost) async throws -> TerminalSize {
         var last: TerminalSize?
         var stableSince = Date()

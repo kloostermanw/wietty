@@ -33,7 +33,7 @@ import WiettyCore
     }
 
     private func wired(_ host: FakeSurfaceHost = FakeSurfaceHost()) -> Wired {
-        let terminals = TerminalStack(ghosttyHost: host, helperPath: "/usr/bin/true")
+        let terminals = TerminalStack.testing(host: host)
         let selection = TerminalSelection()
         let router = PaneRouter()
         let store = ProjectStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
@@ -225,7 +225,7 @@ import WiettyCore
             .appendingPathComponent("pane-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
-        let terminals = TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let terminals = TerminalStack.testing(host: FakeSurfaceHost())
         let store = ProjectStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
                                  config: WiettyConfigFile.temporary(), service: terminals.service)
         let selection = TerminalSelection()

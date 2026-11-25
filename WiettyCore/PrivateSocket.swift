@@ -1,6 +1,16 @@
 import Foundation
 import Darwin
 
+/// Why a local socket path could not be used or bound.
+package enum LocalSocketError: Error, Equatable {
+    case socketPathTooLong(String)
+    /// A socket path that is not absolute.
+    case relativeSocketPath(String)
+    case socketFailed(Int32)
+    case bindFailed(Int32)
+    case listenFailed(Int32)
+}
+
 /// A listening Unix socket whose file only this user can reach, shared by the local
 /// stream server and the pane's bridge.
 package enum PrivateSocket {
@@ -20,13 +30,13 @@ package enum PrivateSocket {
     /// root of the filesystem, and a path that fits while its bind path does not
     /// would fail only when it is bound.
     package static func check(_ path: String) throws {
-        guard path.hasPrefix("/") else { throw TerminalRelayError.relativeSocketPath(path) }
+        guard path.hasPrefix("/") else { throw LocalSocketError.relativeSocketPath(path) }
         guard path.utf8.count < LocalSocketPaths.sunPathLimit else {
-            throw TerminalRelayError.socketPathTooLong(path)
+            throw LocalSocketError.socketPathTooLong(path)
         }
         let bindPath = template(for: path) + "/" + boundName
         guard bindPath.utf8.count < LocalSocketPaths.sunPathLimit else {
-            throw TerminalRelayError.socketPathTooLong(bindPath)
+            throw LocalSocketError.socketPathTooLong(bindPath)
         }
     }
 
@@ -50,14 +60,14 @@ package enum PrivateSocket {
     package static func listen(at path: String, backlog: Int32) throws -> (fd: Int32, identity: Identity) {
         try check(path)
         var template = Array(template(for: path).utf8CString)
-        guard let made = mkdtemp(&template) else { throw TerminalRelayError.bindFailed(errno) }
+        guard let made = mkdtemp(&template) else { throw LocalSocketError.bindFailed(errno) }
         let privateDirectory = String(cString: made)
         defer { rmdir(privateDirectory) }
         let bindPath = privateDirectory + "/" + boundName
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw TerminalRelayError.socketFailed(errno) }
-        func fail(_ error: (Int32) -> TerminalRelayError) -> TerminalRelayError {
+        guard fd >= 0 else { throw LocalSocketError.socketFailed(errno) }
+        func fail(_ error: (Int32) -> LocalSocketError) -> LocalSocketError {
             let code = errno
             close(fd)
             Darwin.unlink(bindPath)
@@ -79,18 +89,18 @@ package enum PrivateSocket {
                 Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard bound == 0 else { throw fail(TerminalRelayError.bindFailed) }
-        guard chmod(bindPath, 0o600) == 0 else { throw fail(TerminalRelayError.bindFailed) }
+        guard bound == 0 else { throw fail(LocalSocketError.bindFailed) }
+        guard chmod(bindPath, 0o600) == 0 else { throw fail(LocalSocketError.bindFailed) }
         // Taken before the rename, which keeps the inode, and from the file itself
         // (`lstat`): without it `stop` could not recognise its own socket.
         var info = stat()
-        guard lstat(bindPath, &info) == 0 else { throw fail(TerminalRelayError.bindFailed) }
+        guard lstat(bindPath, &info) == 0 else { throw fail(LocalSocketError.bindFailed) }
         // Accepting runs on a dispatch source and must never block on a client
         // that went away between being readable and being accepted.
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
         // Listening before the rename: the public name never exists without a listener.
-        guard Darwin.listen(fd, backlog) == 0 else { throw fail(TerminalRelayError.listenFailed) }
-        guard rename(bindPath, path) == 0 else { throw fail(TerminalRelayError.bindFailed) }
+        guard Darwin.listen(fd, backlog) == 0 else { throw fail(LocalSocketError.listenFailed) }
+        guard rename(bindPath, path) == 0 else { throw fail(LocalSocketError.bindFailed) }
         return (fd, (info.st_dev, info.st_ino))
     }
 

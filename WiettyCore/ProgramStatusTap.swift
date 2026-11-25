@@ -9,8 +9,8 @@ import Foundation
 /// answers something; whichever reply comes back first decides. libghostty answers
 /// the device attributes request as soon as it has read the chunk. So the reply has
 /// to be written while the chunk is still in the relay's hands, before it is
-/// forwarded to the helper, which is why `reply` is called synchronously from
-/// `ingest`. It goes through `RawPTY.write`'s serial queue, the same queue
+/// handed to the hub and from there to the surface, which is why `reply` is called
+/// synchronously from `ingest`. It goes through `RawPTY.write`'s serial queue, the same queue
 /// libghostty's own replies reach the master through, so it is queued first by
 /// construction rather than by luck.
 ///

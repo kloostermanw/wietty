@@ -83,7 +83,15 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// another branch, because the stack would not be holding it. This can.
     static private(set) var initCount = 0
 
-    init() throws {
+    /// The bridge of every surface `createSurface(id:directory:title:)` made. Nil for
+    /// a host built with none, which can create a surface only for an explicit
+    /// command (`createSurface(id:command:directory:title:)`).
+    private let bridges: PaneBridges?
+
+    /// - Parameter bridges: joins each surface to its terminal's stream. The app
+    ///   passes one; a test that drives a surface with a command of its own does not.
+    init(bridges: PaneBridges? = nil) throws {
+        self.bridges = bridges
         // Counted first, so a construction that then fails still shows. What is
         // being watched is whether anything reached for libghostty at all, not
         // whether it got a working host out of it.
@@ -250,6 +258,25 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
 
     // MARK: - Surfaces
 
+    /// The surface of terminal `id`, joined to its stream: the bridge is built and
+    /// listening first, then the surface runs the helper pointed at it
+    /// (`PaneBridges.command`). A surface that cannot be created takes its bridge
+    /// with it.
+    func createSurface(id: String, directory: URL, title: String?) throws {
+        guard let bridges, app != nil, surfaces[id] == nil else { throw SurfaceHostError.surfaceFailed }
+        let command = try bridges.open(session: id)
+        do {
+            try createSurface(id: id, command: command, directory: directory, title: title)
+        } catch {
+            bridges.close(session: id)
+            throw error
+        }
+    }
+
+    /// A surface running `command` in `directory`, with no bridge: what the surface
+    /// shows is whatever `command` prints. Not part of `TerminalSurfaceHosting`; the
+    /// coexistence check and the imposed grid measurement drive a surface this way.
+    /// `destroySurface(id:)` frees it as any other.
     func createSurface(id: String, command: String, directory: URL, title: String?) throws {
         guard let app else { throw SurfaceHostError.surfaceFailed }
         guard surfaces[id] == nil else { throw SurfaceHostError.surfaceFailed }
@@ -290,6 +317,13 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     }
 
     func destroySurface(id: String) {
+        // The bridge first, as the relay's socket used to be closed first: the
+        // helper sees its socket end and exits, and a write of the bridge's that is
+        // blocked on a surface no longer reading fails at once rather than outlive
+        // the surface. A close request libghostty raises for that exit arrives on a
+        // later main turn and finds no surface. Also for a surface that is already
+        // gone, since stopping a bridge twice is nothing.
+        bridges?.close(session: id)
         guard let surface = surfaces.removeValue(forKey: id) else { return }
         titles[id] = nil
         // The view's pointer is cleared before the free, because a view can still
@@ -485,10 +519,10 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
             //
             // libghostty means "the process this surface was running has ended,
             // show the user". On this substrate that process is `wietty-pty`,
-            // which ends when its socket closes: it is downstream of the terminal
-            // ending rather than the cause of it, and it also fires when the app
-            // itself tears a terminal down. The row's own state comes from the
-            // relay's EOF instead, through `GhosttyService.reap` and the monitor,
+            // which ends when its bridge's socket closes: it is downstream of the
+            // terminal ending rather than the cause of it, and it also fires when
+            // the app itself tears a terminal down. The row's own state comes from
+            // the pty's EOF instead, through `GhosttyService.reap` and the monitor,
             // which is the one path that knows whether the *shell* exited. Drawing
             // a second "the command exited" notice over the surface would cover
             // the last screen that command printed, which is the thing worth
@@ -558,7 +592,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// Reports a close request, and frees nothing.
     ///
     /// Not freeing is the point. This fires when the surface's command exits,
-    /// which on this substrate is the helper losing its socket, and the last
+    /// which on this substrate is the helper losing its bridge, and the last
     /// screen a command left behind is what the user wants to read. The handler's
     /// job is to retire the terminal, and `close`/`closeAll` remain the only
     /// things that destroy a surface.

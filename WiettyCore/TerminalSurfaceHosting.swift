@@ -26,10 +26,19 @@ package enum SurfaceHostError: Error, Equatable {
 /// and `GhosttyStack` with it, live in a target that never imports AppKit.
 @MainActor
 package protocol TerminalSurfaceHosting: AnyObject {
-    /// Creates a surface running `command` in `directory`. `title` labels it,
+    /// Creates the surface of terminal `id`, in `directory`, as a viewer of that
+    /// terminal's stream: the host joins it to the session through a bridge of its
+    /// own (the app's `TerminalBridge`, attached to `LocalStreamServer` as the
+    /// session's local viewer). What the surface runs to get there is the host's
+    /// business, and no part of the core builds it. `title` labels the surface,
     /// which is what the workspace badge setting sets.
-    func createSurface(id: String, command: String, directory: URL, title: String?) throws
+    ///
+    /// The session must be live in the census when this is called: the bridge may
+    /// attach before it returns.
+    func createSurface(id: String, directory: URL, title: String?) throws
 
+    /// Frees the surface of `id` and stops its bridge, which removes the bridge's
+    /// socket file. A surface that does not exist is nothing to do.
     func destroySurface(id: String)
 
     /// The surface's grid, or nil before it has one. This is the sizing authority
@@ -126,7 +135,7 @@ package final class InertSurfaceHost: TerminalSurfaceHosting {
     package var onCloseRequested: (@MainActor (String) -> Void)?
     package var onInput: (@MainActor (String) -> Void)?
 
-    package func createSurface(id: String, command: String, directory: URL, title: String?) throws {
+    package func createSurface(id: String, directory: URL, title: String?) throws {
         throw SurfaceHostError.surfaceFailed
     }
     package func destroySurface(id: String) {}

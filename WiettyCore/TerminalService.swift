@@ -21,6 +21,9 @@ package enum TerminalError: LocalizedError, Equatable {
     case failed(String)
     case ghosttyInitFailed(String)
     case ghosttyHelperMissing
+    /// The socket the app's panes reach their terminals through could not be made
+    /// or bound.
+    case localSocketFailed(String)
 
     package var errorDescription: String? {
         switch self {
@@ -30,6 +33,8 @@ package enum TerminalError: LocalizedError, Equatable {
             return "The internal terminal could not start: \(message)"
         case .ghosttyHelperMissing:
             return "The internal terminal helper is missing from the Wietty app bundle. Reinstall Wietty."
+        case .localSocketFailed(let message):
+            return "The internal terminal could not open its socket in the temporary directory: \(message)"
         }
     }
 }

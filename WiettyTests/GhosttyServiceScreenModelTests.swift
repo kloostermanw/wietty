@@ -71,14 +71,14 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
     /// step that accepts a chunk, and the stack is what connects the two. The
     /// service keeps the hub alive through the hooks it was built with.
     private func service(_ host: FakeSurfaceHost) throws -> GhosttyService {
-        try #require(GhosttyStack(host: host, helperPath: "/usr/bin/true").ghosttyService)
+        try #require(GhosttyStack.testing(host: host).ghosttyService)
     }
 
     /// A service whose models are the recording kind.
     private func service(_ host: FakeSurfaceHost, models: ModelFactoryLog,
                          onOutput: @escaping @Sendable (String, [UInt8]) -> Void = { _, _ in })
         -> GhosttyService {
-        GhosttyService(host: host, helperPath: "/usr/bin/true",
+        GhosttyService(host: host, readDelay: 0,
                        onOutput: onOutput,
                        makeScreenModel: { try models.make($0, $1, $2) },
                        onTerminated: { _ in })
@@ -133,7 +133,7 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
     /// The stack is what points the service at the store, and it follows the
     /// store rather than copying it: a later change is what the next open reads.
     @Test func theStackMakesTheServiceFollowTheStoresSetting() throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         let service = try #require(stack.ghosttyService)
         let store = SettingsFixture(config: WiettyConfigFile.temporary()).store
         #expect(service.scrollbackLines() == TerminalScrollback.defaultLines)

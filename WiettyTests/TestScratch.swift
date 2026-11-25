@@ -11,7 +11,7 @@ import WiettyCore
 /// already, so a test may write a file straight into it.
 ///
 /// Not for Unix socket paths: `sun_path` has a tight length budget, and
-/// `GhosttyStack.clearStaleSockets` sweeps `NSTemporaryDirectory()` for exactly those.
+/// `LocalSocketPaths.sweep` sweeps `NSTemporaryDirectory()` for exactly those.
 enum TestScratch {
     static let root: URL = {
         let url = TestHost.sandbox.appendingPathComponent("scratch")

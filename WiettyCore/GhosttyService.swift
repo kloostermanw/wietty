@@ -6,7 +6,7 @@ import OSLog
 ///
 /// The hub asks from its own queues and cannot wait for a hop to the main actor.
 /// The census gates an attach, which has to be answered before the viewer is
-/// registered. A terminal's screen model is fed on the relay's queue with every
+/// registered. A terminal's screen model is fed on the pty's read thread with every
 /// chunk and asked for a frame on the hub's delivery queue, under the hub's lock
 /// for that session. A remote viewer's input is handed to the terminal's writer on
 /// whatever thread it arrived on. Hopping any of them would put a terminal's bytes,
@@ -17,6 +17,7 @@ package final class SharedTerminalState: @unchecked Sendable {
     private var models: [String: any TerminalScreenModel] = [:]
     private var writers: [String: @Sendable ([UInt8]) -> Void] = [:]
     private var resizers: [String: @Sendable (TerminalSize) -> Void] = [:]
+    private var readStarts: [String: @Sendable () -> Void] = [:]
 
     /// `GhosttyService` builds the app's one instance. Reachable from the tests so
     /// `StreamBaselineTests` can wire the hub to a model exactly as `GhosttyStack` does.
@@ -89,25 +90,51 @@ package final class SharedTerminalState: @unchecked Sendable {
     package func removeResizer(for session: String) {
         lock.lock(); resizers[session] = nil; lock.unlock()
     }
+
+    /// What starts reading a terminal's pty, kept until the first of its two
+    /// triggers takes it: the pane's own viewer attaching (`PaneStreamHub`'s
+    /// `onLocalViewerAttached`, on the hub's delivery queue) or the wait for it
+    /// running out (on a timer's thread). Behind this lock, so the two cannot both
+    /// have it, and so neither waits for the main actor.
+    package func register(readStart: @escaping @Sendable () -> Void, for session: String) {
+        lock.lock(); readStarts[session] = readStart; lock.unlock()
+    }
+
+    /// Removes and returns a terminal's read start: whoever gets it is the one
+    /// caller that may run it. Nil once taken, and for a terminal closed before
+    /// either trigger, which therefore never reads.
+    package func takeReadStart(for session: String) -> (@Sendable () -> Void)? {
+        lock.lock(); defer { lock.unlock() }
+        return readStarts.removeValue(forKey: session)
+    }
 }
 
 /// The libghostty substrate's `TerminalService`.
 ///
 /// A terminal here is three things that live and die together: a `RawPTY` running
-/// the user's shell, a `TerminalRelay` carrying its bytes, and a libghostty
-/// surface rendering them. This type is what keeps the three in step, and it is
-/// the only place that knows a terminal is not a single object.
+/// the user's shell, a `TerminalRelay` reading it into `PaneStreamHub`, and a
+/// libghostty surface rendering it. This type is what keeps the three in step, and
+/// it is the only place that knows a terminal is not a single object.
+///
+/// The surface is a viewer of the stream like any other: the host gives it a bridge
+/// that attaches to the hub through `LocalStreamServer` as the session's local
+/// viewer. So this asks the host only for a surface for a session, and builds no
+/// command.
 ///
 /// A session id is minted here (`gt:<uuid>`) rather than taken from a substrate,
 /// because there is no substrate to ask: the PTY belongs to the app.
 ///
 /// Main actor isolated, because the surface host is. The byte path is not: it
-/// runs on the relay's own queues and touches only `PaneStreamHub`, which is
+/// runs on the pty's read thread and touches only `PaneStreamHub`, which is
 /// lock protected. That split is deliberate. Hopping every chunk of terminal
 /// output to the main actor would put a shell's output behind the UI's work.
 @MainActor
 package final class GhosttyService: TerminalService {
     private static let log = Logger(subsystem: "eu.kloosterman.wietty", category: "terminal-service")
+
+    /// How long a new terminal waits for the pane's own viewer before its pty is
+    /// read anyway. See `open`.
+    package nonisolated static let unattachedReadDelay: TimeInterval = 5
 
     private struct Terminal {
         let pty: RawPTY
@@ -126,8 +153,13 @@ package final class GhosttyService: TerminalService {
     }
 
     private let host: any TerminalSurfaceHosting
-    private let helperPath: String
     private let shell: String
+    /// How long `open` lets a terminal wait for its pane's viewer before reading
+    /// its pty anyway (`unattachedReadDelay` unless a test says otherwise).
+    private let readDelay: TimeInterval
+    /// Where the error for a terminal read without its pane goes. The log, unless a
+    /// test listens.
+    private let reportUnattachedRead: @Sendable (String) -> Void
     private let onOutput: @Sendable (String, [UInt8]) -> Void
     /// A terminal's grid changed. Mirrors `onOutput`: the substrate reports, and
     /// `GhosttyStack` decides that the hub is what hears it.
@@ -170,7 +202,7 @@ package final class GhosttyService: TerminalService {
     /// How many lines of history the next terminal's model is built to keep.
     ///
     /// Asked in `open`, on the main actor, once per terminal, and never from the
-    /// relay's queue or the hub's: a model is handed its limit when it is built and
+    /// pty's read thread or the hub's queue: a model is handed its limit when it is built and
     /// nothing reads the setting after that. So a change reaches terminals opened
     /// after it, and one that is already open keeps what it started with.
     ///
@@ -230,9 +262,16 @@ package final class GhosttyService: TerminalService {
         Set(terminals.lazy.filter { !$0.value.exited }.map(\.key))
     }
 
+    /// - Parameter readDelay: how long a terminal waits for its pane's own viewer
+    ///   before its pty is read anyway; see `open`.
+    /// - Parameter reportUnattachedRead: told, with the message, when that wait runs
+    ///   out. Logs it as an error by default.
     package init(host: any TerminalSurfaceHosting,
-         helperPath: String,
          shell: String = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh",
+         readDelay: TimeInterval = GhosttyService.unattachedReadDelay,
+         reportUnattachedRead: @escaping @Sendable (String) -> Void = { message in
+             GhosttyLog.stack.error("\(message, privacy: .public)")
+         },
          onOutput: @escaping @Sendable (String, [UInt8]) -> Void,
          onResized: @escaping @Sendable (String, TerminalSize) -> Void = { _, _ in },
          onStreamEnded: @escaping @Sendable (String) -> Void = { _ in },
@@ -244,8 +283,9 @@ package final class GhosttyService: TerminalService {
              = { try GhosttyVtScreenModel(size: $0, scrollbackLines: $1, graphemeClustering: $2) },
          onTerminated: @escaping @MainActor (String) -> Void) {
         self.host = host
-        self.helperPath = helperPath
         self.shell = shell
+        self.readDelay = readDelay
+        self.reportUnattachedRead = reportUnattachedRead
         self.onOutput = onOutput
         self.onResized = onResized
         self.onStreamEnded = onStreamEnded
@@ -279,16 +319,30 @@ package final class GhosttyService: TerminalService {
         host.onCloseRequested = { [weak self] session in self?.reap(session) }
     }
 
+    /// Opens a terminal: a model, a pty running the shell, a relay to read it, and a
+    /// surface whose bridge attaches to the stream as the session's local viewer.
+    ///
+    /// **The pty is read only once the pane's viewer has attached** (decision P2).
+    /// Its first snapshot is then the empty screen, and every byte the child writes
+    /// reaches the pane through the stream, none of it folded into a snapshot taken
+    /// before the pane could read. Reading starts when the hub reports the session's
+    /// first local viewer (`localViewerAttached(session:)`), or after `readDelay` if
+    /// none has, whichever is first, and exactly once: whichever takes the read start
+    /// from `shared` runs it. The second path is reported as an error, since a pane
+    /// that does not attach is a fault, but a terminal that never reads would hang its
+    /// child at the first full buffer. A terminal closed or failed before either takes
+    /// the read start away, and never reads.
+    ///
+    /// **The session is live before its surface is asked for.** The bridge's link
+    /// attaches from its own thread as soon as the helper connects, which can be
+    /// before `createSurface` returns, and an attach for a session the census does not
+    /// hold is answered `ended`. A failed `createSurface` takes it out again.
     package func open(folder: URL, existingWindowId: String?, command: String?,
               badge: String?) async throws -> TerminalHandle {
         let session = Self.sessionPrefix + UUID().uuidString.lowercased()
-        let socketPath = try TerminalRelay.socketPath(for: session)
         // Before the pty, so a model that cannot be built leaves nothing to clean
         // up. At the grid the pty is about to be spawned with, which is the only
         // grid there is until the surface reports its own.
-        //
-        // Registered only once the surface exists, so each way out of this method
-        // that throws simply drops it and nothing has to remember to.
         //
         // Grapheme clustering is asked of the host here, once, because this is the
         // moment the surface is created from the same configuration. A terminal
@@ -307,58 +361,26 @@ package final class GhosttyService: TerminalService {
         // released has nobody left to answer.
         let status = ProgramStatusTap(reply: { [weak pty] answer in pty?.write(answer) },
                                       report: { event in onProgramStatus(session, event) })
-        let relay: TerminalRelay
-        do {
-            relay = try TerminalRelay(pty: pty, socketPath: socketPath) { bytes in
-                // Ahead of everything, because this is what answers `OSC 7501 ; ?`,
-                // and that answer has to be queued before the relay forwards this
-                // chunk to the helper and libghostty answers what follows the query.
-                // `ProgramStatusTap` says why.
-                status.ingest(bytes)
-                // The hub next and unconditionally: a live viewer's bytes must not
-                // wait behind anything, and this runs on the relay's queue precisely
-                // so they do not.
-                //
-                // This is also what feeds the terminal's screen model. Not a line
-                // of its own here, on purpose: the hub writes the model in the
-                // same step that accepts the chunk for delivery, which is the
-                // only way a paint taken from the model can line up with the
-                // stream that follows it. See `PaneStreamHub.onIngest`.
-                onOutput(session, bytes)
-            }
-        } catch {
-            // Nothing is registered yet, so nothing else will clean this up.
-            pty.terminate()
-            throw error
+        let relay = TerminalRelay(pty: pty) { bytes in
+            // Ahead of everything, because this is what answers `OSC 7501 ; ?`,
+            // and that answer has to be queued before the hub hands this chunk to
+            // the pane and libghostty answers what follows the query.
+            // `ProgramStatusTap` says why.
+            status.ingest(bytes)
+            // The hub next and unconditionally: it is every viewer's path, the
+            // pane's own included, and this runs on the pty's thread precisely so
+            // no byte waits behind anything else.
+            //
+            // This is also what feeds the terminal's screen model. Not a line
+            // of its own here, on purpose: the hub writes the model in the
+            // same step that accepts the chunk for delivery, which is the
+            // only way a paint taken from the model can line up with the
+            // stream that follows it. See `PaneStreamHub.onIngest`.
+            onOutput(session, bytes)
         }
 
-        // The surface's command is the helper, never the user's shell. libghostty
-        // spawning the shell is exactly what this substrate exists to avoid,
-        // because then Wietty owns no byte stream and no remote viewer can be
-        // served.
-        //
-        // `badge` travels as the surface's title. libghostty has no title setter,
-        // so today it reaches the host's own record and the view's accessibility
-        // label and no further: it labels nothing a sighted user can see. It is
-        // still passed rather than dropped, because the alternative is a substrate
-        // that silently ignores a workspace setting the other two honour, and the
-        // day the C API grows a setter this already carries the value.
-        do {
-            try host.createSurface(id: session,
-                                   command: "\(helperPath) \(socketPath)",
-                                   directory: folder,
-                                   title: badge)
-        } catch {
-            relay.stop()
-            pty.terminate()
-            throw error
-        }
-
-        // Registered before the relay starts reading, because the first chunk is
-        // looked up here: the hub feeds the model it finds for the session, and a
-        // model registered a moment later would have missed the shell's first
-        // lines. Nothing after this point can throw, so nothing has to take it
-        // back out.
+        // Registered before the surface is asked for: the pane's viewer can attach
+        // while `createSurface` runs, and its snapshot is taken from this model.
         shared.note(model: model, for: session)
         // Weakly, like the status tap's reply: the registry must not keep a pty
         // alive, and one that has been released has nobody left to read input.
@@ -370,11 +392,52 @@ package final class GhosttyService: TerminalService {
             pty?.resize(to: size)
             model?.resize(to: size)
         }, for: session)
-        relay.start(onExit: { [weak self] _ in
+        // The child's exit is noticed by the read, so a terminal that never reads
+        // is reaped by its close instead.
+        let onExit: @Sendable (Int32) -> Void = { [weak self] _ in
             Task { @MainActor in self?.reap(session) }
-        })
+        }
+        shared.register(readStart: { relay.start(onExit: onExit) }, for: session)
         terminals[session] = Terminal(pty: pty, relay: relay)
+        // Live before the surface exists; see the doc above.
         shared.note(live: liveSessions)
+
+        // `badge` travels as the surface's title. libghostty has no title setter,
+        // so today it reaches the host's own record and the view's accessibility
+        // label and no further: it labels nothing a sighted user can see. It is
+        // still passed rather than dropped, because the alternative is a substrate
+        // that silently ignores a workspace setting the other two honour, and the
+        // day the C API grows a setter this already carries the value.
+        do {
+            try host.createSurface(id: session, directory: folder, title: badge)
+        } catch {
+            // Nothing will read this terminal: everything registered above goes,
+            // and a viewer that attached meanwhile is told it ended.
+            terminals[session] = nil
+            _ = shared.takeReadStart(for: session)
+            relay.stop()
+            pty.terminate()
+            shared.note(live: liveSessions)
+            shared.removeModel(for: session)
+            shared.removeWriter(for: session)
+            shared.removeResizer(for: session)
+            onStreamEnded(session)
+            throw error
+        }
+
+        // The pane's viewer had its chance. Not on the main actor: neither the
+        // start nor the report needs it, and the wait must not depend on it.
+        let shared = self.shared
+        let report = reportUnattachedRead
+        let delay = readDelay
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+            guard let start = shared.takeReadStart(for: session) else { return }
+            report("""
+                terminal \(session) is read without its pane: no local viewer attached \
+                within \(delay) seconds
+                """)
+            start()
+        }
         onDisplayRequest(session)
 
         // `windowId` is echoed back rather than minted. Nothing here is a window,
@@ -383,15 +446,25 @@ package final class GhosttyService: TerminalService {
         return TerminalHandle(sessionId: session, windowId: existingWindowId ?? "")
     }
 
+    /// The pane's own viewer of `session` has attached: its pty is read from now on,
+    /// unless that has started already or the terminal is gone.
+    ///
+    /// Called by `PaneStreamHub.onLocalViewerAttached`, on the hub's delivery queue,
+    /// with no lock of the hub's held. It calls nothing of the hub's: starting the
+    /// read only installs the pty's read source, whose first chunk reaches the hub
+    /// later on the pty's own thread.
+    package nonisolated func localViewerAttached(session: String) {
+        shared.takeReadStart(for: session)?()
+    }
+
     /// Retires a terminal whose child has exited: the relay and the pty go, the
     /// census stops counting it, and only then is the caller told.
     ///
     /// The service reaps itself rather than leaving it to whoever wired the
     /// callback. `terminals` is the source of truth, so a corpse left in it is a
     /// broken invariant inside the one type that owns
-    /// it: the census reports a dead terminal as attachable, `jobEvents` polls a
-    /// closed master, and the relay's socket file survives until someone
-    /// remembers to call `close`. Requiring every future construction of this
+    /// it: the census reports a dead terminal as attachable, and `jobEvents` polls a
+    /// closed master until someone remembers to call `close`. Requiring every future construction of this
     /// service to remember that wiring is exactly the seam that gets forgotten.
     ///
     /// The order matters. The viewers are told, and then `onTerminated` last, so a
@@ -407,6 +480,9 @@ package final class GhosttyService: TerminalService {
     private func reap(_ session: String) {
         guard let terminal = terminals[session], !terminal.exited else { return }
         terminals[session]?.exited = true
+        // A terminal that ends before its pty was ever read (a close request, a
+        // stop) is not read afterwards either.
+        _ = shared.takeReadStart(for: session)
         terminal.relay.stop()
         terminal.pty.terminate()
         shared.note(live: liveSessions)
@@ -447,8 +523,8 @@ package final class GhosttyService: TerminalService {
     }
 
     /// Input goes to the pty master, not to the surface. Local keystrokes arrive
-    /// the same way, through the relay, so both orders are the pty's and there is
-    /// one path to get wrong instead of two.
+    /// the same way, through the pane's bridge and the hub's writer, so both orders
+    /// are the pty's and there is one path to get wrong instead of two.
     ///
     /// Main actor isolated and yet safe to call with a megabyte of pasted text,
     /// because `RawPTY.write` hands the bytes to that pty's own serial queue rather
@@ -511,10 +587,13 @@ package final class GhosttyService: TerminalService {
         tearDown(sessionId)
     }
 
-    /// Retires a terminal for good: the relay, the pty, the surface and the
-    /// screen model all go, and its viewers are told.
+    /// Retires a terminal for good: the relay, the pty, the surface (and with it
+    /// the pane's bridge and its socket) and the screen model all go, and its
+    /// viewers are told.
     private func tearDown(_ sessionId: String) {
         guard let terminal = terminals.removeValue(forKey: sessionId) else { return }
+        // Closed before its pane attached or the wait ran out: never read.
+        _ = shared.takeReadStart(for: sessionId)
         // Both are idempotent, which is what makes closing a row whose child was
         // already reaped safe: `stop` returns at once and `terminate` signals
         // nothing twice.
@@ -596,10 +675,12 @@ package final class GhosttyService: TerminalService {
         }
     }
 
-    /// Tears every terminal down. Called on app teardown and by tests, so a
-    /// leaked pty does not outlive the process that owns its socket file.
+    /// Tears every terminal down, its surface and the pane's bridge with it. Called on
+    /// app teardown and by tests, so a leaked pty does not outlive the app and no
+    /// bridge leaves its socket file behind.
     package func closeAll() {
         for (session, terminal) in terminals {
+            _ = shared.takeReadStart(for: session)
             terminal.relay.stop()
             terminal.pty.terminate()
             host.destroySurface(id: session)

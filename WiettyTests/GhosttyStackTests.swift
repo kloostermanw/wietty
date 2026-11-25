@@ -49,16 +49,41 @@ private final class Flag: @unchecked Sendable {
 /// failing every call site silently.
 @MainActor
 @Suite struct GhosttyStackTests {
-    @Test func aMissingHelperIsAStartupError() {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: nil)
-        #expect(stack.setupError == TerminalError.ghosttyHelperMissing.errorDescription)
+    /// A local socket that cannot be bound is a startup error of its own, reported
+    /// and thrown as the same error, like a missing helper. The panes reach their
+    /// terminals only through it.
+    @Test func aLocalSocketThatCannotBeBoundIsAStartupError() async {
+        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: "not-absolute.sock")
+        let expected = TerminalError.localSocketFailed(
+            String(describing: LocalSocketError.relativeSocketPath("not-absolute.sock")))
+        #expect(stack.setupError == expected.errorDescription)
+        #expect(stack.localServer == nil)
+        await #expect(throws: expected) {
+            _ = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                             existingWindowId: nil, command: nil, badge: nil)
+        }
+    }
+
+    /// The local socket server runs on every working stack, remote access or not,
+    /// and `shutDown()` (what quitting calls) stops it and removes its socket file.
+    @Test func aWorkingStackServesItsLocalSocketUntilShutDown() throws {
+        let path = shortSocketPath("gst")
+        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: path, readDelay: 0)
+        #expect(stack.localSocketPath == path)
+        #expect(stack.localServer != nil)
+        let client = try UnixTestSocket(connectingTo: path)
+        client.close()
+        stack.shutDown()
+        #expect(FileManager.default.fileExists(atPath: path) == false)
+        #expect(throws: (any Error).self) { try UnixTestSocket(connectingTo: path) }
     }
 
     /// A stack that cannot work still constructs, so the app launches and can
     /// explain itself. Every terminal action then fails with the one actionable
     /// message instead of appearing to do nothing.
     @Test func abrokenStackStillServesAnActionableError() async {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: nil)
+        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: shortSocketPath("gst"),
+                                 startupFailure: .ghosttyHelperMissing)
         #expect(stack.service is UnavailableTerminalService)
         await #expect(throws: TerminalError.self) {
             _ = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
@@ -74,7 +99,8 @@ private final class Flag: @unchecked Sendable {
     /// nothing with certainty, and the sidebar can offer such a session at any time,
     /// including a row that was never opened.
     @Test func abrokenStackEndsAnAttachRatherThanLeavingItSilent() {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: nil)
+        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: shortSocketPath("gst"),
+                                 startupFailure: .ghosttyHelperMissing)
         let ended = Flag()
         stack.hub.attach(session: "gt:anything", resize: .repaint) { if case .ended = $0 { ended.raise() } }
         #expect(ended.isRaised)
@@ -86,8 +112,8 @@ private final class Flag: @unchecked Sendable {
     /// reinstall the app for a missing helper, sending them to fix the wrong thing.
     @Test func aLibghosttyFailureIsReportedAndThrownAsTheSameError() async {
         let expected = TerminalError.ghosttyInitFailed("no Metal device")
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true",
-                                 hostFailure: expected)
+        let stack = GhosttyStack(host: FakeSurfaceHost(), localSocketPath: shortSocketPath("gst"),
+                                 startupFailure: expected)
         #expect(stack.setupError == expected.errorDescription)
         await #expect(throws: expected) {
             _ = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
@@ -96,7 +122,7 @@ private final class Flag: @unchecked Sendable {
     }
 
     @Test func aWorkingStackBuildsTheRealPieces() {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         #expect(stack.setupError == nil)
         #expect(stack.service is GhosttyService)
@@ -106,7 +132,7 @@ private final class Flag: @unchecked Sendable {
     /// The hub is the one streaming path, so a terminal's bytes have to arrive in
     /// it without the service knowing the hub exists.
     @Test func terminalBytesReachTheHub() async throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
@@ -130,7 +156,7 @@ private final class Flag: @unchecked Sendable {
     /// prove only that something was written; `remote-21` can only come from a
     /// shell that read the line.
     @Test func remoteKeystrokesReachTheTerminal() async throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
@@ -165,7 +191,7 @@ private final class Flag: @unchecked Sendable {
     /// the write order, whether or not the child has started reading yet. A shell
     /// would add its own startup, its own line editor, and nothing to the claim.
     @Test func rapidKeystrokesReachTheTerminalInOrder() async throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
@@ -196,7 +222,7 @@ private final class Flag: @unchecked Sendable {
     /// is that busy main actor: it waits on the semaphore without yielding, so a
     /// path through the main actor could only time out.
     @Test func inputReachesTheWriterWhileTheMainActorIsBlocked() throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let shared = try #require(stack.ghosttyService?.shared)
         let arrived = DispatchSemaphore(value: 0)
@@ -212,7 +238,7 @@ private final class Flag: @unchecked Sendable {
     /// no session id at all, so the sidebar can offer an unattachable session at
     /// any time.
     @Test func attachingToADeadSessionEndsTheViewer() {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let ended = Flag()
         stack.hub.attach(session: "gt:never-existed", resize: .repaint) { if case .ended = $0 { ended.raise() } }
@@ -228,7 +254,7 @@ private final class Flag: @unchecked Sendable {
     /// silent forever, indistinguishable from an idle terminal, which is exactly the
     /// state the census exists to prevent for a viewer arriving later.
     @Test func anAttachedViewerIsToldWhenTheChildExits() async throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
@@ -246,7 +272,7 @@ private final class Flag: @unchecked Sendable {
     /// has no more claim on a closed row than on an exited one, and the same silence
     /// follows if nobody tells it.
     @Test func anAttachedViewerIsToldWhenTheRowIsClosed() async throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
@@ -264,7 +290,7 @@ private final class Flag: @unchecked Sendable {
     /// buffer when the terminal ends: an ending that dropped them showed a browser
     /// watching `echo` a session that ended and never what it printed.
     @Test func theLastOutputReachesAViewerBeforeTheEnding() async throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
@@ -292,7 +318,7 @@ private final class Flag: @unchecked Sendable {
     /// matched as bytes: where things end up is the contract.
     @Test func aViewerAttachingToALiveTerminalIsPaintedTheScreenTheModelHolds() async throws {
         let host = FakeSurfaceHost()
-        let stack = GhosttyStack(host: host, helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: host)
         defer { stack.ghosttyService?.closeAll() }
         let handle = try await stack.service.open(
             folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
@@ -326,7 +352,7 @@ private final class Flag: @unchecked Sendable {
     /// into the hub itself.
     @Test func resizingATerminalTellsItsViewersTheNewGrid() async throws {
         let host = FakeSurfaceHost()
-        let stack = GhosttyStack(host: host, helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: host)
         defer { stack.ghosttyService?.closeAll() }
         // Ninety columns of output: two rows on a grid of eighty, one on a hundred.
         let handle = try await stack.service.open(
@@ -369,7 +395,7 @@ private final class Flag: @unchecked Sendable {
     /// itself, which reads only output.
     @Test func surfaceInputReachesTheWiredHandler() {
         let host = FakeSurfaceHost()
-        let stack = GhosttyStack(host: host, helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: host)
         defer { stack.ghosttyService?.closeAll() }
         var typed: [String] = []
         stack.onInput = { session in typed.append(session) }
@@ -381,7 +407,7 @@ private final class Flag: @unchecked Sendable {
     /// listener, against the session that printed it. It arrives on the main actor,
     /// because that is where the listener runs.
     @Test func aProgramStatusReportReachesTheMonitor() async throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         var events: [MonitorEvent] = []
         stack.monitor.start { events.append($0) }
@@ -398,7 +424,7 @@ private final class Flag: @unchecked Sendable {
     /// The job poll the store is handed has to be bound to this stack, or it
     /// answers nothing and every agent's status freezes.
     @Test func theJobPollIsBoundToThisStack() async throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
@@ -407,37 +433,6 @@ private final class Flag: @unchecked Sendable {
         try await waitUntil {
             poll().contains(.job(sessionId: handle.sessionId, jobName: "sleep"))
         }
-    }
-
-    /// The socket sweep takes what a crashed run left behind and leaves what a live
-    /// terminal is using.
-    ///
-    /// Age is the whole predicate, because the name cannot carry an owner: the
-    /// `sun_path` budget is already spent. Without it the sweep unlinks the socket of
-    /// any other Wietty sharing the temp directory, and the socket of a relay in
-    /// this process that has bound but whose helper has not connected yet, which is a
-    /// terminal that then produces nothing with no visible cause.
-    @Test func theSocketSweepSparesSocketsYoungEnoughToBeInUse() throws {
-        let directory = NSTemporaryDirectory()
-        let tag = UInt32.random(in: 0..<0xFFFFFF)
-        let fresh = directory + "ipx-fresh\(tag).sock"
-        let abandoned = directory + "ipx-old\(tag).sock"
-        try Data().write(to: URL(fileURLWithPath: fresh))
-        try Data().write(to: URL(fileURLWithPath: abandoned))
-        defer {
-            unlink(fresh)
-            unlink(abandoned)
-        }
-        let old = Date(timeIntervalSinceNow: -GhosttyStack.staleSocketAge - 60)
-        try FileManager.default.setAttributes([.modificationDate: old],
-                                              ofItemAtPath: abandoned)
-
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
-        defer { stack.ghosttyService?.closeAll() }
-        stack.clearStaleSockets()
-
-        #expect(FileManager.default.fileExists(atPath: fresh))
-        #expect(FileManager.default.fileExists(atPath: abandoned) == false)
     }
 
     /// Polls a condition instead of sleeping a fixed time. A real shell reaching

@@ -62,7 +62,7 @@ private final class FakeStreamer: ScreenStreaming, @unchecked Sendable {
     /// protocol, so a stand-in can back it in a test with no PTY and no surface.
     @MainActor
     @Test func theInternalTerminalSatisfiesTheServiceProtocols() {
-        let stack = TerminalStack(ghosttyHost: FakeSurfaceHost())
+        let stack = TerminalStack.testing(host: FakeSurfaceHost())
         defer { stack.ghostty.ghosttyService?.closeAll() }
         #expect(stack.service is GhosttyService || stack.setupError != nil)
         #expect(stack.streamer is PaneStreamHub)

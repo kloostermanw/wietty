@@ -26,7 +26,7 @@ import WiettyShared
         return RightTerminalView(
             store: SettingsFixture(defaults: defaults, service: FakeTerminalService()).store,
             preferences: SettingsFixture(defaults: defaults, service: FakeTerminalService()).preferences,
-            terminals: TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true"),
+            terminals: TerminalStack.testing(host: FakeSurfaceHost()),
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: notifier(),

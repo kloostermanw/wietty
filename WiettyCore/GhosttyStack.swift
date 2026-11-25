@@ -4,22 +4,30 @@ import Foundation
 /// event routing between them, and reports a stack that cannot work through
 /// `setupError`.
 ///
-/// It always constructs. A libghostty that will not initialise or a missing bundled
-/// helper is reported rather than thrown, so the app launches and can explain itself
-/// instead of failing at every call site.
+/// It always constructs. A libghostty that will not initialise, a missing bundled
+/// helper or a local socket that cannot be bound is reported rather than thrown, so
+/// the app launches and can explain itself instead of failing at every call site.
 ///
 /// The host is injected so tests can drive the whole stack with no framework and
 /// no Metal device. `WiettyApp` passes the real `GhosttySurfaceHost`.
 @MainActor
 package final class GhosttyStack {
-    /// The one streaming path, shared with the app's own pane. That sharing is why
-    /// stopping the LAN server must not stop the hub: `stop()` cancels the flush
-    /// timer permanently, so tearing the server down would leave every later local
-    /// viewer silent.
-    package let hub = PaneStreamHub(startTimer: true)
+    /// The one streaming path, shared with the app's own pane, whose viewer reaches it
+    /// through `localServer`. That sharing is why stopping the LAN server must not
+    /// stop the hub: `stop()` cancels the flush timer permanently, so tearing the
+    /// server down would leave every later local viewer silent.
+    package let hub: PaneStreamHub
     package let service: any TerminalService
     package let monitor: any SessionMonitoring
     package private(set) var setupError: String?
+
+    /// Where `localServer` listens: the socket every pane's bridge connects to.
+    package let localSocketPath: String
+    /// Serves the hub to the app's own panes, as local viewers. Built and started
+    /// here, whether or not remote access is on: the panes depend on it and
+    /// `RemoteServer` exists only while that setting is. Nil on a stack that could
+    /// not be built. Stopped by `shutDown()`.
+    package let localServer: LocalStreamServer?
 
     /// The concrete service, for the pane, which needs the selection and the
     /// views, and for teardown. Nil when the stack could not be built.
@@ -30,40 +38,48 @@ package final class GhosttyStack {
     /// it.
     private let host: any TerminalSurfaceHosting
 
-    /// - Parameter helperPath: where `wietty-pty` is. Nil means it is not in
-    ///   the bundle, which is a startup error rather than a per terminal one:
-    ///   every surface's command would be missing.
-    /// - Parameter hostFailure: why libghostty could not be initialised, or nil
-    ///   when it was. Passed in rather than patched on afterwards so that ONE error
-    ///   both reaches `setupError` and is thrown by every terminal action.
-    ///   Reporting one reason and throwing a different one sends the user to fix
-    ///   the wrong thing.
-    package init(host: any TerminalSurfaceHosting, helperPath: String?, hostFailure: TerminalError? = nil) {
+    /// - Parameter localSocketPath: where `localServer` binds. The app passes
+    ///   `LocalSocketPaths.server()`; a path that cannot be bound is a startup error.
+    /// - Parameter startupFailure: why the app could not give this stack what it
+    ///   needs, or nil when it could: libghostty would not initialise, or the bundled
+    ///   helper the surfaces run is missing, or the socket path could not be made.
+    ///   Passed in rather than patched on afterwards so that ONE error both reaches
+    ///   `setupError` and is thrown by every terminal action. Reporting one reason
+    ///   and throwing a different one sends the user to fix the wrong thing.
+    /// - Parameter readDelay: how long a new terminal waits for its pane's viewer
+    ///   before its pty is read anyway (see `GhosttyService.open`). Shorter in tests,
+    ///   whose hosts have no pane to attach.
+    package init(host: any TerminalSurfaceHosting, localSocketPath: String,
+                 startupFailure: TerminalError? = nil,
+                 readDelay: TimeInterval = GhosttyService.unattachedReadDelay) {
         // Built first and captured by value below: the service is handed its hook
         // while this initializer runs, before `self` can be read.
         let requests = DisplayRequests()
         self.displayRequests = requests
+        let hub = PaneStreamHub(startTimer: true)
+        self.hub = hub
         self.host = host
-        // Both ways this stack can be born broken reduce to one question, so there
-        // is one guard below and no force unwrap: is there a usable helper on a
-        // libghostty that started?
-        //
-        // Ordered deliberately: a libghostty that will not start is the more
-        // fundamental failure, and a build with that problem usually has the helper
-        // problem too, so reporting the helper first would bury the real cause.
-        let usableHelper: String? = hostFailure == nil
-            ? helperPath.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
-            : nil
-        guard let helperPath = usableHelper else {
-            // The libghostty failure whenever there is one, since it suppresses
-            // `usableHelper` above; the helper otherwise, which is the only other
-            // way to reach this branch.
-            let failure = hostFailure ?? .ghosttyHelperMissing
+        self.localSocketPath = localSocketPath
+        // Every way this stack can be born broken reduces to one question, so there
+        // is one guard below and no force unwrap: did the app hand over what a
+        // terminal needs, and is the pane's socket bound?
+        var failure = startupFailure
+        var server: LocalStreamServer?
+        if failure == nil {
+            do {
+                server = try LocalStreamServer(path: localSocketPath, streamer: hub)
+            } catch {
+                failure = .localSocketFailed(String(describing: error))
+            }
+        }
+        guard failure == nil, let server else {
+            let failure = failure ?? .localSocketFailed("no server")
             setupError = failure.errorDescription
             service = UnavailableTerminalService(error: failure)
             monitor = InactiveMonitor()
             ghosttyService = nil
             ghosttyMonitor = nil
+            localServer = nil
             // A census even here, because this stack knows the answer with
             // certainty: it holds no terminals and
             // never will. `PaneStreamHub.attach` skips the `ended` short circuit
@@ -75,16 +91,17 @@ package final class GhosttyStack {
             hub.onSessionCensus = { .sessions([]) }
             return
         }
+        localServer = server
 
-        let hub = self.hub
         let monitor = GhosttyMonitor(host: host)
         let service = GhosttyService(
             host: host,
-            helperPath: helperPath,
+            readDelay: readDelay,
             // Straight into the hub, off the main actor, in stream order. This is
-            // the whole reason Wietty owns the PTY: the same bytes that reach
-            // the surface reach every remote viewer, and the terminal's screen
-            // model, which the hub feeds through `onIngest` below.
+            // the whole reason Wietty owns the PTY: the same bytes reach the
+            // app's own surface (a local viewer, through `localServer`), every
+            // remote viewer, and the terminal's screen model, which the hub feeds
+            // through `onIngest` below.
             onOutput: { session, bytes in hub.write(session: session, bytes: bytes) },
             // The grid, to the same hub. A viewer learns its size on attach and
             // from nothing else, so without this a window resize
@@ -133,7 +150,7 @@ package final class GhosttyStack {
             onTerminated: { session in monitor.emit([.terminated(sessionId: session)]) })
 
         // Every hook below reads `shared`, never the service itself. The hub calls
-        // them from the relay's queue and from its own delivery queue, and
+        // them from the pty's read thread and from its own delivery queue, and
         // `GhosttyService` is main actor isolated, so reaching into it here would
         // either deadlock or need an `assumeIsolated` that is simply untrue.
         // `SharedTerminalState` exists for exactly these questions.
@@ -172,13 +189,24 @@ package final class GhosttyStack {
         // on the hub's delivery queue and before the hub takes its repaint. Nothing
         // claims yet: the attach route still ignores an inbound `resize`.
         hub.onClaim = { session, size in shared.resizer(for: session)?(size) }
+        // A terminal's pty is read once its pane's viewer has attached, so the
+        // pane's first snapshot is the empty screen and the pane is handed every
+        // byte. Called on the hub's delivery queue; starting the read calls nothing
+        // of the hub's. The one hook that names the service, through a
+        // `nonisolated` method that reads only `shared`. Weakly, as the service
+        // holds hooks that hold the hub.
+        hub.onLocalViewerAttached = { [weak service] session in
+            service?.localViewerAttached(session: session)
+        }
         // The hub holds the escape state needed to tell a real bell from an OSC
         // terminator, but libghostty has already parsed both, so the surface's
         // bell is the one that is reported and this hook stays unwired.
 
         // Tearing every terminal down at quit belongs to `TerminalQuitTeardown`,
-        // which `TerminalStack` owns. It needs `NSApplication` and this stack is on
-        // its way to a target with no AppKit in it.
+        // which `ServerRuntime` owns, and which calls `shutDown()`. It needs
+        // `NSApplication` and this stack is on its way to a target with no AppKit
+        // in it.
+        server.start()
 
         self.service = service
         self.monitor = monitor
@@ -267,48 +295,12 @@ package final class GhosttyStack {
         { [weak self] in self?.ghosttyService?.jobEvents() ?? [] }
     }
 
-    /// How old a socket file has to be before this considers it abandoned.
-    ///
-    /// An hour, which is far longer than the milliseconds between a relay binding
-    /// its socket and `wietty-pty` connecting to it, and far shorter than the
-    /// lifetime of the crashed run whose leftovers this exists for. Nothing is lost
-    /// by being late: `TerminalRelay` unlinks before it binds, so a stale file never
-    /// blocks a terminal in the first place.
-    nonisolated package static let staleSocketAge: TimeInterval = 3600
-
-    /// Removes socket files a crashed run left in the temp directory.
-    ///
-    /// Housekeeping only: the paths are derived from session ids that no longer
-    /// exist, so nothing else will ever clean them up. `TerminalRelay` unlinks
-    /// before it binds, so a leftover file is never in a new terminal's way.
-    ///
-    /// The temp directory is shared, so the whole difficulty is telling whose
-    /// socket is whose. Age is the answer, because the name cannot be: the path
-    /// budget is `sockaddr_un.sun_path`, 104 bytes including the terminator, and it
-    /// is already tight enough that `TerminalRelay.socketPath` truncates the session
-    /// id to 12 hex digits. Encoding an owner pid would be more precise and there is
-    /// no room for it.
-    ///
-    /// Without that predicate this cannot be called safely at all. Every socket in
-    /// the directory would go, including those of a second Wietty running
-    /// alongside this one (a Debug build next to the installed app) and those of a
-    /// relay in this very process that has bound its socket but whose helper has not
-    /// connected yet, which unlinks the path the helper is about to reach.
-    ///
-    /// A file whose age cannot be read is left alone: an unlink decided on missing
-    /// information is the one this must not make.
-    package func clearStaleSockets() {
-        let directory = NSTemporaryDirectory()
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
-            return
-        }
-        let cutoff = Date(timeIntervalSinceNow: -Self.staleSocketAge)
-        for name in names where name.hasPrefix("ipx-") && name.hasSuffix(".sock") {
-            let path = directory + name
-            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
-            guard let modified = attributes?[.modificationDate] as? Date,
-                  modified < cutoff else { continue }
-            unlink(path)
-        }
+    /// Tears the stack down at quit: every terminal, its surface and its pane's
+    /// bridge, and then the local socket server, whose socket file goes with it.
+    /// Idempotent. It does not wait for the server's connection threads; each ends
+    /// on its own once its socket is shut down.
+    package func shutDown() {
+        ghosttyService?.closeAll()
+        localServer?.stop()
     }
 }
