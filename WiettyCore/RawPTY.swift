@@ -208,9 +208,9 @@ package final class RawPTY: @unchecked Sendable {
         // `getdtablesize` is the soft `RLIMIT_NOFILE` clamped to
         // `kern.maxfilesperproc`, and no descriptor can be numbered at or above
         // it. Closing every one up to it costs about 10 ms at the 61440 a
-        // developer's machine allows, and well under a millisecond at the 256 an
-        // app launched from the Finder gets, which is why it is not capped lower:
-        // a cap would leak whatever is numbered above it.
+        // developer's machine allows, and about 1.2 ms at the 8192 the app raises
+        // its limit to at launch (`DescriptorLimit`), which is why it is not capped
+        // lower: a cap would leak whatever is numbered above it.
         let descriptorLimit = getdtablesize()
 
         var window = winsize(ws_row: UInt16(size.rows), ws_col: UInt16(size.cols),

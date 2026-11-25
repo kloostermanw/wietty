@@ -902,6 +902,16 @@ alongside. The `ipx-` sockets of older builds carry no pid and are swept by age 
 `LocalSocketPaths.staleAge`). A bind replaces a stale file atomically, so a leftover never blocks a
 new terminal.
 
+**Each live local terminal costs the app four descriptors**: its pty's master, the socket its bridge
+accepted from the helper, its link's socket and the server's end of it, plus what libghostty's surface
+holds. The bridge's listener is closed as soon as the helper has connected, since it accepts only one
+(its file stays until the bridge stops). The relay used to cost three. An app launched from the Finder
+gets a soft limit of 256 open descriptors, which a few dozen terminals would reach, so the app raises
+the soft `RLIMIT_NOFILE` at launch (`DescriptorLimit.raise`, called first in `WiettyApp.init`) to
+8192, or to the hard limit or `kern.maxfilesperproc` when either is lower, falling back to lower
+values when the system refuses one. A spawned child closes every inherited descriptor up to that limit
+(`RawPTY.spawn`), which costs about 1.2 ms at 8192.
+
 **Writing to a vanished peer raises `SIGPIPE`, whose default disposition kills the process.** Measured
 as exit status 141 on a one byte write, and the peer vanishing is routine rather than exotic, since the
 helper is a child of the surface and goes away whenever a terminal is closed. Darwin has no
