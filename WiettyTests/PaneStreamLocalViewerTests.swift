@@ -824,9 +824,240 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         #expect(answers.value == rounds)
     }
 
+    // MARK: - The attach is written by the attaching thread (Q2)
+
+    /// The grid and the snapshot are written on the thread that called
+    /// `attachLocal`, before it returns, and not on the delivery queue.
+    @Test func theAttachIsWrittenOnTheAttachingThread() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        hub.onSnapshot = { _ in
+            TerminalSnapshotFrame(size: TerminalSize(cols: 80, rows: 24), bytes: bytes("S"), alternate: false)
+        }
+        let log = LocalLog()
+        let attacher = Box<UInt64>(0)
+        let seenOnReturn = Box<[StreamMessage]>([])
+        let done = onThread {
+            attacher.value = threadId()
+            hub.attachLocal(session: Self.session, resize: .reflow) { log.add($0) }
+            seenOnReturn.value = log.messages
+        }
+        #expect(done.wait(timeout: .now() + 5) == .success)
+        #expect(seenOnReturn.value == [.resize(cols: 80, rows: 24, own: false),
+                                       .snapshot(TerminalPaint.hardReset + bytes("S"))])
+        #expect(log.threads == [attacher.value, attacher.value])
+    }
+
+    /// A session that can produce nothing: its `ended` is written on the attaching
+    /// thread too.
+    @Test func theEndingOfASessionThatIsGoneIsWrittenOnTheAttachingThread() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        hub.onSessionCensus = { .sessions([]) }
+        let log = LocalLog()
+        let attacher = Box<UInt64>(0)
+        let done = onThread {
+            attacher.value = threadId()
+            hub.attachLocal(session: Self.session, resize: .reflow) { log.add($0) }
+        }
+        #expect(done.wait(timeout: .now() + 5) == .success)
+        #expect(log.messages == [.ended])
+        #expect(log.threads == [attacher.value])
+    }
+
+    /// While a pane does not read its snapshot, the delivery queue is free: a
+    /// queued viewer of another session gets its output, and `flush()`, which waits
+    /// for the queue, returns. The attach returns once the pane reads.
+    @Test func aBlockedAttachLeavesTheDeliveryQueueFree() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        hub.onSnapshot = { _ in
+            TerminalSnapshotFrame(size: TerminalSize(cols: 80, rows: 24), bytes: bytes("S"), alternate: false)
+        }
+        let other = LocalLog()
+        hub.attach(session: "gt:other", resize: .repaint) { other.add($0) }
+        let attached = onThread {
+            hub.attachLocal(session: Self.session, resize: .reflow) { message in
+                if case .snapshot = message { gate.hold() }
+            }
+        }
+        #expect(gate.waitUntilHeld())
+
+        hub.write(session: "gt:other", bytes: bytes("one"))
+        let flushed = onThread { hub.flush() }
+        #expect(flushed.wait(timeout: .now() + 5) == .success, "the attach held the delivery queue")
+        #expect(other.dataBytes == bytes("one"))
+        // Another viewer of another session can attach meanwhile, too.
+        let another = onThread { hub.attachLocal(session: "gt:third", resize: .reflow) { _ in } }
+        #expect(another.wait(timeout: .now() + 5) == .success, "an attach waited for another pane")
+
+        gate.open()
+        #expect(attached.wait(timeout: .now() + 5) == .success)
+    }
+
+    /// What arrives while the attaching thread writes the snapshot follows it, in
+    /// the order it arrived: another viewer's claim (left by the delivery queue,
+    /// which does not wait), this viewer's own claim's answer, and output (whose
+    /// writer waits for the attach without the session's lock, so the delivery
+    /// queue can still take that lock for the claims). The snapshot and the repaint
+    /// hold none of the output.
+    ///
+    /// The viewer repaints, so the other viewer's `resize` is not replaced by the
+    /// answer behind it, as it would be for a viewer that reflows.
+    @Test func whatArrivesDuringTheAttachFollowsTheSnapshotInOrder() throws {
+        let (hub, model) = try wired(TerminalSize(cols: 40, rows: 6), pacedClaims: true)
+        defer { hub.stop() }
+        hub.onClaim = { _, size in model.resize(to: size) }
+        let gate = Gate()
+        defer { gate.open() }
+        hub.write(session: Self.session, bytes: bytes("before\r\n"))
+        let claimer = hub.attach(session: Self.session, resize: .reflow) { _ in }
+        let log = LocalLog()
+        let id = UUID()
+        let attached = onThread {
+            hub.attachLocal(session: Self.session, resize: .repaint, id: id) { message in
+                log.add(message)
+                if case .snapshot = message { gate.hold() }
+            }
+        }
+        #expect(gate.waitUntilHeld())
+
+        let writer = onThread { hub.write(session: Self.session, bytes: bytes("after\r\n")) }
+        // A precondition, not the proof: the writer has reached the hub and waits.
+        #expect(writer.wait(timeout: .now() + 0.2) == .timedOut, "the write did not wait for the attach")
+        hub.claim(connectionId: claimer, cols: 50, rows: 8)
+        // The grid in force: answered to this viewer alone.
+        hub.claim(connectionId: id, cols: 50, rows: 8)
+        #expect(settled(hub), "the delivery queue waited for the attach")
+
+        gate.open()
+        #expect(attached.wait(timeout: .now() + 5) == .success)
+        #expect(writer.wait(timeout: .now() + 5) == .success)
+        let messages = log.messages
+        try #require(messages.count == 6, "\(messages)")
+        #expect(messages[0] == .resize(cols: 40, rows: 6, own: false))
+        guard case let .snapshot(snapshot) = messages[1], case let .repaint(repaint) = messages[3] else {
+            Issue.record("no snapshot second and repaint fourth: \(messages)")
+            return
+        }
+        #expect(!String(decoding: snapshot, as: UTF8.self).contains("after"))
+        #expect(!String(decoding: repaint, as: UTF8.self).contains("after"))
+        #expect(messages[2] == .resize(cols: 50, rows: 8, own: false))
+        #expect(Array(messages[4...]) == [.resize(cols: 50, rows: 8, own: true), .data(bytes("after\r\n"))])
+        #expect(try replay(messages, scrollbackLines: 100) == ["before", "after"])
+        #expect(log.overlapping == 0)
+    }
+
+    /// An ending that arrives during the attach is written after the snapshot, by
+    /// the attaching thread, and nothing follows it.
+    @Test func anEndingDuringTheAttachFollowsTheSnapshot() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        hub.onSnapshot = { _ in
+            TerminalSnapshotFrame(size: TerminalSize(cols: 80, rows: 24), bytes: bytes("S"), alternate: false)
+        }
+        let log = LocalLog()
+        let id = UUID()
+        let attached = onThread {
+            hub.attachLocal(session: Self.session, resize: .reflow, id: id) { message in
+                log.add(message)
+                if case .snapshot = message { gate.hold() }
+            }
+        }
+        #expect(gate.waitUntilHeld())
+        hub.endViewers(ofSession: Self.session)
+        #expect(settled(hub), "the ending waited for the attach")
+        gate.open()
+        #expect(attached.wait(timeout: .now() + 5) == .success)
+        hub.write(session: Self.session, bytes: bytes("late"))
+        hub.claim(connectionId: id, cols: 10, rows: 10)
+        #expect(settled(hub))
+        #expect(log.messages == [.resize(cols: 80, rows: 24, own: false),
+                                 .snapshot(TerminalPaint.hardReset + bytes("S")), .ended])
+        #expect(Set(log.threads).count == 1)
+    }
+
+    /// `detach` during the attaching thread's write keeps its contract: it returns
+    /// only once that write has, and nothing is written afterwards, neither what was
+    /// left with the viewer meanwhile nor anything later.
+    @Test func aDetachDuringTheAttachWaitsForItsWriteAndNothingFollows() {
+        let hub = PaneStreamHub(claimClock: ClaimTimers.paced())
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        hub.onSnapshot = { _ in
+            TerminalSnapshotFrame(size: TerminalSize(cols: 80, rows: 24), bytes: bytes("S"), alternate: false)
+        }
+        let log = LocalLog()
+        let id = UUID()
+        let attached = onThread {
+            hub.attachLocal(session: Self.session, resize: .reflow, id: id) { message in
+                log.add(message)
+                if case .snapshot = message { gate.hold() }
+            }
+        }
+        #expect(gate.waitUntilHeld())
+        hub.claim(connectionId: id, cols: 90, rows: 20)
+        #expect(settled(hub))
+
+        let detached = onThread { hub.detach(connectionId: id) }
+        #expect(detached.wait(timeout: .now() + 0.2) == .timedOut, "detach returned while the write ran")
+        gate.open()
+        #expect(detached.wait(timeout: .now() + 5) == .success, "detach did not return once the write did")
+        #expect(attached.wait(timeout: .now() + 5) == .success)
+        hub.write(session: Self.session, bytes: bytes("late"))
+        hub.endViewers(ofSession: Self.session)
+        #expect(settled(hub))
+        #expect(log.messages == [.resize(cols: 80, rows: 24, own: false),
+                                 .snapshot(TerminalPaint.hardReset + bytes("S"))])
+    }
+
+    /// Two local viewers of one session: while the second's attach is blocked, the
+    /// first is idle and the output waits for the attach, then reaches both, after
+    /// the second's snapshot; a third attaches meanwhile without waiting.
+    @Test func twoLocalViewersOfASessionWhileOneAttaches() throws {
+        let (hub, _) = try wired(TerminalSize(cols: 40, rows: 6))
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        let first = LocalLog()
+        hub.attachLocal(session: Self.session, resize: .reflow) { first.add($0) }
+        let second = LocalLog()
+        let attached = onThread {
+            hub.attachLocal(session: Self.session, resize: .reflow) { message in
+                second.add(message)
+                if case .snapshot = message { gate.hold() }
+            }
+        }
+        #expect(gate.waitUntilHeld())
+        let writer = onThread { hub.write(session: Self.session, bytes: bytes("x")) }
+        #expect(writer.wait(timeout: .now() + 0.2) == .timedOut, "the write did not wait for the attach")
+        let third = LocalLog()
+        let thirdAttached = onThread {
+            hub.attachLocal(session: Self.session, resize: .reflow) { third.add($0) }
+        }
+        #expect(thirdAttached.wait(timeout: .now() + 5) == .success, "an attach waited for another pane")
+
+        gate.open()
+        #expect(attached.wait(timeout: .now() + 5) == .success)
+        #expect(writer.wait(timeout: .now() + 5) == .success)
+        #expect(first.dataBytes == bytes("x"))
+        #expect(second.messages.count == 3)
+        #expect(second.messages.last == .data(bytes("x")))
+        #expect(third.dataBytes == bytes("x"))
+        #expect(second.overlapping == 0)
+    }
+
     // MARK: - The hook, claims, other sessions
 
-    @Test func theFirstLocalViewerOfASessionIsReportedOnceItHasItsSnapshot() {
+    /// The hook fires on the delivery queue once the snapshot is taken and the
+    /// viewer reserved for it, which is before the attaching thread writes it:
+    /// output read from then on waits for that write.
+    @Test func theFirstLocalViewerOfASessionIsReportedOnceItsSnapshotIsTaken() {
         let hub = PaneStreamHub()
         defer { hub.stop() }
         let timeline = Box<[String]>([])
@@ -841,11 +1072,11 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
             default: break
             }
         }
-        #expect(timeline.value == ["first resize", "first snapshot", "attached \(Self.session)"])
+        #expect(timeline.value == ["attached \(Self.session)", "first resize", "first snapshot"])
         hub.attachLocal(session: Self.session, resize: .repaint) { _ in }
         hub.attachLocal(session: "gt:other", resize: .repaint) { _ in }
         #expect(settled(hub))
-        #expect(timeline.value == ["first resize", "first snapshot", "attached \(Self.session)",
+        #expect(timeline.value == ["attached \(Self.session)", "first resize", "first snapshot",
                                    "attached gt:other"])
     }
 
