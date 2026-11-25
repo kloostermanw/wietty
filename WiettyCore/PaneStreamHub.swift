@@ -370,10 +370,14 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private var localViewers: [UUID: LocalViewer] = [:]
     /// The grid in force for a session: the last one a viewer claimed through
     /// `claim` (or the model's, when it announced another), and absent before the
-    /// first claim, while the terminal is at the grid it was spawned with. Read and
-    /// written on `delivery` only, by `claimNow` and `resizeNow`: a claim is the one
-    /// thing that moves a terminal's grid (decision P4), so the record, the pty, the
-    /// model and what the viewers are told change in one serial order.
+    /// first claim, while the terminal is at the grid it was spawned with. Written on
+    /// `delivery` only, by `claimNow` and `resizeNow`: a claim is the one thing that
+    /// moves a terminal's grid (decision P4), so the record, the pty, the model and
+    /// what the viewers are told change in one serial order. Read under `lock` by
+    /// those two and by an attach's join, which `attach` and `attachLocal` run with
+    /// `delivery.sync`: possibly on the attaching thread (a connection's, for a local
+    /// viewer), but serialized with every write. The join uses it only for a viewer
+    /// that gets no snapshot.
     private var sizeForPane: [String: TerminalSize] = [:]
     private var timer: DispatchSourceTimer?
     /// Where everything that delivers to a viewer runs: the flush timer, a quiet

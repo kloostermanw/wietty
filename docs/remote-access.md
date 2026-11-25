@@ -308,7 +308,9 @@ came in between. A viewer that disconnects before then gets none.
 `PaneStreamHub.claim(connectionId:cols:rows:)` with that viewer's id, which resizes
 the pty and the model when the grid is new and tells every viewer, `own` true for
 the claimant alone, or answers the claimant alone when the grid is already in
-force. Every claim is answered with exactly one `resize` whose `own` is true.
+force. Every claim is answered with exactly one `resize` whose `own` is true. A
+claim outside 1 to 10,000 columns or rows is refused by the codec and never
+answered, so a client must not count such a claim among the ones it waits for.
 
 **Ending.** After `ended` or `error` the server closes the socket. When the
 viewer closes, or its socket fails, the server detaches it from the hub, and so

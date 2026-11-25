@@ -75,6 +75,8 @@ package struct PaneGrid {
 
     /// Whether the pane is the owner of the grid, as far as it can know.
     package var isOwner: Bool { ownership.isOwner }
+    /// Claims accepted on this link and not answered yet.
+    package var awaitingAnswers: Int { awaiting }
 
     /// The pane's own grid changed (window, sidebar, font size, scale).
     package mutating func ownGridChanged(_ grid: TerminalSize, now: UInt64) -> Action {
@@ -183,14 +185,33 @@ package struct PaneGrid {
     /// What the view should show now, by the rule in the type's doc.
     private func wanted() -> TerminalSize?? {
         if ownership.isOwner {
-            // Answers still to come, or a claim waiting for the debounce: the pane's
-            // own size, which is what those claims ask for.
-            if awaiting > 0 || pending != nil { return .some(nil) }
+            if awaiting > 0 || pending != nil { return viewWhileClaimsOutstanding() }
             guard let inForce, let ownGrid, inForce != ownGrid else { return .some(nil) }
             return .some(inForce)
         }
+        // Not the owner: the grid in force, imposed even when it equals the own grid,
+        // so a drag or a font change cannot let the surface reflow on its own for a
+        // layout pass before an impose lands. Costs a margin of a few pixels at most.
         guard let inForce else { return shown }
-        return .some(inForce == ownGrid ? nil : inForce)
+        return .some(inForce)
+    }
+
+    /// What the view shows while the pane owns the grid with a claim unanswered or
+    /// one waiting for the debounce. The one place where the two possible rules
+    /// differ; the user decides between them.
+    ///
+    /// As built: the pane's own size (nil). The view follows the window at once, the
+    /// surface reflows by itself, and the pty and the model catch up when the answer
+    /// arrives. Cost: for that round trip (plus the debounce) the surface's grid and
+    /// the model's differ, so cursor addressed output a program writes during a drag
+    /// is laid out by the surface for a grid the program did not draw for.
+    ///
+    /// The spec's rule (section 7): keep showing the grid in force (`inForce`) and
+    /// resize the view only when the server's answer comes back. Cost: the view lags
+    /// the window by a round trip during every drag, with a margin or a clipped edge
+    /// meanwhile.
+    private func viewWhileClaimsOutstanding() -> TerminalSize?? {
+        .some(nil)
     }
 
     private mutating func show(_ next: TerminalSize??) -> Action {

@@ -480,10 +480,12 @@ private let folder = URL(fileURLWithPath: "/tmp")
         #expect(!grid.isOwner)
         helper.type(Array("go\n".utf8))
         #expect(await eventually { helper.output.text.contains("size-24x80") })
-        // The pane's own grid changing meanwhile claims nothing.
+        // The pane's own grid changing meanwhile claims nothing. A claim is accepted
+        // (and counted) synchronously on the main actor, so no wait is needed.
+        let accepted = grid.claimsAccepted
         grid.paneChanged(ownGrid: TerminalSize(cols: 101, rows: 30))
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(model.size == TerminalSize(cols: 80, rows: 24))
+        #expect(grid.claimsAccepted == accepted)
+        #expect(!grid.isOwner)
 
         // A key in the pane: it claims its own grid at once, and fills the pane again.
         grid.userActed()
@@ -508,16 +510,21 @@ private let folder = URL(fileURLWithPath: "/tmp")
         #expect(await eventually { model.size == TerminalSize(cols: 100, rows: 30) })
 
         // The attach's grid may have been imposed before the pane came on display,
-        // and the claim's acceptance then returned the pane its own size.
-        try await Task.sleep(for: .milliseconds(200))
+        // and the claim's acceptance then returned the pane its own size. Settled once
+        // the claim's answer has reached the main actor; the attach's `resize` came
+        // ahead of it on the same link.
+        #expect(await eventually { grid.awaitingAnswers == 0 })
         let imposedBefore = rig.host.imposed[session, default: []]
         #expect(imposedBefore.last ?? nil == nil)
 
+        let acceptedBefore = grid.claimsAccepted
         let server = try #require(rig.stack.localServer)
         #expect(server.inspectConnections { shutdown($0, SHUT_RDWR) }.count == 1)
         #expect(await eventually { rig.host.bridges.bridge(for: session)?.linkCount == 2 })
         #expect(await eventually { occurrences(of: TerminalPaint.hardReset, in: helper.output.bytes) == 2 })
-        try await Task.sleep(for: .milliseconds(200))
+        // The claim made again after the reset, and its answer, which follows the new
+        // attach's `resize` on the new link.
+        #expect(await eventually { grid.claimsAccepted == acceptedBefore + 1 && grid.awaitingAnswers == 0 })
         #expect(grid.isOwner)
         // The new attach's `resize` (own false) came while the claim made again was
         // unanswered: nothing imposed.

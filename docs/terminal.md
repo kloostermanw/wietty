@@ -153,8 +153,11 @@ claims a grid, and the hub resizes the pty (`TIOCSWINSZ`) and the model and tell
 true for the claimant. The own pane is one such viewer: `OwnPaneGrid` works out the grid that fits the
 pane from the surface's metrics, claims it through the pane's bridge (`PaneGrid` decides when: on
 opening, on a change while the pane owns the grid, at most one claim per 50 ms, and on a key, click,
-paste or drop while another viewer owns it), and shows whatever grid is in force: its own, with the view
-filling the pane, or another viewer's, through `impose(grid:on:)`. `GhosttySurfaceView` still sends the
+paste or drop while another viewer owns it). While it owns the grid its view fills the pane, also
+between a claim and its answer: the surface reflows at once and the pty and the model follow when the
+answer arrives, so for that round trip (plus the 50 ms debounce during a drag) the surface's grid and the
+model's can differ. While another viewer owns the grid the pane shows the grid in force through
+`impose(grid:on:)`, even when it equals the grid that fits the pane. `GhosttySurfaceView` still sends the
 surface its content scale and then its pixel size (in that order, because libghostty derives the grid
 from size divided by scale) and reports the grid it reads back through
 `TerminalSurfaceHosting.onResized`, but that report is not a claim and nothing resizes the pty from it.
