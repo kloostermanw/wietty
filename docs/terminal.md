@@ -309,8 +309,10 @@ created and never shown (the attach imposes 120 by 34 on the 800 by 480 point vi
 makes) and a hidden terminal whose grid another viewer claims. With nothing imposed (the pane owned
 the grid when it was hidden) the view keeps the size its pane last gave it, which is the grid the
 pane claimed and so the grid in force; when another viewer claims, the pane is no longer the owner,
-the grid is imposed, and the view follows it. Shown again, the view is already at the size the
-container's constraints ask for, so showing it changes nothing about its grid.
+the grid is imposed, and the view follows it. Shown again with a grid imposed,
+the view is already at the size the container's constraints ask for, so showing it changes nothing
+about its grid. A pane that owns the grid is different when its window was resized while the terminal
+was hidden: shown again, its view fills the new pane and the pane claims that grid.
 
 ### Metrics and an imposed size
 
