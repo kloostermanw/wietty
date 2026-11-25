@@ -196,7 +196,8 @@ reassembled scrambled. A `Task` per keystroke anywhere on that path would break 
 **A terminal's pty is not read until its pane's viewer has attached** (decision P2 of the phase 3
 design). `GhosttyService.open` registers the start of the read in `SharedTerminalState`, and two
 triggers race for it: the hub's `onLocalViewerAttached`, called on its delivery queue once the
-session's first local viewer has been sent its snapshot, and a timer of
+session's first local viewer has been given its snapshot (taken, and about to be written by the
+thread that attached it; what the read brings meanwhile waits for that write), and a timer of
 `GhosttyService.unattachedReadDelay`, 5 seconds, on a global queue. Whichever takes the start runs
 it, once. The timer's path is logged as an error ("terminal <id> is read without its pane: no local
 viewer attached within 5.0 seconds"): a pane that does not attach is a fault, but a terminal that
@@ -807,11 +808,22 @@ the stream), and after that each chunk is written to it by the thread that calle
 pty as it would behind a slow terminal. Nothing is ever dropped, so it is never resynchronised: the
 alternate screen rule does not apply to it, and a `resync` asked for its id answers `onUnavailable`. A
 session whose only viewers are local keeps nothing in its buffer and schedules no quiet flush.
-`onLocalViewerAttached` is called once per session, when its first local viewer has been sent its
-snapshot.
+`onLocalViewerAttached` is called once per session, on the delivery queue, when its first local
+viewer has been given its snapshot: taken, and reserved for the thread that attached it, which writes
+it after that. So the call can come before the snapshot is on the pane's socket. That is safe, because
+output read from then on waits for that write and follows it.
 
-The messages for one local viewer come from two threads: output from the writer's, and the attach, a
-`resize`, a `repaint`, a claim's answer and `ended` from the delivery queue. At most one thread writes
+The messages for one local viewer come from three threads: output from the writer's, the attach (the
+grid and the snapshot, or the ending of a session that is gone) from the thread that called
+`attachLocal`, and a `resize`, a `repaint`, a claim's answer and `ended` from the delivery queue. The
+delivery queue takes the snapshot under the session's lock, as for any join, and reserves the viewer
+for the attaching thread, which writes it once the queue has let go, followed by whatever the queue
+left with the viewer meanwhile, until nothing is left, as the queue itself does as a writer. Until it
+gives the viewer up, the writer thread waits for it before accepting a chunk, and waits with the
+session's lock released: the chunk is in neither the model nor the stream yet, so it follows the
+snapshot and what was left, and the delivery queue can still take the session's lock for a claim, an
+attach or an ending. Waiting under that lock instead would let a pane that does not read its snapshot
+hold the delivery queue the moment the queue wanted this terminal's lock. At most one thread writes
 to the viewer at a time, the one that made it busy, and who that is gets decided while the session's
 lock is held. A thread with messages for an idle viewer becomes its writer, releases the session's
 lock and writes. When the viewer is busy, the writer thread waits for it, still holding the session's
@@ -845,33 +857,44 @@ its other local viewers get nothing until it reads; a resize, a claim's answer a
 local viewers are left with the viewer and delivered when it reads; nothing else waits. `detach` of
 that viewer waits for the blocked write, so its owner shuts the socket down first.
 
-When the delivery queue itself is the writer (the snapshot on attach, or a resize, a claim's answer,
-an ending or a drain sent to a viewer that was idle) and the pane stops reading in the middle of that
-write, the delivery queue is parked until the pane reads or the owner shuts the socket down. While it
-is parked no queued viewer of any terminal receives anything, nobody can attach, other terminals'
-buffers grow, and their WebSocket viewers are resynchronised afterwards. Apart from a pane that stops
-in the middle of its first snapshot, this needs the viewer's transport to refuse a message of a few
-dozen bytes, which means a socket buffer that is already full on a terminal that is producing
-nothing. The transport's owner should therefore give the socket a send buffer large enough for
-control messages; `LocalStreamServer` gives each accepted socket 256 KiB. It also bounds the
+The attach costs the same as output, and no more. A pane that reads its snapshot slowly or not at
+all holds the thread that attached it (in `LocalStreamServer`, its own connection's thread) and its
+own terminal, whose output waits for the snapshot; a resize, a claim's answer and an ending for it are
+left with it; nothing else waits. What the delivery queue still pays is the format of the snapshot:
+measured with a full default history of 1.2 MB, about 5 ms whether the pane read at once, slowly,
+after 4.5 seconds or never (before, the queue was held for 3 to 5 seconds by the last three), and
+about 40 to 60 ms with 100,000 lines of history.
+
+When the delivery queue itself is the writer (a resize, a claim's answer, an ending or a drain sent
+to a viewer that was idle) and the pane stops reading in the middle of that write, the delivery queue
+is parked until the pane reads or the owner shuts the socket down. While it is parked no queued
+viewer of any terminal receives anything, nobody can attach, other terminals' buffers grow, and their
+WebSocket viewers are resynchronised afterwards. This needs the viewer's transport to refuse a
+message of a few dozen bytes, which means a socket buffer that is already full on a terminal that is
+producing nothing. The transport's owner should therefore give the socket a send buffer large enough
+for control messages; `LocalStreamServer` gives each accepted socket 256 KiB. It also bounds the
 rest: the connection is ended if the client reads nothing for 5 seconds while a message other than
 `data` is being written to it, so a pane that stopped reading parks the delivery queue for 5 seconds
-at most. That bounds a client that has stopped, not one that reads very slowly, and several stopped
-panes cost 5 seconds each. `data` has no such deadline, by design: it waits for as long as the pane
-does not read, because that wait is the backpressure, and it runs on the pty's read queue rather than
-on the delivery queue.
+at most, and holds its own terminal for 5 seconds at most during its attach. That bounds a client
+that has stopped, not one that reads very slowly, and several stopped panes cost 5 seconds each.
+`data` has no such deadline, by design: it waits for as long as the pane does not read, because that
+wait is the backpressure, and it runs on the pty's read queue rather than on the delivery queue.
 
 A pane the server dropped this way is not lost for good. Its link ends as a lost connection, and
 `OwnPaneBridge` makes a new one while the terminal lives: at once, then after 250 ms, doubling up to
 5 seconds, the count starting over once a link has stayed up for 10 seconds (`ReconnectBackoff`). The
 new link's attach brings a snapshot, which begins with a full reset, so the surface starts over from
 the server's screen. The backoff is there because a pane that is still stalled is dropped again
-within the deadline, and each attach costs the delivery queue a snapshot it cannot deliver.
+within the deadline, and each attach costs a snapshot it cannot deliver: formatted on the delivery
+queue, and held for its terminal for up to 5 seconds.
 
 `PaneStreamLocalViewerTests`
 covers the thread, the backpressure, the order under a race with an attach and with grid changes into
 a slow viewer, messages left with a busy viewer and that the delivery queue does not wait for it, the
-ending, `detach`, a claim, and the two bounds above.
+ending, `detach`, a claim, and the two bounds above. Its attach tests block the attaching thread's
+write and show that the delivery queue stays free, that what arrives meanwhile (another viewer's
+resize, the viewer's own claim's answer, output, an ending) follows the snapshot in order, that
+`detach` keeps its contract, and two local viewers of one session.
 
 `PaneStreamJoinTests` races a writer against an attach and against repaints, plays everything the
 viewer was sent into a terminal of its own, and asserts every numbered line is there exactly once.
@@ -1262,10 +1285,13 @@ a socket that then stays silent forever.
   time.
 - **A pane that stops reading holds back its terminal** (decision P1). Output is written to the
   pane on the pty's read queue with a blocking write, so a surface that does not read stops the
-  child at a full pty, and the terminal's other local viewers with it. A control message written
-  to a pane that has stopped (its snapshot, a `resize`, a claim's answer, the ending) parks the hub's
-  delivery queue, and with it every queued viewer of every terminal, for up to 5 seconds per stopped
-  pane before the server drops it; the pane then reconnects with a backoff. See "Serving the stream".
+  child at a full pty, and the terminal's other local viewers with it. The same holds at attach: the
+  snapshot is written on the attaching connection's thread (decision Q2), and the terminal's output
+  waits for it, for up to 5 seconds before the server drops the pane; the pane then reconnects with a
+  backoff. A control message written to an idle pane that has stopped (a `resize`, a claim's answer,
+  the ending) still parks the hub's delivery queue, and with it every queued viewer of every
+  terminal, for up to 5 seconds per stopped pane; that takes a pane whose socket buffer of 256 KiB is
+  already full on a terminal producing nothing. See "Serving the stream".
 - **A terminal produces nothing until its pane has attached, or for 5 seconds** (decision P2). A
   terminal opened through MCP or from the iPad depends on its surface on this Mac for that long. See
   "The deferred read".

@@ -16,13 +16,14 @@ import WiettyShared
 /// Each connection has a thread of its own that reads it, and that thread is the
 /// one that calls `attachLocal`. Nothing writes on a queue of this class: every
 /// message is written, whole, on the thread the hub calls `write` from (the pty's
-/// read thread, or the hub's delivery queue during the attach and for control
-/// messages). The hello and an `error` are written by the reading thread before
-/// the attach, when no other writer exists yet.
+/// read thread, this connection's own thread for the attach, or the hub's delivery
+/// queue for control messages). The hello and an `error` are written by the
+/// reading thread before the attach, when no other writer exists yet.
 ///
-/// `attachLocal` writes the snapshot before it returns, so a client that does not
-/// read holds its own reading thread there. That is the only thing it holds of
-/// this class: `stop()`, the client's own socket closing and the write deadline
+/// `attachLocal` writes the snapshot on this connection's thread before it
+/// returns, so a client that does not read holds its own reading thread there, and
+/// its own terminal's output, which waits for the snapshot; never the hub's
+/// delivery queue. `stop()`, the client's own socket closing and the write deadline
 /// below each make that write fail, none needs the reading thread to notice
 /// anything, and the attach then returns and the thread ends the connection.
 ///
@@ -34,11 +35,13 @@ import WiettyShared
 /// deadline is the client reading, which makes room in the socket, so a client that
 /// reads slowly but steadily keeps its connection however long a snapshot takes.
 /// The rule bounds a client that has stopped, not one that reads very slowly, and
-/// it bounds each stopped one separately: several stopped panes cost 5 seconds each
-/// on the hub's queue. The hub writes the snapshot and control messages on its
-/// delivery queue, which every remote viewer of every terminal shares, and a pane
-/// that stopped reading would otherwise park it until `stop()`. A frame cut off by the deadline is never completed: the socket is
-/// closed, so the client sees a lost connection, not a corrupt stream.
+/// it bounds each stopped one separately. The hub writes control messages to an
+/// idle viewer on its delivery queue, which every remote viewer of every terminal
+/// shares, and a pane that stopped reading would otherwise park it until `stop()`.
+/// The snapshot is written on this connection's thread instead, and there the
+/// deadline bounds how long a stopped pane holds its own terminal. A frame cut off
+/// by the deadline is never completed: the socket is closed, so the client sees a
+/// lost connection, not a corrupt stream.
 ///
 /// `data` is written with no deadline, blocking for as long as the client does not
 /// read: that wait is the backpressure that lets a slow pane hold back the child,

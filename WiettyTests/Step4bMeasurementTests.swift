@@ -233,9 +233,10 @@ struct Step4bMeasurementTests {
     // MARK: C. A local attach
 
     /// A client of `LocalStreamServer` attaches to session X, whose history is small
-    /// (300 lines) or full (10,000 or 100,000 lines). The hub formats the snapshot and
-    /// writes it, whole, on its delivery queue (`attachLocal` runs `attachLocalNow` with
-    /// `delivery.sync`, and the batch is `run` there). Readers: at once; slowly, 32 KiB
+    /// (300 lines) or full (10,000 or 100,000 lines). The hub formats the snapshot on its
+    /// delivery queue (`attachLocal` runs `attachLocalNow` with `delivery.sync`), and,
+    /// since step 4b (Q2), the connection's own thread writes it, whole, once the queue
+    /// has let go; before that the batch was `run` on the queue. Readers: at once; slowly, 32 KiB
     /// every 100 ms; stalled 4.5 s then at once; stopped (never reads, so the 5 second
     /// progress deadline ends it). Measured: Y's delay as in A, how long a probe that
     /// waits for the delivery queue (`waitForPendingDeliveries`) was held at most, and

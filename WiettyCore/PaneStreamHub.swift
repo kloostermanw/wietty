@@ -51,6 +51,17 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// and before the next, since the next chunk's writer either waits for the
     /// drain or takes the resize first.
     ///
+    /// **The attach has a writer of its own**: the thread that called `attachLocal`.
+    /// `delivery` takes the snapshot under the session's lock and reserves the
+    /// viewer for that thread (`offerAttach`); the thread writes the attach once
+    /// `delivery` has let it go, then what was left meanwhile, until none is, as
+    /// `delivery` does as a writer. Meanwhile `delivery` leaves its messages as for
+    /// any busy viewer, and the pty's thread waits for the attach
+    /// (`waitForTheAttach`) before it accepts a chunk, with the session's lock
+    /// released. So the snapshot is followed by what was left, in order, and then
+    /// by the stream, and `delivery` waits for the attach neither directly nor for
+    /// a session's lock held by a thread that does.
+    ///
     /// **`pending` holds control messages only**: `resize`, `repaint` and `ended`,
     /// never output, which only the pty's thread writes and only as the writer. It
     /// grows only while one write is in progress, by one group per grid change or
@@ -81,6 +92,11 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         private var calling = false
         private var writer: UInt64 = 0
         private var pending: [StreamMessage] = []
+        /// Reserved by the thread that called `attachLocal`, for its attach: from
+        /// the offer on `delivery` (`offerAttach`) to the moment that thread gives
+        /// the viewer up. Implies `busy`. The pty's thread waits for it to clear
+        /// before it accepts a chunk, without the session's lock (see `write`).
+        private var attaching = false
 
         init(id: UUID, resize: ResizeMode, write: @escaping Sink, onEnded: @escaping @Sendable () -> Void) {
             self.id = id
@@ -124,6 +140,37 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
             let batch = pending + messages
             pending = []
             return batch
+        }
+
+        /// The offer of an attach, made on `delivery` holding the session's lock,
+        /// for the thread that called `attachLocal` to `run` once `delivery` has let
+        /// it go. As `offer` for `delivery`, and the viewer is marked `attaching`
+        /// until that thread gives it up. Nil when the viewer is already gone.
+        func offerAttach(_ messages: [StreamMessage]) -> [StreamMessage]? {
+            state.lock()
+            defer { state.unlock() }
+            if gone { return nil }
+            // Offered once, to a viewer nobody else has reached yet: idle.
+            assert(!busy, "an attach offered to a viewer that is busy")
+            busy = true
+            attaching = true
+            let batch = pending + messages
+            pending = []
+            return batch
+        }
+
+        var isAttaching: Bool {
+            state.lock()
+            defer { state.unlock() }
+            return attaching && !gone
+        }
+
+        /// Waits until the attaching thread has given the viewer up, or the viewer
+        /// is gone (`detach` and `stop` wake it at once). Call with no lock held.
+        func waitForTheAttach() {
+            state.lock()
+            while attaching, !gone { state.wait() }
+            state.unlock()
         }
 
         /// Appends a group to `pending`, coalescing as described on the type.
@@ -185,6 +232,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
                 if pending.isEmpty || !drainingAll {
                     let leftover = !pending.isEmpty
                     busy = false
+                    attaching = false
                     state.broadcast()
                     state.unlock()
                     if ended { onEnded() }
@@ -395,8 +443,9 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private let claimScheduler: ClaimScheduler
     private var timer: DispatchSourceTimer?
     /// Where everything that delivers to a viewer runs: the flush timer, a quiet
-    /// flush, an attach, a resync, a resize and an ending. The one exception is
-    /// output for a local viewer, written on the writer's thread.
+    /// flush, an attach, a resync, a resize and an ending. The exceptions are a
+    /// local viewer's output, written on the writer's thread, and its attach,
+    /// taken here and written on the thread that attached it.
     ///
     /// Serial, and shared by all of them, because each takes bytes from a session
     /// and then hands them to its viewers, and two of those running at once could
@@ -458,8 +507,12 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// Called on `delivery` with no lock of the hub's held, because it takes the
     /// model's lock and signals the child. It must not call back into the hub.
     package var onClaim: (@Sendable (_ session: String, _ size: TerminalSize) -> Void)?
-    /// Called once per session, when its first local viewer has been sent its
-    /// snapshot (or, with no snapshot to send, whatever its attach was sent).
+    /// Called once per session, when its first local viewer has been given its
+    /// snapshot (or, with no snapshot, whatever its attach is sent): taken, and
+    /// reserved for the thread that called `attachLocal`, which writes it after
+    /// this. So it may come before the snapshot is on the viewer's transport, and
+    /// that is safe: output accepted from now on waits for that write and follows
+    /// it.
     ///
     /// Called on `delivery` with no lock of the hub's held, before that viewer's
     /// `attachLocal` returns. It must not call `attach`, `attachLocal`, `flush` or
@@ -690,33 +743,35 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     ///
     /// **Where `write` is called.** Output is written on the thread that calls
     /// `write(session:bytes:)`, the pty's read thread, before that call returns: no
-    /// batching and no hop to `delivery`. Every other message (the attach's, a
-    /// `resize`, a `repaint` for `.repaint`, a claim's answer, `ended`) comes from
-    /// `delivery`: written there when the viewer is idle, and otherwise left with the
-    /// viewer and written after the chunk in progress, by `delivery` once the
-    /// viewer is idle or by the next chunk's writer ahead of that chunk.
+    /// batching and no hop to `delivery`. The attach's messages (the grid and the
+    /// snapshot, or `ended` for a session that is gone) are taken on `delivery` and
+    /// written on the thread that called this, before it returns, followed by
+    /// whatever was left for the viewer meanwhile; output read meanwhile waits for
+    /// that and follows it. Every other message (a `resize`, a `repaint` for
+    /// `.repaint`, a claim's answer, `ended`) comes from `delivery`: written there
+    /// when the viewer is idle, and otherwise left with the viewer and written
+    /// after the write in progress, by `delivery` once the viewer is idle, by the
+    /// attaching thread, or by the next chunk's writer ahead of that chunk.
     /// Calls never overlap, they come in stream order, and no lock of the hub's is
     /// held across one. See `LocalViewer`.
     ///
-    /// **The cost, in two cases.** When the pane stops reading while output is
-    /// being written to it (the usual case, the pty's thread is the writer): that
-    /// terminal's pty read waits and so does its child; its other local viewers
-    /// get nothing until it reads; a `resize`, a claim's answer and an `ended` for
-    /// its local viewers are left with the viewer and delivered when it reads;
-    /// nothing else waits. `detach` of that viewer waits for the blocked write, so
-    /// its owner shuts the socket down first.
+    /// **The cost, in two cases.** When the pane stops reading while output or its
+    /// attach is being written to it (the usual case: the pty's thread or the
+    /// attaching thread is the writer): that terminal's pty read waits and so does
+    /// its child; its other local viewers get nothing until it reads; a `resize`, a
+    /// claim's answer and an `ended` for its local viewers are left with the viewer
+    /// and delivered when it reads; nothing else waits. `detach` of that viewer
+    /// waits for the blocked write, so its owner shuts the socket down first.
     ///
-    /// When `delivery` itself is the writer (the snapshot on attach, or a `resize`,
-    /// a claim's answer, an `ended` or a drain sent to a viewer that was idle) and
-    /// the pane stops reading in the middle of that write: `delivery` is parked
-    /// until the pane reads or the owner shuts the socket down. While it is parked
-    /// no queued viewer of any terminal receives anything, nobody can attach,
-    /// other terminals' buffers grow, and their WebSocket viewers are
-    /// resynchronised afterwards. Apart from a pane that stops in the middle of its
-    /// first snapshot, this takes a transport that refuses a message of a few
-    /// dozen bytes: a socket buffer already full on a terminal that is producing
-    /// nothing. The transport's owner should give the socket a send buffer large
-    /// enough for control messages.
+    /// When `delivery` itself is the writer (a `resize`, a claim's answer, an
+    /// `ended` or a drain sent to a viewer that was idle) and the pane stops reading
+    /// in the middle of that write: `delivery` is parked until the pane reads or
+    /// the owner shuts the socket down. While it is parked no queued viewer of any
+    /// terminal receives anything, nobody can attach, other terminals' buffers
+    /// grow, and their WebSocket viewers are resynchronised afterwards. This takes
+    /// a transport that refuses a message of a few dozen bytes: a socket buffer
+    /// already full on a terminal that is producing nothing. The transport's owner
+    /// should give the socket a send buffer large enough for control messages.
     ///
     /// **What `write` may call.** `claim`, `resync`, `send`, and `detach` of this
     /// viewer itself, which then returns at once. Not `write(session:bytes:)`,
@@ -747,28 +802,44 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// `onUnavailable`, and the alternate screen rule does not apply to it, because
     /// it attaches when the terminal opens and is given every byte after that.
     ///
-    /// Runs on `delivery`, synchronously, as `attach` does. Not to be called from a
-    /// viewer's sink or `write`.
+    /// The join runs on `delivery`, synchronously, as `attach`'s does; the write of
+    /// the attach then runs on the calling thread. Not to be called from a viewer's
+    /// sink or `write`.
     @discardableResult
     package func attachLocal(session: String, resize: ResizeMode,
                              write: @escaping @Sendable (StreamMessage) -> Void) -> UUID {
-        let id = UUID()
+        attachLocal(session: session, resize: resize, id: UUID(), write: write)
+    }
+
+    /// `attachLocal(session:resize:write:)` with the viewer's id chosen by the
+    /// caller, so it is known while the attach is still being written: for the
+    /// tests, which detach or claim during that write.
+    @discardableResult
+    package func attachLocal(session: String, resize: ResizeMode, id: UUID,
+                             write: @escaping @Sendable (StreamMessage) -> Void) -> UUID {
         let viewer = LocalViewer(id: id, resize: resize, write: write) { [weak self] in
             self?.forgetLocal(id)
         }
-        delivery.sync { attachLocalNow(viewer, session: session) }
+        // The batch is written here, on the calling thread, once `delivery` has let
+        // go: a pane that reads its snapshot slowly or not at all holds this thread
+        // and its own terminal, and no other viewer. Everything left with the viewer
+        // meanwhile is written after it, by this thread, until none is.
+        let batch = delivery.sync { attachLocalNow(viewer, session: session) }
+        if let batch { _ = viewer.run(batch, drainingAll: true) }
         return viewer.id
     }
 
-    private func attachLocalNow(_ viewer: LocalViewer, session: String) {
+    /// Call on `delivery`. The attach's messages, for the calling thread of
+    /// `attachLocal` to write, with the viewer reserved for that thread; nil when
+    /// there is nothing to write.
+    private func attachLocalNow(_ viewer: LocalViewer, session: String) -> [StreamMessage]? {
         lock.lock()
         let census = onSessionCensus
         lock.unlock()
         // As for `attach`: a session that can never produce a byte is ended at once.
         if let census, !Self.isStreamable(session: session, census: census()) {
             // Never registered, so nobody else can reach it.
-            if let batch = viewer.offer([.ended], waitIfBusy: false) { _ = viewer.run(batch, drainingAll: true) }
-            return
+            return viewer.offer([.ended], waitIfBusy: false)
         }
         lock.lock()
         let stream = streams[session] ?? Stream()
@@ -797,11 +868,11 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         let sinks = stream.viewers.values.map(\.sink)
         let first = !stream.localAttachReported
         stream.localAttachReported = true
-        // New, so idle: this thread becomes its writer, and a chunk the writer
-        // thread accepts from now on waits for the attach's messages.
-        let batch = viewer.offer(messages, waitIfBusy: false)
+        // New, so idle: the attaching thread becomes its writer. What `delivery`
+        // has for it from now on is left with it, and the writer thread does not
+        // accept a chunk until that thread has given it up.
+        let batch = viewer.offerAttach(messages)
         stream.lock.unlock()
-        if let batch { _ = viewer.run(batch, drainingAll: true) }
 
         Self.deliver(outstanding, to: sinks)
         if first {
@@ -816,6 +887,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
                 attaching; it starts from the stream alone
                 """)
         }
+        return batch
     }
 
     /// What one join took under the session's lock, delivered after it.
@@ -1029,7 +1101,22 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
 
         stream.standAsideForAFlush(limit: Self.writerYieldLimit)
         stream.lock.lock()
-        let locals = stream.liveLocals()
+        var locals = stream.liveLocals()
+        // A viewer whose attach is still being written by the attaching thread is
+        // waited for here, before the chunk is accepted, and with the session's
+        // lock released: the chunk is in neither the model nor the stream yet, so
+        // the snapshot already taken does not hold it and it follows everything
+        // left with that viewer meanwhile. Waited for under the lock, as for a
+        // viewer `delivery` writes to, a pane that does not read its snapshot would
+        // hold `delivery` the moment it wanted this session's lock (a claim, an
+        // attach, an ending). A viewer is marked attaching only under this lock,
+        // so once none is, none becomes it before the lock is released.
+        while let attaching = locals.first(where: \.isAttaching) {
+            stream.lock.unlock()
+            attaching.waitForTheAttach()
+            stream.lock.lock()
+            locals = stream.liveLocals()
+        }
         // Only with a queued viewer to deliver to: without one the flush would hand
         // the bytes to nobody, and every echoed keystroke of a terminal nobody
         // watches would pay a dispatch for it. The timer empties that buffer as
@@ -1214,7 +1301,9 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
                 lock.unlock()
                 return
             }
-            let since = time &- pace.lastHandled
+            // At or after `lastHandled` as a rule; before it only when a timer ran
+            // ahead of the clock, and then the claim counts as just after it.
+            let since = time >= pace.lastHandled ? time - pace.lastHandled : 0
             if since < Self.claimInterval {
                 // Started under `lock`, so a `detach` cannot slip between the
                 // start and the record it cancels from. The scheduler takes no lock

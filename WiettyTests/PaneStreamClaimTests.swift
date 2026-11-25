@@ -670,6 +670,30 @@ final class ClaimTimers: @unchecked Sendable {
         #expect(timeline.messages(of: "claimant") == [own(Self.large), own(Self.small), own(Self.large)])
     }
 
+    /// A timer that runs early leaves the last handled time (when the held claim was
+    /// due) ahead of the clock. A claim then counts as 0 ms after it, so it is held
+    /// for the whole interval, rather than the difference wrapping around and the
+    /// claim being handled at once.
+    @Test func aClaimBeforeTheLastHandledTimeIsHeld() throws {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        claim(hub, claimant, Self.large)
+        claim(hub, claimant, Self.small)
+        hub.waitForPendingDeliveries()
+        // Fired with the clock not moved: 50 ms early.
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+        #expect(timeline.messages(of: "claimant") == [own(Self.large), own(Self.small)])
+
+        claim(hub, claimant, Self.large)
+        hub.waitForPendingDeliveries()
+        #expect(timeline.messages(of: "claimant") == [own(Self.large), own(Self.small)])
+        try #require(timers.count == 2)
+        #expect(timers.delay(1) == PaneStreamHub.claimInterval)
+    }
+
     /// The timer fires once: handling the held claim schedules nothing, and its work
     /// run a second time finds nothing held. The next claim inside the interval
     /// after that is held again, on a timer of its own.
