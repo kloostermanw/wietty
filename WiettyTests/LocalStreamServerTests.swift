@@ -277,12 +277,15 @@ private final class Client: @unchecked Sendable {
                         helloTimeout: TimeInterval = 5,
                         controlWriteDeadline: TimeInterval = 5,
                         peerCheck: @escaping @Sendable (Int32) -> Bool = LocalStreamServer.isSameUser,
-                        accept: @escaping @Sendable (Int32) -> Int32 = { Darwin.accept($0, nil, nil) })
+                        accept: @escaping @Sendable (Int32) -> Int32 = { Darwin.accept($0, nil, nil) },
+                        setSendTimeout: @escaping @Sendable (Int32, TimeInterval) -> Int32
+                            = LocalStreamServer.setSendTimeout)
         throws -> LocalStreamServer {
         let server = try LocalStreamServer(path: path, streamer: streamer,
                                            helloTimeout: helloTimeout,
                                            controlWriteDeadline: controlWriteDeadline,
-                                           peerCheck: peerCheck, accept: accept)
+                                           peerCheck: peerCheck, accept: accept,
+                                           setSendTimeout: setSendTimeout)
         server.start()
         return server
     }
@@ -754,6 +757,25 @@ private final class Client: @unchecked Sendable {
         #expect(streamer.deliver(.data([0x7A]), to: id))
         #expect(client.next() == .data([0x7A]))
         #expect(streamer.detaches.isEmpty)
+    }
+
+    /// A send timeout that did not take is set again on the next write. Recorded
+    /// as set when it was not, the deadline would be missing for good, since every
+    /// later control message asks for the same value and skips the call.
+    @Test func aSendTimeoutThatFailedToSetIsTriedAgain() throws {
+        let calls = NSLock()
+        nonisolated(unsafe) var seen: [TimeInterval] = []
+        let streamer = LocalFakeStreamer()
+        let server = try server(streamer, setSendTimeout: { fd, seconds in
+            calls.lock(); seen.append(seconds); let first = seen.count == 1; calls.unlock()
+            return first ? -1 : LocalStreamServer.setSendTimeout(fd, seconds)
+        })
+        defer { server.stop() }
+        // Three control messages: the hello, and the attach's initial two.
+        let (client, _) = try attached(streamer, server)
+        defer { client.close() }
+        calls.lock(); let made = seen; calls.unlock()
+        #expect(made == [5, 5])
     }
 
     @Test func dataToAClientThatDoesNotReadBlocksPastTheDeadline() throws {
