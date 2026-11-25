@@ -39,6 +39,9 @@ import WiettyShared
 /// taken this one. A surface that stops reading therefore fills the helper's socket,
 /// which holds the link's thread, which fills the link's socket, which holds the
 /// server's write on the pty's thread. Nothing is held here, and nothing is lost.
+/// Input runs the other way under a bound of the link's: the helper's thread waits in
+/// `link.send` while the server is not reading, so the helper and the surface wait
+/// too, and no more than the link's bound of input is held.
 ///
 /// ## Ends
 ///
@@ -66,7 +69,11 @@ final class TerminalBridge: @unchecked Sendable {
     let helperSocketPath: String
 
     /// The most claims kept while no link is live; beyond it the oldest is dropped.
-    static let maxPendingClaims = 64
+    /// Large, because a dropped claim is one the owner counted and the server never
+    /// answers: a window dragged for seconds while a reconnect backs off makes hundreds.
+    static let maxPendingClaims = 4096
+    /// The grid sizes the hub accepts; it ignores, and never answers, anything else.
+    static let claimRange = 1...10_000
     /// How long accepting pauses when the process is out of descriptors or memory.
     static let acceptRetryDelay: DispatchTimeInterval = .milliseconds(100)
 
@@ -107,6 +114,9 @@ final class TerminalBridge: @unchecked Sendable {
     /// Held for each write to the helper; the close takes it to wait for one, and the
     /// check of which link may write is made under it.
     private let helperWriteLock = NSLock()
+    /// Calls waiting to take `helperWriteLock`. For tests, which need to know that a
+    /// write is queued behind another before they race it.
+    private var helperWritersWaiting = 0
 
     /// A `resize` from the server: the grid in force, and whether this pane claimed it.
     /// Called on the link's thread, one at a time with the stream. Must not wait
@@ -119,14 +129,20 @@ final class TerminalBridge: @unchecked Sendable {
     /// The current link ended. Called on the link's thread, once per link. The helper
     /// is kept; call `reconnect(with:)` for a new link (from here is fine, it never
     /// blocks). Must not wait synchronously on the main thread; `stop()` waits for it.
+    ///
+    /// The owner resets its count of unanswered claims here (replaces its
+    /// `GridOwnership`): a claim sent to the link that ended may never be answered.
     var onEnded: (@Sendable (TerminalEndReason) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return endHandler }
         set { lock.lock(); endHandler = newValue; lock.unlock() }
     }
 
     /// The helper went away (the surface was destroyed) and the link was stopped.
-    /// Called once, on the bridge's helper thread, and not after `stop()`. The owner
-    /// must still call `stop()`. Must not wait synchronously on the main thread.
+    /// Called once, on the bridge's helper thread. The owner must still call `stop()`.
+    /// Must not wait synchronously on the main thread. It is not called for a helper
+    /// that `stop()` disconnected, but one that went away by itself may be reported
+    /// just after `stop()` has returned (`stop()` does not wait for this callback); an
+    /// owner that has stopped the bridge ignores it.
     var onHelperGone: (@Sendable () -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return helperGoneHandler }
         set { lock.lock(); helperGoneHandler = newValue; lock.unlock() }
@@ -156,6 +172,12 @@ final class TerminalBridge: @unchecked Sendable {
         return listenFd
     }
 
+    /// How many writes to the helper are waiting for the one in progress. For tests.
+    var waitingHelperWrites: Int {
+        lock.lock(); defer { lock.unlock() }
+        return helperWritersWaiting
+    }
+
     /// The helper's descriptor while it is open. For tests.
     var helperDescriptor: Int32? {
         lock.lock(); defer { lock.unlock() }
@@ -164,13 +186,22 @@ final class TerminalBridge: @unchecked Sendable {
 
     /// Claims the grid at this size. Never blocks: the link queues the write.
     ///
+    /// Returns whether the claim was accepted: sent to the live link, or kept for the
+    /// next one. The owner counts a claim (as one the server will answer) only when this
+    /// returns true. It refuses, and returns false for, a `cols` or `rows` outside
+    /// `claimRange`, which the hub would ignore without an answer, and any claim after
+    /// `stop()`.
+    ///
     /// Every claim is answered by the server once, and the owner counts the answers,
     /// so claims are never folded. While no link is live (before the helper connects,
     /// and between a link's end and the next `reconnect`) they are all kept, in order,
-    /// up to `maxPendingClaims` (the oldest dropped beyond that), and sent to the next
-    /// link that starts. A claim is not sent again to a link `reconnect` starts: after
-    /// a reconnect the owner claims again if it still owns the grid.
-    func claim(cols: Int, rows: Int) {
+    /// up to `maxPendingClaims` (the oldest dropped beyond that, which the owner can
+    /// only meet by claiming thousands of times while disconnected), and sent to the
+    /// next link that starts. A claim is not sent again to a link `reconnect` starts:
+    /// after a reconnect the owner claims again if it still owns the grid.
+    @discardableResult
+    func claim(cols: Int, rows: Int) -> Bool {
+        guard Self.claimRange.contains(cols), Self.claimRange.contains(rows) else { return false }
         control.lock()
         defer { control.unlock() }
         lock.lock()
@@ -182,18 +213,31 @@ final class TerminalBridge: @unchecked Sendable {
                 pendingClaims.removeFirst(pendingClaims.count - Self.maxPendingClaims)
             }
         }
+        let accepted = !stopped
         lock.unlock()
         if live { current.claim(cols: cols, rows: rows) }
+        return accepted
     }
 
     /// Makes the link again after a lost connection, keeping the helper. Never blocks.
     ///
-    /// From the moment this is called nothing of the old link reaches the helper, the
-    /// pane or `onEnded`, except a write to the helper already in progress, which
-    /// completes before the new link's first. The old link is stopped on a queue of
+    /// Meant to be called from `onEnded` only. The old link is stopped on a queue of
     /// the bridge's own, so a callback of it blocked on the helper does not hold this
-    /// caller. The new link is started at once if the helper is connected, else when it
-    /// connects, and is sent the claims kept while no link was live.
+    /// caller; but that stop waits for the surface to read, and a `reconnect` for any
+    /// other reason while a replaced link is stalled that way piles retired links up
+    /// on that queue until the surface reads.
+    ///
+    /// No message of the old link is written to the helper once this has been called,
+    /// except a write already in progress, which completes before the new link's first.
+    /// A callback of the old link that was already in progress (an `onResize` or an
+    /// `onEnded` past its check) may still run once after this returns; nothing of the
+    /// old link starts after that.
+    ///
+    /// A `reconnect` that no `onEnded` preceded must be treated as one by the owner:
+    /// it resets its count of unanswered claims (replaces its `GridOwnership`), since
+    /// a claim sent to the old link may never be answered. The new link is started at
+    /// once if the helper is connected, else when it connects, and is sent the claims
+    /// kept while no link was live.
     func reconnect(with newLink: any TerminalStreamLink) {
         lock.lock()
         let old = link
@@ -215,7 +259,9 @@ final class TerminalBridge: @unchecked Sendable {
     /// to it that is blocked. It does wait, through the link's `stop()`, for an
     /// `onResize` or `onEnded` that is running, unless called from inside one; which is
     /// why those must never wait on the main thread. It does not wait for a link
-    /// `reconnect` replaced. No callback is called after it returns.
+    /// `reconnect` replaced, so a callback of such a link already in progress may run
+    /// after it returns, and so may `onHelperGone` (see there). Nothing else is called
+    /// after it returns.
     func stop() {
         lock.lock()
         guard !stopped else { lock.unlock(); return }
@@ -349,7 +395,9 @@ final class TerminalBridge: @unchecked Sendable {
     /// only old write that can follow the swap is one already in progress, which the
     /// new link's first write waits for.
     private func writeToHelper(_ bytes: [UInt8], from id: ObjectIdentifier) {
+        lock.lock(); helperWritersWaiting += 1; lock.unlock()
         helperWriteLock.lock()
+        lock.lock(); helperWritersWaiting -= 1; lock.unlock()
         defer { helperWriteLock.unlock() }
         lock.lock()
         let fd = helperFd

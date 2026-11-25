@@ -282,37 +282,61 @@ private final class ScriptedServer: @unchecked Sendable {
         #expect(streamer.claims == [.init(id: id, cols: 120, rows: 40)])
     }
 
-    /// The bridge claims from the main actor, and the server reads nothing while it
-    /// writes a snapshot to a pane that is not reading. Neither `send` nor `claim`
-    /// may wait for that: they queue. Shown by a writer blocked on a full socket.
-    @Test func sendAndClaimNeverBlockOnAServerThatIsNotReading() throws {
+    /// A link attached and streaming, whose server has stopped reading: its reading
+    /// thread is held inside the fake's `send` of a first input. Not tied to any of the
+    /// server's write deadlines, since the server writes nothing meanwhile.
+    private func heldServer(_ streamer: LocalFakeStreamer, _ server: LocalStreamServer)
+        throws -> LocalSocketLink {
+        let recorder = LinkRecorder()
+        let link = started(server, streamer, recorder)
+        #expect(waitUntil { streamer.attachesReturned == 1 && recorder.messages.count == 2 })
+        streamer.holdInput()
+        link.send([0x01])
+        #expect(waitUntil { streamer.inputsWaiting == 1 })
+        return link
+    }
+
+    /// Input is bounded: `send` takes the first 256 KiB at once, and then waits for a
+    /// server that is not reading. `claim` bypasses the bound and never waits.
+    @Test func sendWaitsForAServerThatIsNotReadingAndClaimDoesNot() throws {
         let streamer = LocalFakeStreamer()
-        // A snapshot far larger than both socket buffers: the server's reading thread
-        // stays inside the attach, writing it, while the link holds its first message.
-        let snapshot = [UInt8](repeating: 0x73, count: 4 << 20)
-        streamer.onAttach = [.resize(cols: 80, rows: 24, own: false), .snapshot(snapshot)]
         let server = try server(streamer)
         defer { server.stop() }
-        let recorder = LinkRecorder()
-        let gate = DispatchSemaphore(value: 0)
-        recorder.block(on: gate)
-        let link = started(server, streamer, recorder)
+        let link = try heldServer(streamer, server)
         defer { link.stop() }
-        #expect(waitUntil { recorder.inside == 1 })
-        #expect(streamer.attachesReturned == 0)
+        defer { streamer.releaseInput() }
 
-        // More input than the socket holds: the link's writer blocks on it.
-        let input = [UInt8](repeating: 0x69, count: 4 << 20)
-        let sending = BackgroundCall { link.send(input) }
-        #expect(sending.wait(1))
+        let first = [UInt8](repeating: 0x66, count: LocalSocketLink.maxQueuedInput)
+        let sendingFirst = BackgroundCall { link.send(first) }
+        #expect(sendingFirst.wait(1))
+        let more = (0..<(4 << 20)).map { UInt8(truncatingIfNeeded: $0) }
+        let sendingMore = BackgroundCall { link.send(more) }
+        // Negative proof, bounded: 4 MiB cannot all be queued under the bound, and the
+        // server reads nothing until it is released.
+        #expect(!sendingMore.wait(1))
         let claiming = BackgroundCall { link.claim(cols: 100, rows: 30) }
         #expect(claiming.wait(1))
 
-        recorder.unblock()
-        gate.signal()
-        #expect(waitUntil(within: 10) { streamer.claims.count == 1 })
-        #expect(Array(streamer.inputs.map(\.bytes).joined()) == input)
+        streamer.releaseInput()
+        #expect(sendingMore.wait(10))
+        let expected = [0x01] + first + more
+        #expect(waitUntil(within: 10) {
+            streamer.inputs.reduce(0) { $0 + $1.bytes.count } == expected.count && streamer.claims.count == 1
+        })
+        #expect(Array(streamer.inputs.map(\.bytes).joined()) == expected)
         #expect(streamer.claims.first?.cols == 100)
+    }
+
+    @Test func stopReleasesASendThatIsWaiting() throws {
+        let streamer = LocalFakeStreamer()
+        let server = try server(streamer)
+        defer { server.stop() }
+        let link = try heldServer(streamer, server)
+        defer { streamer.releaseInput() }
+        let sending = BackgroundCall { link.send([UInt8](repeating: 0x61, count: 4 << 20)) }
+        #expect(!sending.wait(1))
+        link.stop()
+        #expect(sending.wait(2))
     }
 
     @Test func sendAndClaimBeforeStartAreDropped() throws {

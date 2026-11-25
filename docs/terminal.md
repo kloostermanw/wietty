@@ -698,8 +698,10 @@ frames and calls `onMessage` with each, in order, reading the socket again only 
 returned; a writer thread writes what `start`, `send` and `claim` queued, the `hello` first. The
 server's `hello` is consumed. An `ended`, an `error`, a closed socket and a first frame that is not a
 `hello` each end it, once, through `onEnded`, with the package's `TerminalEndReason`. `send` queues
-input in frames of at most 64 KiB and `claim` one `resize`; neither waits for the server, and the
-queue is not bounded (it holds what was typed or pasted and the server has not read yet). `stop()`
+input in frames of at most 64 KiB, and waits while 256 KiB of input is already queued, so a server
+that does not read holds back the thread giving it input (the bridge's helper thread, and through it
+the surface) rather than letting input pile up; a stop or an end releases it. `claim` queues one
+`resize` and never waits, whatever input is queued. `stop()`
 fires no `onEnded`, and from outside a callback it returns only once no callback runs, so nothing
 arrives after it.
 
@@ -708,15 +710,19 @@ the server uses too: mode 0600, close on exec, no SIGPIPE) and accepts one clien
 only when the helper has connected, writes the payloads of `snapshot`, `repaint` and `data` to the
 helper unchanged, hands `resize` to `onResize` and the link's end to `onEnded`, and sends the
 helper's bytes to `link.send` (dropped while no link is live). Claims made while no link is live are
-all kept, in order, up to 64, and sent to the next link that starts; they are not folded, because the
-server answers each one and the owner counts the answers. The helper going away stops the link and
+all kept, in order, up to 4096, and sent to the next link that starts; they are not folded, because
+the server answers each one and the owner counts the answers. A claim outside 1 to 10,000 columns or
+rows, which the hub would ignore without an answer, is refused: `claim` returns false, and the owner
+counts only a claim for which it returned true. The owner resets that count in `onEnded`, and at a
+`reconnect` no `onEnded` preceded, since a claim sent to the old link may never be answered. The helper going away stops the link and
 calls `onHelperGone`; the link ending keeps the helper, so `reconnect(with:)` can attach a new link to
 the same surface. The owner calls `stop()` in every case.
 
 It is meant to be called from the main actor, so `init`, `claim` and `reconnect` never wait for a
-write, to the helper or to the server. `reconnect` stops the old link on a queue of the bridge's own,
-and decides which link may write to the helper under the lock every helper write holds, so nothing of
-the old link follows the new link's first write. `stop()` waits only for an `onResize` or `onEnded`
+write, to the helper or to the server. `reconnect`, meant to be called from `onEnded`, stops the old
+link on a queue of the bridge's own, and decides which link may write to the helper under the lock
+every helper write holds, so no message of the old link is written after the new link's first write.
+A callback of the old link already running may still finish after `reconnect` returns. `stop()` waits only for an `onResize` or `onEnded`
 that is running. The callbacks run on the bridge's and the link's threads and must hop to the main
 thread asynchronously: the surface's pty read thread can wait on a mailbox only the main thread
 drains, and while it waits the helper is not read.

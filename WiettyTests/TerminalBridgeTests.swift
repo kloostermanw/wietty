@@ -196,15 +196,38 @@ private final class BridgeEvents: @unchecked Sendable {
         #expect(link.claims == [[90, 20], [100, 30], [90, 20], [120, 40]])
     }
 
-    @Test func atMostSixtyFourEarlyClaimsAreKeptTheNewest() throws {
+    @Test func atMost4096EarlyClaimsAreKeptTheNewest() throws {
         let link = FakeLink()
         let bridge = try TerminalBridge(helperSocketPath: shortSocketPath("tb"), link: link)
         defer { bridge.stop() }
-        for cols in 1...70 { bridge.claim(cols: cols, rows: 10) }
+        #expect(TerminalBridge.maxPendingClaims == 4096)
+        for cols in 1...4100 { #expect(bridge.claim(cols: cols, rows: 10)) }
         let helper = try UnixTestSocket(connectingTo: bridge.helperSocketPath)
         defer { helper.close() }
-        #expect(waitUntil { link.claims.count == 64 })
-        #expect(link.claims == (7...70).map { [$0, 10] })
+        #expect(waitUntil { link.claims.count == 4096 })
+        #expect(link.claims == (5...4100).map { [$0, 10] })
+    }
+
+    /// The hub ignores a grid outside 1...10,000 without an answer, so the bridge
+    /// refuses it and says so: the owner counts only a claim that was accepted.
+    @Test func aClaimOutsideTheHubsRangeIsRefused() throws {
+        let link = FakeLink()
+        let bridge = try TerminalBridge(helperSocketPath: shortSocketPath("tb"), link: link)
+        #expect(!bridge.claim(cols: 0, rows: 24))
+        #expect(!bridge.claim(cols: 80, rows: 0))
+        #expect(!bridge.claim(cols: 10_001, rows: 24))
+        #expect(!bridge.claim(cols: 80, rows: 10_001))
+        #expect(bridge.claim(cols: 1, rows: 1))
+        #expect(bridge.claim(cols: 10_000, rows: 10_000))
+        let helper = try UnixTestSocket(connectingTo: bridge.helperSocketPath)
+        defer { helper.close() }
+        #expect(waitUntil { link.claims.count == 2 })
+        #expect(!bridge.claim(cols: 0, rows: 0))
+        #expect(bridge.claim(cols: 120, rows: 40))
+        #expect(link.claims == [[1, 1], [10_000, 10_000], [120, 40]])
+        bridge.stop()
+        #expect(!bridge.claim(cols: 80, rows: 24))
+        #expect(link.claims.count == 3)
     }
 
     @Test func reconnectStopsTheOldLinkStartsTheNewOneAndKeepsTheHelper() throws {
@@ -270,10 +293,9 @@ private final class BridgeEvents: @unchecked Sendable {
         let big = [UInt8](repeating: 0x6F, count: 4 << 20)
         let inProgress = BackgroundCall { old.deliver(.data(big)) }
         #expect(!inProgress.wait(0.3))
-        // A second message of the old link, waiting behind it. Given time to get as
-        // far as it can; it is blocked either way, which is what is checked.
+        // A second message of the old link, queued for the helper behind it.
         let waiting = BackgroundCall { old.deliver(.data([0x58, 0x58])) }
-        #expect(!waiting.wait(0.3))
+        #expect(waitUntil { bridge.waitingHelperWrites == 1 })
 
         let new = FakeLink()
         let reconnecting = BackgroundCall { bridge.reconnect(with: new) }
