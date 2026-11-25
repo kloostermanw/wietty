@@ -926,10 +926,12 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
 
     /// Drops an ended local viewer from the registry, once its `ended` has been
     /// written and its writer has given it up. Called by that writer, with no lock
-    /// held.
+    /// held. Its session goes too: a `detach` of the id afterwards must find nothing,
+    /// not take the queued viewer's path and wait for a session's lock.
     private func forgetLocal(_ id: UUID) {
         lock.lock()
         localViewers[id] = nil
+        sessionForViewer[id] = nil
         lock.unlock()
     }
 

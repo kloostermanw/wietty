@@ -571,6 +571,40 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         #expect(log.messages.isEmpty)
     }
 
+    /// The local socket server detaches a viewer after its `ended`. That `detach`
+    /// must not wait for the session's lock, which the pty's thread may hold while it
+    /// waits for another pane of a new terminal under the same session id.
+    @Test func aDetachAfterTheEndingReturnsAtOnceWhileTheSessionsLockIsHeld() {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let ended = LocalLog()
+        let endedId = hub.attachLocal(session: Self.session, resize: .repaint) { ended.add($0) }
+        hub.endViewers(ofSession: Self.session)
+        #expect(settled(hub))
+        #expect(ended.messages == [.ended])
+
+        // The session lives again, and its lock is held: one write blocks inside a
+        // pane, and a second waits for that pane holding the session's lock.
+        let gate = Gate()
+        defer { gate.open() }
+        hub.attachLocal(session: Self.session, resize: .repaint) { message in
+            if isData(message) { gate.hold() }
+        }
+        let first = onThread { hub.write(session: Self.session, bytes: bytes("x")) }
+        #expect(gate.waitUntilHeld())
+        let second = onThread { hub.write(session: Self.session, bytes: bytes("y")) }
+        // Time for the second write to reach the pane and wait for it; a precondition,
+        // not the proof.
+        usleep(100_000)
+
+        let detached = onThread { hub.detach(connectionId: endedId) }
+        #expect(detached.wait(timeout: .now() + 1) == .success, "detach of an ended viewer waited for a session")
+        gate.open()
+        #expect(first.wait(timeout: .now() + 5) == .success)
+        gate.open()
+        #expect(second.wait(timeout: .now() + 5) == .success)
+    }
+
     /// Nothing a detached viewer's `write` captured outlives the detach on a
     /// terminal that writes nothing more.
     @Test func aDetachedViewerIsNotKeptByAnIdleSession() {
