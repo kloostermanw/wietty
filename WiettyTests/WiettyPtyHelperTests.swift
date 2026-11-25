@@ -7,9 +7,8 @@ import Darwin
 /// process, so it is exercised as one: built, launched, and talked to over a real
 /// socket.
 @Suite struct WiettyPtyHelperTests {
-    /// Where the helper is at runtime. Shared with
-    /// `RelayHelperIntegrationTests`, which runs the same binary against a real
-    /// relay; see `bundledHelperURL`.
+    /// Where the helper is at runtime. Shared with `OwnPaneStreamTests`, which runs
+    /// the same binary against a real bridge; see `bundledHelperURL`.
     private func helperURL() throws -> URL { try bundledHelperURL() }
 
     @Test func theHelperIsInTheBundle() throws {

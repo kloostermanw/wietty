@@ -63,7 +63,7 @@ private final class FakeStreamer: ScreenStreaming, @unchecked Sendable {
     @MainActor
     @Test func theInternalTerminalSatisfiesTheServiceProtocols() {
         let stack = TerminalStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghostty.ghosttyService?.closeAll() }
+        defer { stack.ghostty.shutDown() }
         #expect(stack.service is GhosttyService || stack.setupError != nil)
         #expect(stack.streamer is PaneStreamHub)
         #expect(stack.monitor is GhosttyMonitor)

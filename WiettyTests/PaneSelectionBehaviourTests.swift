@@ -53,7 +53,7 @@ import WiettyCore
     /// it, whichever one the pane shows.
     @Test func movingThePaneLeavesBothTerminalsReadable() async throws {
         let app = wired()
-        defer { app.stack.ghosttyService?.closeAll() }
+        defer { app.stack.shutDown() }
         let service = app.terminals.service
         let first = try await service.open(folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
                                            command: "echo first-$((10+1)); sleep 5", badge: nil).sessionId
@@ -93,7 +93,7 @@ import WiettyCore
     /// Opening a terminal puts it on screen. Every other case below starts from this.
     @Test func openingATerminalShowsIt() async throws {
         let app = wired()
-        defer { app.stack.ghosttyService?.closeAll() }
+        defer { app.stack.shutDown() }
         let first = try await open(app)
         #expect(app.displayed == first)
         let second = try await open(app)
@@ -104,7 +104,7 @@ import WiettyCore
     /// sidebar row calls, and the row it names ends up on screen.
     @Test func clickingALocalRowShowsThatTerminal() async throws {
         let app = wired()
-        defer { app.stack.ghosttyService?.closeAll() }
+        defer { app.stack.shutDown() }
         let first = try await open(app)
         let second = try await open(app)
         #expect(app.displayed == second)
@@ -118,7 +118,7 @@ import WiettyCore
     /// Case 2: an agent calling `select_process`, which reaches the same `focus`.
     @Test func selectProcessShowsThatTerminal() async throws {
         let app = wired()
-        defer { app.stack.ghosttyService?.closeAll() }
+        defer { app.stack.shutDown() }
         let first = try await open(app)
         _ = try await open(app)
         _ = try await ask(app, for: first)
@@ -131,7 +131,7 @@ import WiettyCore
     /// accepted price of one implementation of activation rather than two.
     @Test func aRemoteActivateShowsThatTerminalOnTheServingMac() async throws {
         let app = wired()
-        defer { app.stack.ghosttyService?.closeAll() }
+        defer { app.stack.shutDown() }
         let first = try await open(app)
         _ = try await open(app)
         _ = try await ask(app, for: first)
@@ -142,7 +142,7 @@ import WiettyCore
     /// rather than leaving it empty with terminals still open.
     @Test func closingTheDisplayedTerminalHandsThePaneOn() async throws {
         let app = wired()
-        defer { app.stack.ghosttyService?.closeAll() }
+        defer { app.stack.shutDown() }
         let first = try await open(app)
         let second = try await open(app)
         #expect(app.displayed == second)
@@ -154,7 +154,7 @@ import WiettyCore
     /// Case 5: closing the last one empties the pane.
     @Test func closingTheLastTerminalEmptiesThePane() async throws {
         let app = wired()
-        defer { app.stack.ghosttyService?.closeAll() }
+        defer { app.stack.shutDown() }
         let only = try await open(app)
         #expect(app.displayed == only)
 
@@ -169,7 +169,7 @@ import WiettyCore
     /// sits in front of the terminal until a local one is shown, and then it goes.
     @Test func showingALocalTerminalUncoversWhateverWasInFrontOfThePane() async throws {
         let app = wired()
-        defer { app.stack.ghosttyService?.closeAll() }
+        defer { app.stack.shutDown() }
         let first = try await open(app)
         let second = try await open(app)
 
@@ -186,7 +186,7 @@ import WiettyCore
     /// uncover it for, which is the rule `localSelectionChanged` encodes.
     @Test func emptyingThePaneLeavesAnOverrideInPlace() async throws {
         let app = wired()
-        defer { app.stack.ghosttyService?.closeAll() }
+        defer { app.stack.shutDown() }
         let only = try await open(app)
         app.router.show(.settings)
 
@@ -198,7 +198,7 @@ import WiettyCore
     /// Closing a terminal that is not the one on screen leaves the pane alone.
     @Test func closingAnUndisplayedTerminalLeavesThePaneAlone() async throws {
         let app = wired()
-        defer { app.stack.ghosttyService?.closeAll() }
+        defer { app.stack.shutDown() }
         let first = try await open(app)
         let second = try await open(app)
         #expect(app.displayed == second)
@@ -246,7 +246,7 @@ import WiettyCore
     /// pane ends up on that row.
     @Test func storeFocusPutsTheRowOnScreen() async throws {
         let f = try await fixture()
-        defer { f.stack.ghosttyService?.closeAll() }
+        defer { f.stack.shutDown() }
         #expect(f.sessions.count == 2)
         #expect(f.selection.current == f.sessions[1])
 
@@ -258,7 +258,7 @@ import WiettyCore
     /// `activateThrowing`, and the pane ends up on that row.
     @Test func activatingALiveRowPutsItOnScreen() async throws {
         let f = try await fixture()
-        defer { f.stack.ghosttyService?.closeAll() }
+        defer { f.stack.shutDown() }
         let project = f.store.projects[0]
         #expect(f.selection.current == f.sessions[1])
 

@@ -848,28 +848,69 @@ private final class Client: @unchecked Sendable {
         #expect(eventually { streamer.attaches.count == 1 })
     }
 
-    @Test func oneConnectionOverTheCapIsClosedWithNoReply() throws {
+    /// Every live terminal's pane holds a connection, so the default cap is far
+    /// above what a person opens.
+    @Test func theDefaultCapIsFarAboveTheTerminalsAPersonOpens() {
+        #expect(LocalStreamServer.maxConnections == 1024)
+    }
+
+    /// One connection over the cap (lowered here) is answered `error` with code
+    /// `busy` and closed, so its client ends as refused, not as a lost connection it
+    /// would retry. A place freed is a place taken.
+    @Test func oneConnectionOverTheCapIsAnsweredBusy() throws {
         let streamer = LocalFakeStreamer()
-        let server = try server(streamer, helloTimeout: 20)
+        let path = Self.path()
+        let server = try LocalStreamServer(path: path, streamer: streamer, helloTimeout: 20,
+                                           maxConnections: 4)
+        server.start()
         defer { server.stop() }
         var clients: [Client] = []
         defer { clients.forEach { $0.close() } }
-        for _ in 0..<LocalStreamServer.maxConnections { clients.append(try Client(path: server.path)) }
-        #expect(eventually { server.connectionCount == LocalStreamServer.maxConnections })
+        for _ in 0..<4 { clients.append(try Client(path: server.path)) }
+        #expect(eventually { server.connectionCount == 4 })
 
         let extra = try Client(path: server.path)
         defer { extra.close() }
         extra.hello()
+        guard case let .error(code, _)? = extra.next() else {
+            Issue.record("no error for the connection over the cap")
+            return
+        }
+        #expect(code == "busy")
         #expect(extra.endsWithNothing())
-        #expect(server.connectionCount == LocalStreamServer.maxConnections)
+        #expect(server.connectionCount == 4)
 
-        // A place freed is a place taken.
         clients.removeLast().close()
-        #expect(eventually { server.connectionCount == LocalStreamServer.maxConnections - 1 })
+        #expect(eventually { server.connectionCount == 3 })
         let next = try Client(path: server.path)
         defer { next.close() }
         next.hello()
         #expect(next.next(3).count == 3)
+    }
+
+    /// The pane's own link, refused at the cap, ends as `.refused` with that code:
+    /// what `OwnPaneBridge` does not retry.
+    @Test func aLinkOverTheCapEndsRefusedBusy() throws {
+        let streamer = LocalFakeStreamer()
+        let server = try LocalStreamServer(path: Self.path(), streamer: streamer, helloTimeout: 20,
+                                           maxConnections: 1)
+        server.start()
+        defer { server.stop() }
+        let first = try Client(path: server.path)
+        defer { first.close() }
+        #expect(eventually { server.connectionCount == 1 })
+
+        let ended = LinkEnds()
+        let link = LocalSocketLink(path: server.path, session: "s1")
+        link.onEnded = { ended.add($0) }
+        link.start()
+        defer { link.stop() }
+        #expect(eventually { !ended.all.isEmpty })
+        guard case let .refused(code, _)? = ended.all.first else {
+            Issue.record("the link ended as \(ended.all), not refused")
+            return
+        }
+        #expect(code == "busy")
     }
 
     @Test func aRelativePathIsRefused() {
@@ -917,4 +958,11 @@ private final class Client: @unchecked Sendable {
         #expect(code != 0)
         #expect(elapsed < 1)
     }
+}
+
+private final class LinkEnds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [TerminalEndReason] = []
+    func add(_ reason: TerminalEndReason) { lock.lock(); storage.append(reason); lock.unlock() }
+    var all: [TerminalEndReason] { lock.lock(); defer { lock.unlock() }; return storage }
 }

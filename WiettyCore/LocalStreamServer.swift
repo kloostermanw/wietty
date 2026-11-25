@@ -61,8 +61,12 @@ package final class LocalStreamServer: @unchecked Sendable {
     package static let sendBufferSize: Int32 = 256 << 10
     /// The most a viewer may send in one message, as on the WebSocket route.
     package static let maxInboundMessage = 1 << 20
-    /// The most connections served at once. One more is closed at accept, unanswered.
-    package static let maxConnections = 64
+    /// The most connections served at once by default. Every live local terminal's
+    /// pane holds one for as long as the terminal lives, so this is a limit on live
+    /// terminals, and it is set far above what a person opens. One more is answered
+    /// `error` with code `busy` (see `serveBusy`), so its client ends as refused rather
+    /// than as a lost connection it would try again.
+    package static let maxConnections = 1024
     /// How long accepting pauses when the process is out of descriptors or memory.
     static let acceptRetryDelay: DispatchTimeInterval = .milliseconds(100)
 
@@ -71,6 +75,7 @@ package final class LocalStreamServer: @unchecked Sendable {
     private let streamer: any ScreenStreaming
     private let helloTimeout: TimeInterval
     private let controlWriteDeadline: TimeInterval
+    private let connectionLimit: Int
     private let peerCheck: @Sendable (Int32) -> Bool
     private let acceptCall: @Sendable (Int32) -> Int32
     private let sendTimeoutCall: @Sendable (Int32, TimeInterval) -> Int32
@@ -95,12 +100,14 @@ package final class LocalStreamServer: @unchecked Sendable {
     /// speak; by default it must be this process's own user. `helloTimeout` is how
     /// long a client may take, counted from the accept, to send a whole `hello`
     /// before it is closed with no reply. `controlWriteDeadline` is the write
-    /// deadline above. `accept` stands in for `accept(2)` in tests: it returns the
+    /// deadline above. `maxConnections` is the cap (`LocalStreamServer.maxConnections`
+    /// unless a test lowers it). `accept` stands in for `accept(2)` in tests: it returns the
     /// descriptor, or -1 with `errno` set. `setSendTimeout` stands in for setting a
     /// socket's `SO_SNDTIMEO` in tests: it returns what `setsockopt` would.
     package init(path: String, streamer: any ScreenStreaming,
                  helloTimeout: TimeInterval = 5,
                  controlWriteDeadline: TimeInterval = 5,
+                 maxConnections: Int = LocalStreamServer.maxConnections,
                  peerCheck: @escaping @Sendable (Int32) -> Bool = LocalStreamServer.isSameUser,
                  accept: @escaping @Sendable (Int32) -> Int32 = { Darwin.accept($0, nil, nil) },
                  setSendTimeout: @escaping @Sendable (Int32, TimeInterval) -> Int32
@@ -109,11 +116,13 @@ package final class LocalStreamServer: @unchecked Sendable {
         self.streamer = streamer
         self.helloTimeout = helloTimeout
         self.controlWriteDeadline = controlWriteDeadline
+        self.connectionLimit = maxConnections
         self.peerCheck = peerCheck
         self.acceptCall = accept
         self.sendTimeoutCall = setSendTimeout
         // A backlog as deep as the cap: panes restored at launch connect at once.
-        let (fd, identity) = try PrivateSocket.listen(at: path, backlog: Int32(Self.maxConnections))
+        // The kernel caps it (`kern.ipc.somaxconn`); asking for more is harmless.
+        let (fd, identity) = try PrivateSocket.listen(at: path, backlog: Int32(min(maxConnections, 1024)))
         boundFile = identity
         listenFd = fd
     }
@@ -208,13 +217,21 @@ package final class LocalStreamServer: @unchecked Sendable {
                                         controlWriteDeadline: controlWriteDeadline,
                                         setSendTimeout: sendTimeoutCall)
             lock.lock()
-            let refused = stopped || connections.count >= Self.maxConnections
-            if !refused { connections[ObjectIdentifier(connection)] = connection }
+            let isStopped = stopped
+            let full = !isStopped && connections.count >= connectionLimit
+            if !isStopped, !full { connections[ObjectIdentifier(connection)] = connection }
             lock.unlock()
-            guard !refused else { close(fd); continue }
+            guard !isStopped else { close(fd); continue }
+            // Over the cap: answered `busy` on a thread of its own, uncounted, which
+            // ends within the hello timeout at the latest. Never on this queue, which
+            // must not wait for a client.
             let thread = Thread { [weak self] in
-                connection.serve()
-                self?.forget(connection)
+                if full {
+                    connection.serveBusy()
+                } else {
+                    connection.serve()
+                    self?.forget(connection)
+                }
             }
             thread.name = "eu.kloosterman.wietty.local-stream.connection"
             thread.start()
@@ -400,6 +417,22 @@ private final class Connection: @unchecked Sendable {
             // and the connection ends with no reply.
             guard reader.failure == nil else { return }
         }
+    }
+
+    /// Refuses a connection over the cap: waits for its first message (so the client's
+    /// `hello` has been taken and nothing it writes fails before it reads the answer),
+    /// answers `error` with code `busy` whatever that message was, and ends the
+    /// connection. A client that sends nothing is closed at the hello timeout with no
+    /// reply. Not counted against the cap, and not shut down by `stop()`; it ends on
+    /// its own within the hello timeout.
+    func serveBusy() {
+        defer {
+            shutDown()
+            close()
+        }
+        var reader = StreamFrameReader(maxPayload: LocalStreamServer.maxInboundMessage)
+        guard readHello(&reader) != nil else { return }
+        refuse("busy", "this Wietty serves as many panes as it can")
     }
 
     /// Waits up to `helloTimeout`, counted from the accept, for the first message.

@@ -9,7 +9,7 @@ import WiettyCore
 @Suite struct TerminalStackTests {
     @Test func theStackIsTheInternalTerminal() {
         let stack = TerminalStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghostty.ghosttyService?.closeAll() }
+        defer { stack.ghostty.shutDown() }
         #expect(stack.streamer is PaneStreamHub)
         #expect(stack.streamer as AnyObject === stack.ghostty.hub as AnyObject)
     }
@@ -18,7 +18,7 @@ import WiettyCore
     /// beside it. Two hubs would mean a viewer reading a stream nothing writes to.
     @Test func theStackHandsOnTheGhosttyStacksPieces() {
         let stack = TerminalStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghostty.ghosttyService?.closeAll() }
+        defer { stack.ghostty.shutDown() }
         #expect(stack.service as AnyObject === stack.ghostty.service as AnyObject)
         #expect(stack.monitor as AnyObject === stack.ghostty.monitor as AnyObject)
     }
@@ -29,7 +29,7 @@ import WiettyCore
     /// fall back to, the message is all the user gets.
     @Test func setupErrorComesFromTheGhosttyStack() {
         let stack = TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: nil)
-        defer { stack.ghostty.ghosttyService?.closeAll() }
+        defer { stack.ghostty.shutDown() }
         #expect(stack.setupError == TerminalError.ghosttyHelperMissing.errorDescription)
         #expect(stack.setupError == stack.ghostty.setupError)
     }
@@ -80,7 +80,7 @@ import WiettyCore
     /// injected failure rather than something this branch always says.
     @Test func aWorkingStackReportsNoSetupError() {
         let stack = TerminalStack.testing(host: FakeSurfaceHost())
-        defer { stack.ghostty.ghosttyService?.closeAll() }
+        defer { stack.ghostty.shutDown() }
         #expect(stack.setupError == nil)
     }
 }

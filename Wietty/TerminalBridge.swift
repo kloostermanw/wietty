@@ -115,8 +115,11 @@ final class TerminalBridge: @unchecked Sendable {
     /// check of which link may write is made under it.
     private let helperWriteLock = NSLock()
     /// Calls waiting to take `helperWriteLock`. For tests, which need to know that a
-    /// write is queued behind another before they race it.
+    /// write is queued behind another before they race it. Counted only when
+    /// `countsWaitingWrites` is set, so the write path the app takes for every message
+    /// pays nothing for it.
     private var helperWritersWaiting = 0
+    private let countsWaitingWrites: Bool
 
     /// A `resize` from the server: the grid in force, and whether this pane claimed it.
     /// Called on the link's thread, one at a time with the stream. Must not wait
@@ -149,10 +152,13 @@ final class TerminalBridge: @unchecked Sendable {
     }
 
     /// Binds and listens at `helperSocketPath` (mode 0600, replacing a stale file),
-    /// and returns without waiting for the helper.
-    init(helperSocketPath: String, link: any TerminalStreamLink) throws {
+    /// and returns without waiting for the helper. `countsWaitingWrites` turns on
+    /// `waitingHelperWrites`, for a test.
+    init(helperSocketPath: String, link: any TerminalStreamLink,
+         countsWaitingWrites: Bool = false) throws {
         self.helperSocketPath = helperSocketPath
         self.link = link
+        self.countsWaitingWrites = countsWaitingWrites
         let (fd, identity) = try PrivateSocket.listen(at: helperSocketPath, backlog: 1)
         listenFd = fd
         boundFile = identity
@@ -172,7 +178,8 @@ final class TerminalBridge: @unchecked Sendable {
         return listenFd
     }
 
-    /// How many writes to the helper are waiting for the one in progress. For tests.
+    /// How many writes to the helper are waiting for the one in progress, when the
+    /// bridge was built with `countsWaitingWrites`; always 0 otherwise. For tests.
     var waitingHelperWrites: Int {
         lock.lock(); defer { lock.unlock() }
         return helperWritersWaiting
@@ -398,9 +405,9 @@ final class TerminalBridge: @unchecked Sendable {
     /// only old write that can follow the swap is one already in progress, which the
     /// new link's first write waits for.
     private func writeToHelper(_ bytes: [UInt8], from id: ObjectIdentifier) {
-        lock.lock(); helperWritersWaiting += 1; lock.unlock()
+        if countsWaitingWrites { lock.lock(); helperWritersWaiting += 1; lock.unlock() }
         helperWriteLock.lock()
-        lock.lock(); helperWritersWaiting -= 1; lock.unlock()
+        if countsWaitingWrites { lock.lock(); helperWritersWaiting -= 1; lock.unlock() }
         defer { helperWriteLock.unlock() }
         lock.lock()
         let fd = helperFd

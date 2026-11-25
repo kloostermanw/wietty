@@ -86,14 +86,20 @@ private final class HelperProcess: @unchecked Sendable {
 /// A surface host with no libghostty: it builds each surface's bridge exactly as
 /// `GhosttySurfaceHost` does (`PaneBridges`), and runs the real helper in place of
 /// the surface, so everything between the pty and the helper's stdout is real.
+///
+/// With `realHelpers` false, a plain socket connected to the bridge stands in for the
+/// helper (`sockets`), for a test that needs many terminals fast.
 @MainActor
 private final class BridgedHost: TerminalSurfaceHosting {
     let bridges: PaneBridges
+    let realHelpers: Bool
     private(set) var helpers: [String: HelperProcess] = [:]
+    private(set) var sockets: [String: UnixTestSocket] = [:]
     private(set) var destroyed: [String] = []
 
-    init(serverPath: String) throws {
+    init(serverPath: String, realHelpers: Bool = true) throws {
         bridges = PaneBridges(helperPath: try bundledHelperURL().path, serverPath: serverPath)
+        self.realHelpers = realHelpers
     }
 
     var onTitle: (@MainActor (String, String) -> Void)?
@@ -110,7 +116,12 @@ private final class BridgedHost: TerminalSurfaceHosting {
     func createSurface(id: String, directory: URL, title: String?) throws {
         let command = try bridges.open(session: id)
         do {
-            helpers[id] = try HelperProcess(command: command)
+            if realHelpers {
+                helpers[id] = try HelperProcess(command: command)
+            } else {
+                let path = try #require(helperSocketPath(of: id))
+                sockets[id] = try UnixTestSocket(connectingTo: path)
+            }
         } catch {
             bridges.close(session: id)
             throw error
@@ -121,6 +132,7 @@ private final class BridgedHost: TerminalSurfaceHosting {
         destroyed.append(id)
         bridges.close(session: id)
         helpers.removeValue(forKey: id)?.terminate()
+        sockets.removeValue(forKey: id)?.close()
     }
 
     func helperSocketPath(of session: String) -> String? {
@@ -132,6 +144,8 @@ private final class BridgedHost: TerminalSurfaceHosting {
     func terminateAll() {
         for helper in helpers.values { helper.terminate() }
         helpers = [:]
+        for socket in sockets.values { socket.close() }
+        sockets = [:]
     }
 }
 
@@ -191,6 +205,14 @@ private let folder = URL(fileURLWithPath: "/tmp")
             return (session, try #require(host.helpers[session]))
         }
 
+        /// For a rig with `realHelpers` false: the session and the socket standing in
+        /// for its helper.
+        func openWithSocket(_ command: String?) async throws -> (session: String, socket: UnixTestSocket) {
+            let session = try await stack.service.open(folder: folder, existingWindowId: nil,
+                                                       command: command, badge: nil).sessionId
+            return (session, try #require(host.sockets[session]))
+        }
+
         func tearDown() {
             stack.shutDown()
             host.terminateAll()
@@ -198,9 +220,9 @@ private let folder = URL(fileURLWithPath: "/tmp")
     }
 
     /// A long wait for the pane, so a test sees the pane's own attach start the read.
-    private func rig(readDelay: TimeInterval = 30) throws -> Rig {
-        let path = shortSocketPath("ops")
-        let host = try BridgedHost(serverPath: path)
+    private func rig(readDelay: TimeInterval = 30, realHelpers: Bool = true) throws -> Rig {
+        let path = testServerSocketPath()
+        let host = try BridgedHost(serverPath: path, realHelpers: realHelpers)
         let stack = GhosttyStack(host: host, localSocketPath: path, readDelay: readDelay)
         try #require(stack.setupError == nil)
         return Rig(host: host, stack: stack, serverPath: path)
@@ -319,20 +341,64 @@ private let folder = URL(fileURLWithPath: "/tmp")
 
     /// A terminal whose child exits ends its stream: the pane's link is told
     /// `ended` and is not made again, the terminal is reported terminated (which is
-    /// what the stopped screen comes from), and the surface keeps its helper, so the
-    /// last screen stays.
-    @Test func aChildThatExitsEndsTheStreamWithoutAReconnect() async throws {
+    /// what the stopped screen comes from), and the bridge is stopped, so the helper
+    /// exits with the child and its socket file goes, as when the relay owned it. The
+    /// surface is not destroyed: Restart (discard, then open) still finds and frees it.
+    @Test func aChildThatExitsEndsTheStreamAndLetsItsHelperGo() async throws {
         let rig = try rig()
         defer { rig.tearDown() }
         var events: [MonitorEvent] = []
         rig.stack.monitor.start { events.append($0) }
         let (session, helper) = try await rig.open("echo bye-$((6+6)); exit 0")
+        let bridgePath = try #require(rig.host.helperSocketPath(of: session))
         #expect(await eventually { events.contains(.terminated(sessionId: session)) })
         #expect(helper.output.text.contains("bye-12"))
-        try? await Task.sleep(for: .milliseconds(300))
+        #expect(await eventually { !FileManager.default.fileExists(atPath: bridgePath) })
+        #expect(await eventually { !helper.process.isRunning })
         #expect(rig.host.bridges.bridge(for: session)?.linkCount == 1)
-        #expect(helper.process.isRunning)
         #expect(rig.host.destroyed.isEmpty)
+
+        // Restart: the store discards the stopped terminal and opens a new one.
+        await rig.stack.service.discard(sessionId: session)
+        #expect(rig.host.destroyed == [session])
+        let (_, again) = try await rig.open("echo again-$((3+3)); sleep 30")
+        #expect(await eventually { again.output.text.contains("again-6") })
+    }
+
+    /// Every live terminal's pane holds a connection to the server for as long as it
+    /// lives, so more than the old cap of 64 must each get their own stream. Plain
+    /// sockets stand in for the helpers, to keep it fast.
+    @Test func moreThan64LiveTerminalsEachReceiveTheirOwnOutput() async throws {
+        let rig = try rig(realHelpers: false)
+        defer { rig.tearDown() }
+        let count = 70
+        var sessions: [String] = []
+        for index in 0..<count {
+            let (session, _) = try await rig.openWithSocket("printf 'own-%s-end' \(index); sleep 30")
+            sessions.append(session)
+        }
+        #expect(await eventually(within: 20) { rig.stack.localServer?.connectionCount == count })
+        var received = [String: [UInt8]]()
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline, received.count < count
+                || sessions.enumerated().contains(where: { index, session in
+                    !String(decoding: received[session] ?? [], as: UTF8.self).contains("own-\(index)-end")
+                }) {
+            for session in sessions {
+                guard let socket = rig.host.sockets[session] else { continue }
+                var readable = pollfd(fd: socket.fd, events: Int16(POLLIN), revents: 0)
+                guard poll(&readable, 1, 0) > 0 else { continue }
+                var buffer = [UInt8](repeating: 0, count: 1 << 16)
+                let got = read(socket.fd, &buffer, buffer.count)
+                if got > 0 { received[session, default: []] += buffer[0..<got] }
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        for (index, session) in sessions.enumerated() {
+            let text = String(decoding: received[session] ?? [], as: UTF8.self)
+            #expect(text.contains("own-\(index)-end"), "terminal \(index) did not get its output")
+            #expect(text.components(separatedBy: "own-").count == 2, "terminal \(index) got another's")
+        }
     }
 }
 
@@ -390,6 +456,31 @@ private let folder = URL(fileURLWithPath: "/tmp")
         #expect(Date().timeIntervalSince(opened) >= 0.55)
         #expect(reports.all.count == 1)
         #expect(reports.all.first?.contains(session) == true)
+    }
+
+    /// A pane that attaches after the wait ran out, and the terminal was read without
+    /// it, gets what the child printed meanwhile in its snapshot: nothing of it is
+    /// lost to the pane, the model holds it.
+    @Test func aPaneThatAttachesAfterTheWaitGetsTheEarlierOutputInItsSnapshot() async throws {
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost(), readDelay: 0.3)
+        defer { stack.shutDown() }
+        let session = try await stack.service.open(folder: folder, existingWindowId: nil,
+                                                   command: "echo early-$((5+6)); sleep 30",
+                                                   badge: nil).sessionId
+        let model = try #require(stack.ghosttyService?.screenModel(for: session))
+        #expect(await eventually { model.text(maxLines: 10).contains("early-11") })
+
+        let log = MessageLog()
+        let viewer = stack.hub.attachLocal(session: session, resize: .reflow) { log.add($0) }
+        defer { stack.hub.detach(connectionId: viewer) }
+        #expect(await eventually { log.messages.count >= 2 })
+        guard case let .snapshot(bytes)? = log.messages.dropFirst().first else {
+            Issue.record("no snapshot second: \(log.messages.prefix(2))")
+            return
+        }
+        let fresh = try GhosttyVtTerminal(size: GhosttyService.initialSize, scrollbackLines: 100)
+        fresh.write(bytes)
+        #expect(fresh.text(maxLines: 10).contains("early-11"))
     }
 
     /// A terminal closed before its pane attached and before the wait ran out is

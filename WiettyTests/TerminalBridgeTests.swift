@@ -286,7 +286,10 @@ private final class BridgeEvents: @unchecked Sendable {
     /// follows the new link's snapshot.
     @Test func nothingOfTheOldLinkReachesTheHelperAfterAReconnect() throws {
         let old = FakeLink()
-        let (bridge, helper) = try connected(old)
+        let bridge = try TerminalBridge(helperSocketPath: shortSocketPath("tb"), link: old,
+                                        countsWaitingWrites: true)
+        let helper = try UnixTestSocket(connectingTo: bridge.helperSocketPath)
+        #expect(waitUntil { old.starts == 1 })
         defer { helper.close() }
         defer { bridge.stop() }
         // A write in progress, blocked: far more than the socket holds.
@@ -312,6 +315,26 @@ private final class BridgeEvents: @unchecked Sendable {
         #expect(Array(received.suffix(snapshot.count)) == snapshot)
         #expect(!received.contains(0x58))
         #expect(staysSilent(helper.fd, for: 0.2))
+    }
+
+    /// A helper that goes away while the bridge is writing to it does not take the
+    /// app with it: the write fails (no SIGPIPE), the message's callback returns, and
+    /// the helper going away is reported.
+    @Test func aHelperThatGoesAwayDuringAWriteDoesNotKillTheProcess() throws {
+        let link = FakeLink()
+        let events = BridgeEvents()
+        let (bridge, helper) = try connected(link)
+        events.attach(to: bridge)
+        defer { bridge.stop() }
+        // Far more than the socket holds, so the write is in progress, blocked.
+        let big = [UInt8](repeating: 0x61, count: 4 << 20)
+        let writing = BackgroundCall { link.deliver(.data(big)) }
+        #expect(!writing.wait(0.3))
+        helper.close()
+        #expect(writing.wait())
+        #expect(waitUntil { events.gone == 1 })
+        // And a write after it is gone is dropped, not attempted on a closed socket.
+        link.deliver(.data([0x41]))
     }
 
     @Test func aHelperThatGoesAwayIsReportedOnce() throws {
