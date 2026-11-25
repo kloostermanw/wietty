@@ -30,16 +30,16 @@ import WiettyCore
 
     @Test func aPathThatDoesNotFitSunPathThrows() {
         let directory = "/" + String(repeating: "d", count: 95) + "/"
-        #expect(throws: TerminalRelayError.self) {
+        #expect(throws: LocalSocketError.self) {
             _ = try LocalSocketPaths.server(pid: 1234, in: directory)
         }
-        #expect(throws: TerminalRelayError.self) {
+        #expect(throws: LocalSocketError.self) {
             _ = try LocalSocketPaths.bridge(12, pid: 1234, in: directory)
         }
     }
 
     @Test func aRelativeDirectoryIsRefused() {
-        #expect(throws: TerminalRelayError.relativeSocketPath("tmp/wty-7.sock")) {
+        #expect(throws: LocalSocketError.relativeSocketPath("tmp/wty-7.sock")) {
             _ = try LocalSocketPaths.server(pid: 7, in: "tmp/")
         }
     }
@@ -49,7 +49,7 @@ import WiettyCore
     @Test func aNameWhoseBindPathDoesNotFitThrowsAlready() throws {
         // 92 bytes of directory: `wty-1.sock` makes 102, `.wty-XXXXXX/s` makes 105.
         let directory = "/" + String(repeating: "d", count: 90) + "/"
-        #expect(throws: TerminalRelayError.socketPathTooLong(directory + ".wty-XXXXXX/s")) {
+        #expect(throws: LocalSocketError.socketPathTooLong(directory + ".wty-XXXXXX/s")) {
             _ = try LocalSocketPaths.server(pid: 1, in: directory)
         }
     }
@@ -58,7 +58,7 @@ import WiettyCore
 
     private func makeDirectory() throws -> String {
         var template = Array((NSTemporaryDirectory() + "swpXXXXXX").utf8CString)
-        guard let made = mkdtemp(&template) else { throw TerminalRelayError.socketFailed(errno) }
+        guard let made = mkdtemp(&template) else { throw LocalSocketError.socketFailed(errno) }
         return String(cString: made) + "/"
     }
 
@@ -80,7 +80,7 @@ import WiettyCore
                 Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard bound == 0 else { throw TerminalRelayError.bindFailed(errno) }
+        guard bound == 0 else { throw LocalSocketError.bindFailed(errno) }
     }
 
     private func exists(_ path: String) -> Bool {

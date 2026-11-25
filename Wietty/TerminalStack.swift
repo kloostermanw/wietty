@@ -57,24 +57,50 @@ struct TerminalStack {
     /// - Parameter ghosttyHost: injected so tests can build this with no framework
     ///   and no Metal device. Nil on the real launch, where the real
     ///   `GhosttySurfaceHost` is created here and its failure becomes `setupError`.
-    /// - Parameter helperPath: where the bundled relay helper is, defaulting to the
-    ///   real lookup. Injected for the same reason the host is: with a working host
-    ///   and a real bundle nothing here can produce a `setupError`, so a test of how
-    ///   this type carries one would have nothing to carry.
+    /// - Parameter helperPath: where the bundled `wietty-pty` is, defaulting to the
+    ///   real lookup. The surfaces run it, so the app checks it here: nil, or a file
+    ///   that is not executable, is a startup error. Injected for the same reason the
+    ///   host is: with a working host and a real bundle nothing here can produce a
+    ///   `setupError`, so a test of how this type carries one would have nothing to
+    ///   carry.
+    /// - Parameter localSocketPath: where the stack's `LocalStreamServer` listens.
+    ///   Nil on the real launch: `LocalSocketPaths.server()`, a path that names this
+    ///   process. Tests pass a path of their own, since they build several stacks in
+    ///   the app's one process.
+    /// - Parameter readDelay: how long a terminal waits for its pane's viewer before
+    ///   its pty is read anyway. Shorter in tests, whose fake hosts have no pane.
     init(ghosttyHost: (any TerminalSurfaceHosting & TerminalSurfaceViewing)? = nil,
-         helperPath: String? = Self.helperPath()) {
+         helperPath: String? = Self.helperPath(),
+         localSocketPath: String? = nil,
+         readDelay: TimeInterval = GhosttyService.unattachedReadDelay) {
+        let helper = helperPath.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
+        var socketFailure: TerminalError?
+        let serverPath: String
+        if let localSocketPath {
+            serverPath = localSocketPath
+        } else {
+            do {
+                serverPath = try LocalSocketPaths.server()
+            } catch {
+                serverPath = ""
+                socketFailure = .localSocketFailed(String(describing: error))
+            }
+        }
         // A host that could not be built still yields a stack, so the app launches
         // and can explain itself rather than failing at every call site.
-        let built = Self.buildHost(injected: ghosttyHost)
-        // The failure REASON is passed in, not patched on afterwards. Signalling a
-        // libghostty failure by handing the stack `helperPath: nil` would make it
-        // install the missing-helper service, so `setupError` would say libghostty
-        // could not start while every terminal action threw "the helper is missing
-        // from the app bundle. Reinstall Wietty." Two different wrong answers to
-        // the same question is worse than either.
+        let bridges = helper.map { PaneBridges(helperPath: $0, serverPath: serverPath) }
+        let built = Self.buildHost(injected: ghosttyHost, bridges: bridges)
+        // The failure REASON is passed in, not patched on afterwards, so the stack
+        // installs a service that throws the same error `setupError` shows. Ordered
+        // deliberately: a libghostty that will not start is the more fundamental
+        // failure, and a build with that problem usually has the helper problem
+        // too, so reporting the helper first would bury the real cause; the socket
+        // comes last, since without a helper no surface would reach it anyway.
+        let failure = built.error ?? (helper == nil ? .ghosttyHelperMissing : socketFailure)
         let stack = GhosttyStack(host: built.host,
-                                 helperPath: helperPath,
-                                 hostFailure: built.error)
+                                 localSocketPath: serverPath,
+                                 startupFailure: failure,
+                                 readDelay: readDelay)
         ghostty = stack
         service = stack.service
         streamer = stack.hub
@@ -83,12 +109,13 @@ struct TerminalStack {
         ghosttyColors = GhosttyColorSettings(host: built.host)
         surfaces = built.host
         // Unconditional, because the sweep answers "is this socket abandoned" itself
-        // rather than trusting its caller to be the only Wietty on the machine.
-        stack.clearStaleSockets()
+        // (its owner's pid is gone) rather than trusting its caller to be the only
+        // Wietty on the machine.
+        LocalSocketPaths.sweep()
     }
 
-    /// Where the bundled relay helper is. Nil means it is not in the bundle, which
-    /// `GhosttyStack` turns into an actionable startup error.
+    /// Where the bundled helper is. Nil means it is not in the bundle, which
+    /// `init` turns into an actionable startup error.
     static func helperPath() -> String? {
         Bundle.main.url(forAuxiliaryExecutable: "wietty-pty")?.path
     }
@@ -104,11 +131,12 @@ struct TerminalStack {
     /// service that throws the SAME error the user is shown. A string would only
     /// reach `setupError`, leaving every terminal action to throw whatever the
     /// stack's own guard branch chose.
-    private static func buildHost(injected: (any TerminalSurfaceHosting & TerminalSurfaceViewing)?)
+    private static func buildHost(injected: (any TerminalSurfaceHosting & TerminalSurfaceViewing)?,
+                                  bridges: PaneBridges?)
         -> (host: any TerminalSurfaceHosting & TerminalSurfaceViewing, error: TerminalError?) {
         if let injected { return (injected, nil) }
         do {
-            return (try GhosttySurfaceHost(), nil)
+            return (try GhosttySurfaceHost(bridges: bridges), nil)
         } catch let error as SurfaceHostError {
             // `.initFailed` carries a message written for a user; anything else
             // falls back to its own description rather than to a placeholder, which

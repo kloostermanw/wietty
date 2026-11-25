@@ -245,8 +245,9 @@ package final class LocalStreamServer: @unchecked Sendable {
         _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
         // Darwin does carry O_NONBLOCK over, and every read and write here blocks.
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK)
-        // Without this, a pane that goes away mid-write kills the app: see
-        // `TerminalRelay.accept`. Not inherited from the listener.
+        // Without this, a pane that goes away mid-write kills the app: the write
+        // raises SIGPIPE, whose default is to terminate, and Darwin has no
+        // MSG_NOSIGNAL. Not inherited from the listener.
         var suppressSigpipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &suppressSigpipe, socklen_t(MemoryLayout<Int32>.size))
         var size = Self.sendBufferSize

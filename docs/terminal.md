@@ -45,9 +45,9 @@ Three objects that are created together and die together, plus one process outsi
 | Part | File | What it is |
 | --- | --- | --- |
 | The pty | `WiettyCore/RawPTY.swift` | The master fd, the child's process group, and one raw byte stream off the master. |
-| The tee | `WiettyCore/TerminalRelay.swift` | A unix socket listener that copies bytes between the pty and the surface, and hands every read to the stream hub as well. |
+| The reader | `WiettyCore/TerminalRelay.swift` | Reads the pty and hands every chunk to the stream hub, which serves every viewer, the pane's own included. |
 | The surface | `Wietty/GhosttySurfaceHost.swift` | The one `ghostty_app_t`, one `ghostty_surface_t` per terminal, and the `NSView` each renders into. |
-| The helper | `wietty-pty/main.swift` | A separate executable in the app bundle, run as the surface's command. It connects to the relay's socket and copies bytes. |
+| The helper | `wietty-pty/main.swift` | A separate executable in the app bundle, run as the surface's command. It connects to its pane's `TerminalBridge` socket and copies bytes. |
 
 `GhosttyService` (`WiettyCore/GhosttyService.swift`) keeps the three in step and is the only type that
 knows a terminal is not a single object. It mints the session id itself, as `gt:<uuid>`, because there
@@ -72,9 +72,10 @@ no byte stream there is nothing to serve a remote viewer with and nothing to rea
 from.
 
 So Wietty owns the pty and the surface runs the helper. The surface's command is
-`wietty-pty <socket-path>`, never the user's shell. That is the entire reason `wietty-pty` is a
+`'<wietty-pty>' '<bridge socket>'` (each path in single quotes, because libghostty runs the command
+through a shell), never the user's shell. That is the entire reason `wietty-pty` is a
 second target in `project.yml` and is copied into `Contents/MacOS` of the app bundle. A build where
-the copy phase did not run has no helper, which `GhosttyStack` reports as a startup error rather than
+the copy phase did not run has no helper, which `TerminalStack` reports as a startup error rather than
 failing per terminal, because every surface's command would be missing.
 
 The helper interprets nothing. Ghostty's VT is the only VT in the path and the pty Wietty owns is
@@ -95,13 +96,17 @@ meaningful, since the surface displays them: 64 for usage, 69 for a socket nobod
    never wait behind the local surface. Inside that call the hub also writes the chunk into the
    terminal's screen model (see "The server's own terminal" below), in the same step that accepts
    it for delivery.
-3. The same chunk is written to the helper's socket, and the helper copies it to its stdout, which is
-   the pty libghostty renders.
+3. The hub writes the chunk to the pane's local viewer on the same thread: `LocalStreamServer` frames
+   it to the pane's `LocalSocketLink`, whose `TerminalBridge` writes the payload to the helper's
+   socket, and the helper copies it to its stdout, which is the pty libghostty renders. The pty is
+   read only once that viewer has attached (or after 5 seconds without it, which is logged as an
+   error), so the pane's first snapshot is the empty screen.
 
 **Input** converges on the pty master, whatever its source:
 
 - A key typed into the pane goes to `ghostty_surface_key`, libghostty writes it to the helper's tty,
-  the helper copies it to the socket, and the relay writes it to the master.
+  the helper copies it to the bridge's socket, the bridge sends it on its link as `data`, and the hub
+  hands it to the session's writer, as below.
 - A keystroke from a remote viewer arrives as bytes on `PaneStreamHub.send(session:bytes:)`, and
   `onInput` hands them, on that same thread, to the writer `GhosttyService.open` registered for the
   session in `SharedTerminalState`: the pty's own `write`. The main actor is not on this path, so a
@@ -134,11 +139,8 @@ one message after another, and the writer queues them on the pty's serial queue 
 paste arriving as several messages cannot be reassembled scrambled. A `Task` per keystroke anywhere on
 that path would break it.
 
-Output produced before the helper connects is buffered, up to 1 MiB, oldest bytes dropped first. A
-surface is created after the shell is spawned, so a prompt or a shell startup notice printed in that
-window would otherwise never reach the local view even though remote viewers already have it. While
-that backlog drains, new output keeps queueing behind it instead of taking the direct path and landing
-ahead of it.
+Nothing is buffered for a pane that has not connected: the pty is not read until it has, so a prompt
+or a shell startup notice waits in the pty and reaches the pane through the stream.
 
 **Window size deliberately does not travel on the socket.** Wietty reads the surface's geometry
 from libghostty directly and resizes its own pty, so the socket stays a plain byte pipe with no
@@ -577,10 +579,10 @@ corrects it.
 **A second kind of viewer, written on the writer's thread.** Everything above is about a queued
 viewer, the kind the WebSocket route attaches: its output is batched, handed over on the delivery
 queue, and dropped and resynchronised when it falls behind.
-`PaneStreamHub.attachLocal(session:resize:write:)` attaches the other kind, a local viewer, which is what the Mac's own pane becomes once it reads the hub
-over a local socket. Nothing attaches one yet, so the pane still gets its bytes from the relay, which
-writes each chunk to the pane's helper with a blocking write on the thread that reads the pty. A local
-viewer keeps exactly that property. Its attach is the same join as any viewer's (a `resize`, a
+`PaneStreamHub.attachLocal(session:resize:write:)` attaches the other kind, a local viewer, which is
+what the Mac's own pane is: `LocalStreamServer` attaches one for each pane's link. The relay used to
+write each chunk to the pane's helper with a blocking write on the thread that reads the pty, and a
+local viewer keeps exactly that property. Its attach is the same join as any viewer's (a `resize`, a
 `snapshot` with the started half of a character behind it, then the stream), and after that each
 chunk is written to it by the thread that called `write(session:bytes:)`, before that call returns: no
 8 ms batch and no hop to the delivery queue. `write` may block, and while it does the pty's read thread
@@ -687,10 +689,14 @@ A frame that could not be built is never an empty screen: a session whose model 
 snapshot and no repaint, and the hub logs it. A new viewer then starts from the stream alone, a resync
 answers `onUnavailable`, and on a resize the viewer is sent the bare `resize`.
 
-## The link and the bridge (built, not used yet)
+## The link and the bridge
 
-Two types in the app are meant to make this Mac's own pane a local viewer of the stream. Nothing
-uses them yet: the pane's helper still talks to `TerminalRelay`.
+Two types in the app make this Mac's own pane a local viewer of the stream. `OwnPaneBridge` (in
+`Wietty/OwnPaneBridge.swift`) gives every local surface one of each: a `TerminalBridge` whose
+socket the surface's `wietty-pty` connects to, with a `LocalSocketLink` to the app's
+`LocalStreamServer` for that session. It makes a fresh link when one ends as `.connectionLost`
+while the terminal lives (at once, then after 250 ms, doubling up to 5 s, the count reset once a
+link stayed up 10 s), and never for `.sessionEnded`.
 
 `LocalSocketLink` is a client of `LocalStreamServer` for one session, behind the protocol
 `TerminalStreamLink`. `start()` returns at once: a reader thread of its own connects and then decodes
@@ -731,7 +737,7 @@ Neither buffers the stream. The bridge writes to the helper inside the link's `o
 blocking write, so a surface that stops reading fills the helper's socket, which holds the link's
 thread, which fills the link's socket, which holds the server's blocking write on the pty's thread.
 What the link holds meanwhile is the frames that one read of 64 KiB carried and at most one partial
-frame. The pane would therefore be lossless end to end, at the cost the local viewer section above
+frame. The pane is therefore lossless end to end, at the cost the local viewer section above
 describes. `LocalSocketLinkTests` and `TerminalBridgeTests` cover both, the latter once end to end
 with the real server, link, bridge and bundled helper.
 
@@ -882,50 +888,50 @@ shell reaches its first read, exactly as typing into a slow terminal does.
 ## The socket, and what it costs
 
 **`sockaddr_un.sun_path` is 104 bytes including the terminator**, and the per user temp directory
-spends roughly half of it. That is why `TerminalRelay.socketPath` uses a fixed `ipx-` prefix and only
-12 hex digits of the session id, and why an owner pid cannot be encoded in the name even though it
-would make the stale sweep precise. A path that does not fit fails loudly rather than binding a
-truncated one, which would leave the helper connecting to a socket nobody listens on.
+spends roughly half of it. The names are short for that reason: `wty-<pid>.sock` for the app's
+`LocalStreamServer` and `wty-<pid>-<n>.sock` for each pane's bridge (`LocalSocketPaths`). A path that
+does not fit fails loudly rather than binding a truncated one, which would leave the helper connecting
+to a socket nobody listens on.
 
-Because the name cannot say whose socket it is, `GhosttyStack.clearStaleSockets` uses age instead, and
-`GhosttyStack.staleSocketAge` (one hour) is the single definition of "abandoned" in the codebase. It
-is far longer than the milliseconds between a relay binding and its helper connecting, and far shorter
-than the lifetime of the crashed run whose leftovers it exists for. Without that predicate the sweep
-cannot be called safely at all: it would unlink the sockets of a second Wietty running alongside
-(a Debug build next to the installed app) and of a relay in this very process whose helper has not
-connected yet. A file whose age cannot be read is left alone. Nothing is lost by sweeping late, since
-`TerminalRelay` unlinks before it binds, so a leftover file never blocks a new terminal.
+Because the name carries the owner's pid, `LocalSocketPaths.sweep`, which `TerminalStack` runs at
+launch, removes exactly the sockets whose process is gone, and never those of a second Wietty running
+alongside. The `ipx-` sockets of older builds carry no pid and are swept by age (one hour,
+`LocalSocketPaths.staleAge`). A bind replaces a stale file atomically, so a leftover never blocks a
+new terminal.
 
 **Writing to a vanished peer raises `SIGPIPE`, whose default disposition kills the process.** Measured
 as exit status 141 on a one byte write, and the peer vanishing is routine rather than exotic, since the
 helper is a child of the surface and goes away whenever a terminal is closed. Darwin has no
-`MSG_NOSIGNAL` and an accepted socket does not inherit the option from its listener, so the relay sets
-`SO_NOSIGPIPE` per connection; the write then fails with `EPIPE`, which the writer already reads as
+`MSG_NOSIGNAL` and an accepted socket does not inherit the option from its listener, so the bridge
+and the server set `SO_NOSIGPIPE` per connection; the write then fails with `EPIPE`, which the writer already reads as
 "the helper is gone". The helper cannot use the same option, because its other write target is its own
 stdout rather than a socket, so it ignores `SIGPIPE` process wide instead.
 
 Descriptor lifetime is the other hazard on this path, and it is not a theoretical one: descriptors are
 recycled, so closing one out from under an in-flight syscall does not fail, it writes a screenful of
-terminal output into whatever the process opened next. Both `RawPTY` and `TerminalRelay` therefore
-close a watched descriptor only in its `DispatchSource` cancel handler, and reference count the uses
-that can overlap a cancel so the last one out performs a deferred close. The rules are written out at
-the top of `TerminalRelay` and around `RawPTY.withMaster`; read them before touching either.
+terminal output into whatever the process opened next. `RawPTY` therefore closes a watched
+descriptor only in its `DispatchSource` cancel handler, and reference counts the uses that can overlap
+a cancel so the last one out performs a deferred close; `TerminalBridge`, `LocalSocketLink` and
+`LocalStreamServer` close a socket only on the one thread that reads it, and everything else only shuts
+it down. The rules are written out around `RawPTY.withMaster` and at the top of each of those types;
+read them before touching any.
 
 ## Failing to start, and reporting it
 
-`GhosttyStack` always constructs, exactly as `TmuxStack` does. Two things can be missing (libghostty
-would not initialise, or the bundled helper is absent), and both are reported through `setupError`
-rather than thrown, so the app launches and can explain itself instead of failing at every call site.
+`GhosttyStack` always constructs, exactly as `TmuxStack` does. Three things can be missing (libghostty
+would not initialise, the bundled helper is absent, or the local socket cannot be made or bound), and
+all are reported through `setupError` rather than thrown, so the app launches and can explain itself instead of failing at every call site.
 `ContentView` surfaces that error on launch rather than waiting for the first click, and
 `LocalTerminalView` shows it in place of a terminal.
 
 The reason is passed into the stack rather than patched on afterwards, so one error both reaches
-`setupError` and is thrown by every terminal action through `UnavailableTerminalService`. Signalling a
-libghostty failure by handing the stack `helperPath: nil` would report that libghostty could not start
-while every terminal action threw "the helper is missing from the app bundle. Reinstall Wietty.",
-and two different wrong answers to one question is worse than either. When both are wrong, libghostty
-is reported, because it is the more fundamental failure and a build with that problem usually has the
-helper problem too.
+`setupError` and is thrown by every terminal action through `UnavailableTerminalService`.
+`TerminalStack` checks the helper and passes the first failure as `startupFailure`. Folding a
+libghostty failure into a missing helper would report that libghostty could not start while every
+terminal action threw "the helper is missing from the app bundle. Reinstall Wietty.", and two
+different wrong answers to one question is worse than either. When several are wrong, libghostty is
+reported first, because it is the more fundamental failure and a build with that problem usually has
+the helper problem too, then the helper, then the socket.
 
 A stack that failed to build still answers the hub's session census, with an empty set rather than
 leaving the hook nil. The distinction matters: `.unknown` means the query failed and must not end a

@@ -311,7 +311,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
     /// The main actor plays no part: this test blocks it on a semaphore without
     /// yielding, so a claim that needed it could only time out.
     @Test func aClaimIsHandledWhileTheMainActorIsBlocked() throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let shared = try #require(stack.ghosttyService?.shared)
         shared.note(live: ["gt:blocked"])
@@ -332,7 +332,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
     /// A claim reaches the child: `stty size` in it prints the claimed grid, and
     /// the claimant's answer names it, which it takes from the model's repaint.
     @Test func aClaimReachesTheRealPtyAndTheModel() async throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.ghosttyService?.closeAll() }
         let probe = TestScratch.root.appendingPathComponent("claim-\(UUID().uuidString)").path
         let handle = try await stack.service.open(
@@ -357,7 +357,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
     /// The resizer goes wherever the writer goes: a reaped child and a closed row
     /// leave nothing to resize.
     @Test func theResizerIsRemovedWithTheWriter() async throws {
-        let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         let service = try #require(stack.ghosttyService)
         defer { service.closeAll() }
         let shared = service.shared

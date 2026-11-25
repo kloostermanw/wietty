@@ -128,7 +128,7 @@ import WiettyShared
         let pane = RightTerminalView(
             store: fixture.store,
             preferences: fixture.preferences,
-            terminals: TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true"),
+            terminals: TerminalStack.testing(host: FakeSurfaceHost()),
             remoteConnections: connections,
             remoteWorkspaces: RemoteWorkspacesController(connections: connections),
             bells: BellNotifier(sink: FakeNotificationSink()),

@@ -17,7 +17,8 @@ import WiettyShared
 /// That is for a queued viewer, the kind the WebSocket route attaches. A local
 /// viewer (`attachLocal`) is the other kind: it is written to on the writer's own
 /// thread, one write per chunk, with a call that may block and so holds the writer
-/// back, and it is never dropped. Nothing attaches one yet.
+/// back, and it is never dropped. `LocalStreamServer` attaches one for each of the
+/// app's own panes.
 package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private typealias Sink = @Sendable (StreamMessage) -> Void
 

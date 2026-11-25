@@ -4,21 +4,9 @@ import Testing
 import WiettyCore
 @testable import Wietty
 
-/// Lock-guarded accumulator, not a captured `var`: the output handler is
-/// `@Sendable` and Swift 6 refuses a `@Sendable` closure that mutates a captured
-/// local. The same shape `RawPTYTests`, `TerminalRelayTests` and
-/// `PaneStreamHubTests` each keep for the same reason; it is file private here
-/// because theirs are private to their own suites.
-private final class TextSink: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage = ""
-    var text: String { lock.lock(); defer { lock.unlock() }; return storage }
-    func append(_ bytes: [UInt8]) {
-        lock.lock(); storage += String(decoding: bytes, as: UTF8.self); lock.unlock()
-    }
-}
-
-/// The same, keyed by session, for the output callback that carries one.
+/// Lock-guarded accumulator keyed by session, not a captured `var`: the output
+/// handler is `@Sendable` and Swift 6 refuses a `@Sendable` closure that mutates a
+/// captured local.
 private final class SessionSink: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String: String] = [:]
@@ -60,18 +48,6 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
     service.shared.liveSessions
 }
 
-/// Reads whatever is available on `fd` within `timeout`, without blocking past
-/// it. `FileHandle.availableData` blocks until something arrives, so a poll loop
-/// built on it turns a failing test into a hung one.
-private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
-    var readable = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-    guard poll(&readable, 1, timeout) > 0 else { return [] }
-    var buffer = [UInt8](repeating: 0, count: 4096)
-    let count = read(fd, &buffer, buffer.count)
-    guard count > 0 else { return [] }
-    return Array(buffer[0..<count])
-}
-
 @MainActor
 @Suite struct GhosttyServiceTests {
     private func service(_ host: FakeSurfaceHost,
@@ -79,7 +55,7 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
                          onProgramStatus: @escaping @Sendable (String, ProgramStatusScanner.Event) -> Void = { _, _ in },
                          onTerminated: @escaping @MainActor (String) -> Void = { _ in })
         -> GhosttyService {
-        GhosttyService(host: host, helperPath: "/usr/bin/true",
+        GhosttyService(host: host, readDelay: 0,
                        onOutput: onOutput, onProgramStatus: onProgramStatus,
                        onTerminated: onTerminated)
     }
@@ -89,7 +65,7 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
     /// itself: the hub does, and the stack is what connects the two. The service
     /// keeps the hub alive through the hooks it was built with.
     private func wiredService(_ host: FakeSurfaceHost) throws -> GhosttyService {
-        try #require(GhosttyStack(host: host, helperPath: "/usr/bin/true").ghosttyService)
+        try #require(GhosttyStack.testing(host: host).ghosttyService)
     }
 
     /// A program asking whether the terminal speaks `OSC 7501` gets the answer on
@@ -140,19 +116,20 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         #expect(liveSessionsOffTheMainActor(service) == [handle.sessionId])
     }
 
-    /// The surface's command is the bundled helper pointed at this terminal's
-    /// socket, never the user's shell. libghostty spawning the shell itself is
-    /// exactly what this substrate exists to avoid, because then Wietty owns
-    /// no byte stream and no remote viewer can be served.
-    @Test func theSurfaceRunsTheHelperNotTheShell() async throws {
+    /// The core asks the host for a surface for the session, in the terminal's
+    /// folder, and builds no command: what the surface runs to reach the stream (the
+    /// helper, pointed at its bridge) is the host's business. Never the user's shell
+    /// either way: libghostty spawning the shell itself would leave Wietty owning no
+    /// byte stream.
+    @Test func theSurfaceIsAskedForBySessionAndFolderAlone() async throws {
         let host = FakeSurfaceHost()
         let service = service(host)
         defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: nil, badge: nil)
-        let command = try #require(host.commands[handle.sessionId])
-        #expect(command.hasPrefix("/usr/bin/true "))
-        #expect(command.contains(".sock"))
+        let folder = URL(fileURLWithPath: "/private/tmp")
+        let handle = try await service.open(folder: folder, existingWindowId: nil,
+                                            command: nil, badge: nil)
+        #expect(host.created == [handle.sessionId])
+        #expect(host.directories[handle.sessionId] == folder)
     }
 
     /// A stored workspace id must survive. Nothing reads it, and minting one here
@@ -183,18 +160,27 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
     }
 
     /// A surface that will not create leaves nothing behind. Without the cleanup
-    /// the shell keeps running with no renderer and no way to reach it, and the
-    /// socket file stays in the temp directory.
-    @Test func aFailedSurfaceLeavesNoTerminal() async {
+    /// the shell keeps running with no renderer and no way to reach it.
+    @Test func aFailedSurfaceLeavesNoTerminal() async throws {
         let host = FakeSurfaceHost()
         host.failNextCreate = true
         let service = service(host)
         defer { service.closeAll() }
+        var asked: String?
+        host.whileCreating = { asked = $0 }
         await #expect(throws: (any Error).self) {
             _ = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
                                         existingWindowId: nil, command: nil, badge: nil)
         }
+        let session = try #require(asked)
         #expect(service.liveSessions.isEmpty)
+        // Taken back out of everything the hub reads, so a viewer that attaches to
+        // it is answered `ended`, and never read.
+        #expect(service.shared.liveSessions.isEmpty)
+        #expect(service.screenModel(for: session) == nil)
+        #expect(service.shared.writer(for: session) == nil)
+        #expect(service.shared.resizer(for: session) == nil)
+        #expect(service.shared.takeReadStart(for: session) == nil)
     }
 
     /// Output reaches the callback tagged with its session, which is what
@@ -252,8 +238,8 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         #expect(host.destroyed.isEmpty)
     }
 
-    /// An exited child is reaped by the service itself: it leaves the census, it
-    /// stops being polled for a job, and its socket file goes.
+    /// An exited child is reaped by the service itself: it leaves the census and it
+    /// stops being polled for a job.
     ///
     /// `terminals` is the source of truth for this substrate, so a corpse left in
     /// it is not a cosmetic problem: the census gates a remote viewer's attach, and
@@ -262,14 +248,11 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         let host = FakeSurfaceHost()
         let service = service(host)
         defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "exit 0", badge: nil)
-        let command = try #require(host.commands[handle.sessionId])
-        let socket = try #require(command.components(separatedBy: " ").last)
+        _ = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                   existingWindowId: nil, command: "exit 0", badge: nil)
         try await waitUntil { service.liveSessions.isEmpty }
         #expect(liveSessionsOffTheMainActor(service).isEmpty)
         #expect(service.jobEvents().isEmpty)
-        #expect(FileManager.default.fileExists(atPath: socket) == false)
     }
 
     /// The surface outlives the child on purpose. The last screen a command left
@@ -295,7 +278,7 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
     }
 
     /// libghostty asking for a surface to be closed means the terminal has ended,
-    /// and is answered exactly as an exit noticed on the relay is: the pty goes, the
+    /// and is answered exactly as an exit noticed on the pty is: the pty goes, the
     /// census stops counting it, the caller is told, and the surface stays so the
     /// last screen is still readable.
     ///
@@ -477,7 +460,7 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
     /// Input goes to the pty master, not to the surface.
     ///
     /// This is a binding constraint of the substrate rather than an implementation
-    /// detail: local keystrokes arrive through the relay onto the same master, so
+    /// detail: local keystrokes arrive through the pane's bridge onto the same master, so
     /// remote input taking the surface's own path instead would give one terminal
     /// two input paths with no ordering between them. A regression to surface-side
     /// input renders identically on screen, so nothing but this test would notice.
@@ -554,14 +537,11 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
                                             existingWindowId: nil, command: "sleep 5", badge: nil)
-        let command = try #require(host.commands[handle.sessionId])
-        let socket = try #require(command.components(separatedBy: " ").last)
         try await service.close(sessionId: handle.sessionId)
         #expect(service.liveSessions.isEmpty)
+        // Destroying the surface is what stops the pane's bridge and removes its
+        // socket file; `OwnPaneStreamTests` follows that through a real bridge.
         #expect(host.destroyed == [handle.sessionId])
-        // The relay's socket file goes with it. A close that left it behind would
-        // leak one file per terminal for the life of the login session.
-        #expect(FileManager.default.fileExists(atPath: socket) == false)
     }
 
     /// `readOutput` is the MCP path: the most recent lines, capped at the number
@@ -690,95 +670,5 @@ private func readAvailable(_ fd: Int32, timeout: Int32 = 100) -> [UInt8] {
             try await Task.sleep(for: .milliseconds(50))
         }
         #expect(Bool(false), "condition never became true")
-    }
-}
-
-/// The real relay and the real bundled helper, talking to each other over a real
-/// socket, with a real shell behind the pty.
-///
-/// Every other test of this path fakes one side. This one fakes neither, because
-/// the seam between them is exactly where a wrong assumption survives two green
-/// suites: the relay's tests would still pass against a helper that never sets raw
-/// mode, and the helper's tests would still pass against a relay that never drains
-/// its pre-connect backlog.
-@Suite struct RelayHelperIntegrationTests {
-    /// The same lookup `WiettyPtyHelperTests` uses; see `bundledHelperURL`.
-    private func helperURL() throws -> URL { try bundledHelperURL() }
-
-    /// Output reaches the helper's stdout, which in the app is the surface's pty.
-    /// The marker is computed by the shell so the pty's own echo cannot satisfy it.
-    @Test func aShellsOutputReachesTheHelper() throws {
-        let path = try TerminalRelay.socketPath(for: "gt:" + UUID().uuidString)
-        let pty = try RawPTY.spawn(command: "echo bridged-$((60+3))",
-                                   directory: URL(fileURLWithPath: "/tmp"),
-                                   environment: [:],
-                                   size: TerminalSize(cols: 80, rows: 24))
-        let relay = try TerminalRelay(pty: pty, socketPath: path) { _ in }
-        defer { relay.stop(); pty.terminate() }
-        relay.start(onExit: { _ in })
-
-        let helper = Process()
-        helper.executableURL = try helperURL()
-        helper.arguments = [path]
-        let fromHelper = Pipe()
-        helper.standardOutput = fromHelper
-        helper.standardInput = Pipe()
-        try helper.run()
-        defer { helper.terminate() }
-
-        let deadline = Date().addingTimeInterval(8)
-        var seen = ""
-        while Date() < deadline, !seen.contains("bridged-63") {
-            seen += String(decoding: readAvailable(fromHelper.fileHandleForReading.fileDescriptor),
-                           as: UTF8.self)
-        }
-        #expect(seen.contains("bridged-63"))
-    }
-
-    /// Input written to the helper's stdin reaches the shell and is executed, and
-    /// the same bytes reach `onOutput`, which is what feeds every remote viewer.
-    /// One assertion for each, because a relay that fed only one of them would be
-    /// invisible to the other side's suite.
-    ///
-    /// `bridged-77` is arithmetic the shell has to evaluate. A pty echoes whatever
-    /// is written to its master straight back out of it, so a literal marker would
-    /// be produced by the echo alone whether or not any shell ran the line; the
-    /// echo can only ever reproduce `$((70+7))`.
-    @Test func inputThroughTheHelperReachesTheShellAndTheStream() throws {
-        let path = try TerminalRelay.socketPath(for: "gt:" + UUID().uuidString)
-        let pty = try RawPTY.spawn(command: nil, directory: URL(fileURLWithPath: "/tmp"),
-                                   environment: [:], size: TerminalSize(cols: 80, rows: 24))
-        let streamed = TextSink()
-        let relay = try TerminalRelay(pty: pty, socketPath: path) { bytes in
-            streamed.append(bytes)
-        }
-        defer { relay.stop(); pty.terminate() }
-        relay.start(onExit: { _ in })
-
-        let helper = Process()
-        helper.executableURL = try helperURL()
-        helper.arguments = [path]
-        let toHelper = Pipe()
-        let fromHelper = Pipe()
-        helper.standardInput = toHelper
-        helper.standardOutput = fromHelper
-        try helper.run()
-        defer { helper.terminate() }
-
-        Thread.sleep(forTimeInterval: 1.0)
-        toHelper.fileHandleForWriting.write(Data("echo bridged-$((70+7))\n".utf8))
-
-        // The helper's stdout is drained in the same loop rather than on a second
-        // thread: a pipe nobody reads eventually fills and parks the helper.
-        let deadline = Date().addingTimeInterval(8)
-        var rendered = ""
-        while Date() < deadline,
-              !(rendered.contains("bridged-77") && streamed.text.contains("bridged-77")) {
-            rendered += String(
-                decoding: readAvailable(fromHelper.fileHandleForReading.fileDescriptor, timeout: 50),
-                as: UTF8.self)
-        }
-        #expect(streamed.text.contains("bridged-77"))
-        #expect(rendered.contains("bridged-77"))
     }
 }

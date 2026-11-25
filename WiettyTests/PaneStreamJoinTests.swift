@@ -346,7 +346,7 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
         let lines = 12_000
         var attachedWhileRunning = 0
         for round in 0..<6 {
-            let stack = GhosttyStack(host: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+            let stack = GhosttyStack.testing(host: FakeSurfaceHost())
             defer { stack.ghosttyService?.closeAll() }
             let handle = try await stack.service.open(
                 folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,

@@ -28,8 +28,8 @@ final class ServerRuntime {
     /// or a Restart restarts this one rather than building another, so only one
     /// server ever reports into `store.mcpStatus`.
     func start(store: ProjectStore, terminals: TerminalStack) async {
-        if quitTeardown == nil, let service = terminals.ghostty.ghosttyService {
-            quitTeardown = TerminalQuitTeardown(service: service)
+        if quitTeardown == nil, terminals.ghostty.ghosttyService != nil {
+            quitTeardown = TerminalQuitTeardown(stack: terminals.ghostty)
         }
         if mcpHost == nil {
             let host = MCPServerHost(router: MCPToolRouter(store: store, port: store.mcpPort),
@@ -62,9 +62,10 @@ final class ServerRuntime {
         } else {
             remoteServer?.stop()
             remoteServer = nil
-            // The hub is deliberately left running. It is shared with the pane's own
-            // viewer and its `stop()` cancels the flush timer for good, so stopping it
-            // here would leave every later local viewer silent. Tearing the server
+            // The hub is deliberately left running. It is shared with the panes' own
+            // viewers, which reach it through `GhosttyStack.localServer` whether or
+            // not this server runs, and its `stop()` cancels the flush timer for
+            // good, so stopping it here would leave every later local viewer silent. Tearing the server
             // down closes its sockets anyway, and each socket detaches its own viewer
             // on the way out.
             store.remoteStartupError = nil

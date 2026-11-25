@@ -303,8 +303,11 @@ final class TerminalBridge: @unchecked Sendable {
             _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
             // Darwin does carry O_NONBLOCK over, and every read and write here blocks.
             _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK)
-            // A helper that goes away mid-write must not kill the app; see
-            // `TerminalRelay.accept`. Not inherited from the listener.
+            // A write to a socket whose peer has gone raises SIGPIPE, which would
+            // kill the app when a helper goes away mid-write (measured as exit
+            // status 141 on a one byte write, when the relay owned this socket).
+            // Darwin has no MSG_NOSIGNAL, and this is not inherited from the
+            // listener.
             var suppressSigpipe: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &suppressSigpipe,
                        socklen_t(MemoryLayout<Int32>.size))

@@ -81,10 +81,8 @@ The path from the browser back to the terminal, in order:
   into the hub, which coalesces on an 8 ms timer (a shell echoing a typed line
   emits one notification per character) and fans it out to every viewer of that
   session: the browser and the iPad consume the same bytes, so a rendering fault in
-  either is fixed once. The app's own pane is not among them. It reads the surface
-  libghostty draws into directly, and `RemoteServer` is the only caller of
-  `PaneStreamHub.attach`; phase 3 of issue #84 is what puts the local pane on this
-  route too. The bytes are delivered exactly as they were read, with nothing
+  either is fixed once. The app's own pane is among them too, as a local viewer
+  that `LocalStreamServer` attaches with `PaneStreamHub.attachLocal`, below. The bytes are delivered exactly as they were read, with nothing
   decoded or held back; a multibyte character straddling two flushes arrives in
   two messages and the viewer's terminal joins it. A write into a quiet session
   that has a viewer is delivered at once rather than on the next tick. A viewer that attaches is
@@ -259,7 +257,9 @@ in the middle of a frame, never a corrupt stream, and has to connect again. This
 is what keeps a pane that stopped reading from parking the hub's delivery queue,
 which every remote viewer of every terminal shares. Inbound, a message may be up
 to 1 MiB; a frame the reader refuses after the `hello` closes the socket with no
-reply. Nothing in the app starts this server yet.
+reply. `GhosttyStack` builds and starts this server at launch, whether or not
+remote access is on, and stops it at quit; every local terminal's pane is one
+of its clients (see `docs/terminal.md`).
 
 **Order.** `hello`, then `resize` and `snapshot`, then live `data`. A session
 that names no live terminal gets `hello` and `ended`. When no snapshot can be

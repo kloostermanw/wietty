@@ -3,12 +3,19 @@ import Darwin
 
 /// The names of the local stream sockets, and the sweep of the ones a dead run left.
 ///
-/// Unlike the relay's `ipx-` sockets, these names carry the pid of the process that
-/// owns them, so the sweep can tell a socket of a process that is gone from one of a
-/// second Wietty running alongside, and need not guess from the file's age.
+/// Unlike the `ipx-` sockets older builds gave each terminal's relay, these names
+/// carry the pid of the process that owns them, so the sweep can tell a socket of a
+/// process that is gone from one of a second Wietty running alongside, and need not
+/// guess from the file's age.
 package enum LocalSocketPaths {
-    /// `sockaddr_un.sun_path` is this many bytes, terminator included.
+    /// `sockaddr_un.sun_path` is this many bytes, terminator included. The per user
+    /// temp directory already spends roughly half of it.
     package static let sunPathLimit = 104
+
+    /// How old an `ipx-` socket of an older build, or a private bind directory a
+    /// crash left, has to be before the sweep considers it abandoned: far longer
+    /// than any bind takes, far shorter than the run whose leftovers this is for.
+    package static let staleAge: TimeInterval = 3600
 
     /// `<tmp>/wty-<pid>.sock`
     package static func server(pid: pid_t = getpid(),
@@ -34,14 +41,15 @@ package enum LocalSocketPaths {
     /// a symbolic link are left alone (a link is never followed, so nothing outside
     /// `directory` can be reached through one). "No longer exists" is `kill(pid, 0)`
     /// failing with `ESRCH`; a process of another user answers `EPERM` and is alive.
-    /// The `ipx-` rule is the one `GhosttyStack.clearStaleSockets` applies.
+    /// The `ipx-` rule (age alone, since those names carry no pid) is the one the
+    /// sweep of the relay's old sockets applied.
     @discardableResult
     package static func sweep(in directory: String = NSTemporaryDirectory()) -> [String] {
         let directory = slashed(directory)
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
             return []
         }
-        let cutoff = Date(timeIntervalSinceNow: -GhosttyStack.staleSocketAge)
+        let cutoff = Date(timeIntervalSinceNow: -staleAge)
         var removed: [String] = []
         for name in names.sorted() {
             let path = directory + name
@@ -115,7 +123,9 @@ package enum LocalSocketPaths {
     }
 
     /// A path that does not fit has to fail loudly rather than bind a silently
-    /// truncated one, as `TerminalRelay.socketPath` explains. Checked here for the
+    /// truncated one, which would leave the client connecting to a socket nobody
+    /// listens on; `TMPDIR` is inherited from whatever launched the app, so this can
+    /// happen. Checked here for the
     /// bind path too, the longer of the two, so a name handed out never fails later.
     private static func fitted(_ path: String) throws -> String {
         try PrivateSocket.check(path)

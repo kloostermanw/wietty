@@ -21,9 +21,10 @@ Which side of the remote protocol lives where decides which repo a bug belongs i
   `wietty-pty` helper. All of those are in the `WiettyCore` target except `GhosttySurfaceHost`,
   which stays in the app because it is the one type that touches an `NSView`. A rendering or
   streaming fault reaches every client of the stream (the browser, the iPad, and another Mac's
-  remote pane), so reproduce it here before suspecting a client. This app's own pane is not one of
-  them until phase 3 of issue #84: it shows the libghostty surface, so a fault seen only there is
-  the surface's and one seen only by a client is the model's or the stream's.
+  remote pane), so reproduce it here before suspecting a client. This app's own pane is one of them
+  too since phase 3 of issue #84: its libghostty surface is fed from the stream, through
+  `LocalStreamServer` and the pane's `TerminalBridge`. So a fault seen only in the pane is the
+  surface's or the bridge's, and one seen by every client is the stream's or the model's.
 
 - **Controlling side, in `wietty-shared`.** `RemoteWorkspaceStore`, `RemoteWorkspacesController`,
   `RemoteTerminalConnection`, `RemoteSnapshotDecoder`, `RemoteConnection`, `SecretStore`. This app
@@ -153,8 +154,8 @@ Quit Wietty first. It opens a window for about a minute. The padding goes into t
 ### The stream baseline
 
 `StreamBaselineTests` measures the terminal byte path from where `wietty-pty` stands, with the
-relay, `ProgramStatusTap`, `PaneStreamHub` and the libghostty-vt screen model in the path as the app
-has them. It prints
+relay, `ProgramStatusTap`, `PaneStreamHub`, the libghostty-vt screen model, `LocalStreamServer`, the
+pane's `LocalSocketLink` and its `TerminalBridge` in the path as the app has them. It prints
 four lines starting with `BASELINE`: the echo of one keystroke on a quiet terminal, the same while
 the main thread is busy for 50 ms out of every 60, and how fast 100 MB of output arrives, once as one
 endless line (`throughput-oneline`) and once as ordinary 80 character lines (`throughput-lines`). It

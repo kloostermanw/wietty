@@ -210,7 +210,7 @@ private final class Client: @unchecked Sendable {
         guard result == 0 else {
             let code = errno
             Darwin.close(fd)
-            throw TerminalRelayError.socketFailed(code)
+            throw LocalSocketError.socketFailed(code)
         }
     }
     deinit { close() }
@@ -873,7 +873,7 @@ private final class Client: @unchecked Sendable {
     }
 
     @Test func aRelativePathIsRefused() {
-        #expect(throws: TerminalRelayError.relativeSocketPath("lst-rel.sock")) {
+        #expect(throws: LocalSocketError.relativeSocketPath("lst-rel.sock")) {
             _ = try LocalStreamServer(path: "lst-rel.sock", streamer: LocalFakeStreamer())
         }
     }

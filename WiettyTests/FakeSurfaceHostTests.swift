@@ -27,8 +27,7 @@ import WiettyCore
         let host = FakeSurfaceHost()
         host.failNextCreate = true
         #expect(throws: SurfaceHostError.surfaceFailed) {
-            try host.createSurface(id: "gt:2", command: "/usr/bin/true",
-                                   directory: URL(fileURLWithPath: "/tmp"), title: nil)
+            try host.createSurface(id: "gt:2", directory: URL(fileURLWithPath: "/tmp"), title: nil)
         }
         #expect(host.created.isEmpty)
         #expect(host.view(id: "gt:2") == nil)

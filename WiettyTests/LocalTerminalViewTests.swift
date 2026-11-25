@@ -157,7 +157,7 @@ import SwiftUI
     /// The split is an `HStack` in a `GeometryReader` now, and the greed still has to
     /// be here: the pane is the half that has to fill.
     @Test func theEmptyPaneFillsTheHeightItIsOffered() {
-        let stack = TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = TerminalStack.testing(host: FakeSurfaceHost())
         #expect(stack.setupError == nil)
         let size = heightOffered(LocalTerminalView(setupError: stack.setupError,
                                                    surfaceView: { stack.surfaceView(for: $0) },
@@ -188,7 +188,7 @@ import SwiftUI
     /// with a `Double` inside `#expect` fails even for two values it prints as
     /// `480.0`, so the conversion is explicit.
     @Test func thePaneKeepsItsMinimumInAWindowSmallerThanIt() {
-        let stack = TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true")
+        let stack = TerminalStack.testing(host: FakeSurfaceHost())
         let size = heightOffered(LocalTerminalView(setupError: stack.setupError,
                                                    surfaceView: { stack.surfaceView(for: $0) },
                                                    session: nil),

@@ -12,7 +12,6 @@ import WiettyCore
 final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     private(set) var created: [String] = []
     private(set) var destroyed: [String] = []
-    private(set) var commands: [String: String] = [:]
     private(set) var directories: [String: URL] = [:]
     private(set) var titles: [String: String?] = [:]
 
@@ -20,6 +19,10 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// which is a real state: a view that has not been laid out has no columns.
     var sizes: [String: TerminalSize] = [:]
     var failNextCreate = false
+    /// Runs inside `createSurface`, before it returns (and before a scripted failure
+    /// throws), as a real host's bridge may attach to the stream while the surface is
+    /// being created.
+    var whileCreating: ((String) -> Void)?
 
     private var views: [String: NSView] = [:]
 
@@ -30,13 +33,13 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     var onCloseRequested: (@MainActor (String) -> Void)?
     var onInput: (@MainActor (String) -> Void)?
 
-    func createSurface(id: String, command: String, directory: URL, title: String?) throws {
+    func createSurface(id: String, directory: URL, title: String?) throws {
+        whileCreating?(id)
         if failNextCreate {
             failNextCreate = false
             throw SurfaceHostError.surfaceFailed
         }
         created.append(id)
-        commands[id] = command
         directories[id] = directory
         titles[id] = title
         views[id] = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
@@ -108,5 +111,25 @@ extension GhosttyOverrideFile {
     static func temporary() -> GhosttyOverrideFile {
         GhosttyOverrideFile(url: TestScratch.root
             .appendingPathComponent("\(UUID().uuidString)/ghostty.cfg"))
+    }
+}
+
+extension GhosttyStack {
+    /// A stack for a test: its local socket server on a path of its own, since the
+    /// suite builds many stacks in the app's one process and `LocalSocketPaths.server()`
+    /// names the process, and terminals read at once (`readDelay` 0), since a fake host
+    /// has no pane to attach. The read without a pane is logged as an error each time.
+    static func testing(host: any TerminalSurfaceHosting, readDelay: TimeInterval = 0) -> GhosttyStack {
+        GhosttyStack(host: host, localSocketPath: shortSocketPath("gst"), readDelay: readDelay)
+    }
+}
+
+extension TerminalStack {
+    /// The same, through the app's composition root, over an injected host and a
+    /// helper path that passes the check.
+    static func testing(host: any TerminalSurfaceHosting & TerminalSurfaceViewing,
+                        helperPath: String? = "/usr/bin/true") -> TerminalStack {
+        TerminalStack(ghosttyHost: host, helperPath: helperPath,
+                      localSocketPath: shortSocketPath("tst"), readDelay: 0)
     }
 }

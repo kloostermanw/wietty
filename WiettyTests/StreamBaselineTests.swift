@@ -28,18 +28,23 @@ struct StreamBaselineTests {
 
     /// One terminal and whatever carries its bytes to the helper side.
     ///
-    /// Today that is a `TerminalRelay` on the pty, wired the way `GhosttyService.open`
-    /// and `GhosttyStack` wire every terminal: the relay's output callback runs the
-    /// `ProgramStatusTap`, then `PaneStreamHub.write`, whose `onIngest` feeds the
-    /// session's libghostty-vt screen model under the session's lock, and only then
-    /// does the relay write the chunk to the helper. That work sits on the same read
-    /// source as the helper's bytes, so a baseline without it would be faster than
-    /// the app. No viewer is attached to the hub; its flush timer runs, as the app's
-    /// does.
+    /// The own pane's route, wired the way `GhosttyService.open`, `GhosttyStack` and
+    /// `GhosttySurfaceHost` wire every terminal: a `TerminalRelay` reads the pty, and
+    /// its output callback runs the `ProgramStatusTap`, then `PaneStreamHub.write`,
+    /// whose `onIngest` feeds the session's libghostty-vt screen model under the
+    /// session's lock and which then writes the chunk, on the same thread, to the
+    /// session's local viewer: a `LocalStreamServer` connection, read by the
+    /// `LocalSocketLink` of an `OwnPaneBridge`, whose `TerminalBridge` writes it to
+    /// the helper's socket. Input runs back the same way to the pty's writer. As in
+    /// the app (decision P2), the pty is read once that local viewer has attached,
+    /// which is when the helper side connects, or after five seconds without it. The
+    /// hub's flush timer runs, as the app's does.
     private final class Session {
         let pty: RawPTY
         let relay: TerminalRelay
         let hub: PaneStreamHub
+        let server: LocalStreamServer
+        let pane: OwnPaneBridge
 
         init(command: String) throws {
             let session = "gt:" + UUID().uuidString.lowercased()
@@ -50,15 +55,16 @@ struct StreamBaselineTests {
                                                  graphemeClustering: true)
             let shared = SharedTerminalState()
             let hub = PaneStreamHub(startTimer: true)
-            // Every hook `GhosttyStack` sets, set the same way. With no viewer only
-            // `onIngest` runs, but a hook left out here would be a difference from
-            // the app that nobody remembers when a viewer is added to this test.
+            // Every hook `GhosttyStack` sets, set the same way, but for the census:
+            // without it an attach is not checked against one, which changes
+            // nothing for a session that is live.
             hub.onIngest = { session, bytes in shared.model(for: session)?.write(bytes) }
             hub.onSnapshot = { session in GhosttyStack.snapshot(of: session, in: shared) }
             hub.onRepaint = { session in shared.model(for: session)?.repaintFrame() }
             hub.onAlternateScreen = { session in shared.model(for: session)?.isAlternateScreen ?? false }
             hub.onInput = { session, bytes in GhosttyStack.input(bytes, for: session, in: shared) }
             hub.onClaim = { session, size in shared.resizer(for: session)?(size) }
+            hub.onLocalViewerAttached = { session in shared.takeReadStart(for: session)?() }
             self.hub = hub
             let pty: RawPTY
             do {
@@ -71,27 +77,36 @@ struct StreamBaselineTests {
             self.pty = pty
             let status = ProgramStatusTap(reply: { [weak pty] answer in pty?.write(answer) },
                                           report: { _ in })
-            do {
-                let path = try TerminalRelay.socketPath(for: session)
-                relay = try TerminalRelay(pty: pty, socketPath: path) { bytes in
-                    status.ingest(bytes)
-                    hub.write(session: session, bytes: bytes)
-                }
-            } catch {
-                pty.terminate()
-                hub.stop()
-                throw error
+            let relay = TerminalRelay(pty: pty) { bytes in
+                status.ingest(bytes)
+                hub.write(session: session, bytes: bytes)
             }
+            self.relay = relay
             shared.note(model: model, for: session)
             shared.register(writer: { [weak pty] bytes in pty?.write(bytes) }, for: session)
             shared.register(resizer: { [weak pty, weak model] size in
                 pty?.resize(to: size)
                 model?.resize(to: size)
             }, for: session)
-            relay.start(onExit: { _ in })
+            shared.register(readStart: { relay.start(onExit: { _ in }) }, for: session)
+            do {
+                server = try LocalStreamServer(path: shortSocketPath("sbs"), streamer: hub)
+                server.start()
+                pane = try OwnPaneBridge(session: session, serverPath: server.path,
+                                         helperSocketPath: shortSocketPath("sbh"))
+            } catch {
+                pty.terminate()
+                hub.stop()
+                throw error
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + GhosttyService.unattachedReadDelay) {
+                shared.takeReadStart(for: session)?()
+            }
         }
 
         func close() {
+            pane.stop()
+            server.stop()
             relay.stop()
             pty.terminate()
             hub.stop()
@@ -105,7 +120,7 @@ struct StreamBaselineTests {
         guard fd >= 0 else { throw BaselineError.connectFailed(errno) }
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(session.relay.socketPath.utf8)
+        let bytes = Array(session.pane.bridge.helperSocketPath.utf8)
         withUnsafeMutableBytes(of: &addr.sun_path) { $0.copyBytes(from: bytes) }
         addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
         let result = withUnsafePointer(to: &addr) { pointer in
