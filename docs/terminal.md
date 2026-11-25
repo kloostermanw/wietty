@@ -2,8 +2,9 @@
 
 A terminal or Claude session is a pseudo-terminal Wietty spawned and owns, rendered by a
 libghostty surface in the pane of the app's own window. Nothing has to be installed for it: not
-iTerm2, not tmux, not even Ghostty.app. `docs/remote-access.md` covers how a terminal's
-bytes reach a browser or another Mac.
+iTerm2, not tmux, not even Ghostty.app. The pane is a viewer of the terminal's stream, the same
+stream a browser, an iPad or another Mac attaches to; `docs/remote-access.md` is the reference for
+that stream and its two transports.
 
 **Terminals do not survive quitting Wietty.** A PTY is this process's child, so it dies with the
 process, and every session id the app minted is therefore wiped at launch by
@@ -26,12 +27,14 @@ them.
 | `SessionMonitoring` | `GhosttyMonitor` |
 | `TerminalStack.ghostty` | the `GhosttyStack` |
 
-`TerminalStack` builds the surface host, hands its failure to `GhosttyStack` as a `TerminalError`,
-and passes the three protocol shaped pieces on. The protocols stay because they are test seams: a
-fake service, a fake hub and a `FakeSurfaceHost` are how most of this is exercised without a Metal
-device. `UnavailableTerminalService` is what every terminal action reaches when libghostty or the
-bundled helper could not start, so the failure is one actionable message rather than a crash at each
-call site.
+`TerminalStack` finds the bundled helper, names the local stream server's socket
+(`LocalSocketPaths.server()`), builds the surface host with the `PaneBridges` that make every
+surface's bridge, hands any failure to `GhosttyStack` as a `TerminalError`, sweeps the sockets a dead
+run left, and passes the three protocol shaped pieces on. The protocols stay because they are test
+seams: a fake service, a fake hub and a `FakeSurfaceHost` are how most of this is exercised without a
+Metal device. `UnavailableTerminalService` is what every terminal action reaches when libghostty, the
+bundled helper or the local socket could not start, so the failure is one actionable message rather
+than a crash at each call site.
 
 The pane in the main window (`RightTerminalView`, drawn in
 `docs/AsciiScreens/ContentView.md`) is not only for local terminals: a remote session tapped
@@ -40,18 +43,31 @@ so is a process's log.
 
 ## What a terminal is
 
-Three objects that are created together and die together, plus one process outside the app:
+A terminal is a pty and its child, read by the core and served as a stream. The pane in the window
+is one viewer of that stream, joined to it by a bridge in the app. These parts are made when a
+terminal opens and go when its row is closed or reopened:
 
-| Part | File | What it is |
-| --- | --- | --- |
-| The pty | `WiettyCore/RawPTY.swift` | The master fd, the child's process group, and one raw byte stream off the master. |
-| The reader | `WiettyCore/TerminalRelay.swift` | Reads the pty and hands every chunk to the stream hub, which serves every viewer, the pane's own included. |
-| The surface | `Wietty/GhosttySurfaceHost.swift` | The one `ghostty_app_t`, one `ghostty_surface_t` per terminal, and the `NSView` each renders into. |
-| The helper | `wietty-pty/main.swift` | A separate executable in the app bundle, run as the surface's command. It connects to its pane's `TerminalBridge` socket and copies bytes. |
+| Part | File | Target | What it is |
+| --- | --- | --- | --- |
+| The pty | `WiettyCore/RawPTY.swift` | core | The master fd, the child's process group, one serial queue that reads the master and one that writes it. |
+| The reader | `WiettyCore/TerminalRelay.swift` | core | Starts the pty's read and hands every chunk to the stream hub. It only reads: input reaches the pty through the writer `GhosttyService` registers for the session. |
+| The screen model | `WiettyCore/TerminalScreenModel.swift`, `GhosttyVtTerminal.swift` | core | libghostty-vt parsing the same bytes with no window; see "The server's own terminal". |
+| The surface | `Wietty/GhosttySurfaceHost.swift` | app | One `ghostty_surface_t` and the `NSView` it renders into. |
+| The bridge | `Wietty/OwnPaneBridge.swift`, `TerminalBridge.swift`, `LocalSocketLink.swift` | app | A socket the helper connects to, and a link from it to the local stream server; see "The link and the bridge". |
+| The pane's grid | `Wietty/PaneGrid.swift`, `OwnPaneGrid` in `OwnPaneBridge.swift` | app | Decides when the pane claims the grid and which grid its view shows; see "Sizing". |
+| The helper | `wietty-pty/main.swift` | its own executable | Run as the surface's command. It connects to the bridge's socket and copies bytes. |
 
-`GhosttyService` (`WiettyCore/GhosttyService.swift`) keeps the three in step and is the only type that
-knows a terminal is not a single object. It mints the session id itself, as `gt:<uuid>`, because there
-is nothing to ask for one: the PTY belongs to the app.
+Two more pieces are shared by every terminal and live as long as the app: the stream hub
+(`PaneStreamHub`), which serves every viewer of every terminal, and the local stream server
+(`LocalStreamServer`), which serves the hub to the app's own panes on a Unix socket. Both are in the
+core and are built by `GhosttyStack`, whether or not remote access is on. The one `ghostty_app_t` is
+the surface host's.
+
+`GhosttyService` (`WiettyCore/GhosttyService.swift`) keeps the parts of one terminal in step and is the
+only type that knows a terminal is not a single object. It mints the session id itself, as
+`gt:<uuid>`, because there is nothing to ask for one: the PTY belongs to the app. It asks the host
+for a surface by session, directory and title, and builds no command line: the app builds the
+bridge and the helper's command.
 
 **The surface's `NSView` lives for the terminal's whole life, and it cannot be otherwise.**
 `ghostty_surface_new` takes the view in its config (the macOS platform union is `{ void *nsview; }`),
@@ -72,11 +88,20 @@ no byte stream there is nothing to serve a remote viewer with and nothing to rea
 from.
 
 So Wietty owns the pty and the surface runs the helper. The surface's command is
-`'<wietty-pty>' '<bridge socket>'` (each path in single quotes, because libghostty runs the command
-through a shell), never the user's shell. That is the entire reason `wietty-pty` is a
-second target in `project.yml` and is copied into `Contents/MacOS` of the app bundle. A build where
-the copy phase did not run has no helper, which `TerminalStack` reports as a startup error rather than
-failing per terminal, because every surface's command would be missing.
+`'<wietty-pty>' '<bridge socket>'` (each path in single quotes, an embedded quote written `'\''`,
+because libghostty runs the command through a shell), never the user's shell. `PaneBridges.open`
+builds it, after it has made the terminal's bridge, before the host creates the surface. That is
+the entire reason `wietty-pty` is a second target in `project.yml` and is copied into
+`Contents/MacOS` of the app bundle. A build where the copy phase did not run has no helper, which
+`TerminalStack` reports as a startup error rather than failing per terminal, because every surface's
+command would be missing.
+
+**What the helper is connected to.** The helper's socket belongs to the pane's `TerminalBridge`,
+not to the pty. The bridge is a client of the terminal's stream: its `LocalSocketLink` connects to
+the app's `LocalStreamServer` and attaches to the hub as the session's local viewer. So the surface
+renders what the stream carries (a snapshot, then the child's output), and its keystrokes travel the
+stream back as input, exactly as a browser's do. The helper knows nothing of the stream and copies
+raw bytes.
 
 The helper interprets nothing. Ghostty's VT is the only VT in the path and the pty Wietty owns is
 the only line discipline, so anything the helper did to the stream would be wrong twice. It does put
@@ -87,41 +112,65 @@ meaningful, since the surface displays them: 64 for usage, 69 for a socket nobod
 
 ## The byte path
 
-**Output**, in order, all of it on one serial read source per terminal:
+**Output**, hop by hop, with the thread each hop runs on:
 
-1. `RawPTY.startReading` reads the master.
-2. `TerminalRelay` hands the chunk to `onOutput` first and unconditionally. There `GhosttyService`
-   feeds it to that terminal's `ProgramStatusTap`, which answers an `OSC 7501` support query on the
-   spot (see "Program status" below), and then to `PaneStreamHub.write`, so a remote viewer's bytes
-   never wait behind the local surface. Inside that call the hub also writes the chunk into the
-   terminal's screen model (see "The server's own terminal" below), in the same step that accepts
-   it for delivery.
-3. The hub writes the chunk to the pane's local viewer on the same thread: `LocalStreamServer` frames
-   it to the pane's `LocalSocketLink`, whose `TerminalBridge` writes the payload to the helper's
-   socket, and the helper copies it to its stdout, which is the pty libghostty renders. The pty is
-   read only once that viewer has attached (or after 5 seconds without it, which is logged as an
-   error), so the pane's first snapshot is the empty screen.
+1. **The child** writes to the pty's slave. Nothing reads the master until the pane's viewer has
+   attached (see "The deferred read" below).
+2. **The pty's read queue.** `RawPTY.startReading` reads the master on one serial dispatch queue per
+   pty, and `TerminalRelay` hands each chunk, on that queue, to the closure `GhosttyService.open` gave
+   it. The closure feeds the terminal's `ProgramStatusTap` first, which answers an `OSC 7501` support
+   query on the spot (see "Program status" below), and then calls `PaneStreamHub.write`.
+3. **The hub, on the same queue.** Under the session's lock, `write` writes the chunk into the
+   terminal's screen model (see "The server's own terminal") and, when the session has queued
+   viewers (a browser, an iPad, another Mac), appends it to their buffer, which the hub's delivery
+   queue sends on (see "Serving the stream"). Then it writes the chunk to each local viewer of the
+   session, still on the pty's read queue and before `write` returns: no batch and no hop.
+4. **The local stream server, on the same queue.** The pane's local viewer is a connection of
+   `LocalStreamServer`. Writing to it frames the chunk as a `data` message and writes the frame to
+   the connection's socket with a blocking write.
+5. **The link's reader thread.** The pane's `LocalSocketLink` reads that socket on a thread of its
+   own, decodes the frame and calls `onMessage`, and reads again only once that has returned.
+6. **The bridge, on the link's reader thread.** Inside `onMessage`, `TerminalBridge` writes the
+   payload of a `snapshot`, a `repaint` or a `data` message to the helper's socket, unchanged, with a
+   blocking write. A `resize` goes to the pane's grid instead (see "Sizing").
+7. **The helper.** `wietty-pty` copies what arrives on its socket to its standard output, on a
+   thread of its own. Its standard output is the tty of the pty libghostty made for the surface.
+8. **The surface.** libghostty reads its own pty and parses the bytes, and the view redraws on the
+   main thread when libghostty asks (see "Drawing").
+
+Every write from step 4 to step 7 blocks, and nothing between them holds more than the sockets do
+and the frames one read of 64 KiB carried into the link. A surface that stops reading therefore
+holds back the helper, the bridge, the link and the server's write, and with that the pty's read
+queue: the child waits on a full pty as it would behind a slow terminal. The pane loses nothing.
+What this costs the other viewers is under "Serving the stream".
 
 **Input** converges on the pty master, whatever its source:
 
-- A key typed into the pane goes to `ghostty_surface_key`, libghostty writes it to the helper's tty,
-  the helper copies it to the bridge's socket, the bridge sends it on its link as `data`, and the hub
-  hands it to the session's writer, as below.
-- A keystroke from a remote viewer arrives as bytes on `PaneStreamHub.send(session:bytes:)`, and
-  `onInput` hands them, on that same thread, to the writer `GhosttyService.open` registered for the
-  session in `SharedTerminalState`: the pty's own `write`. The main actor is not on this path, so a
-  busy UI does not hold remote input back. A terminal whose child has exited has no writer, and its
-  input is logged and dropped.
+- A key typed into the pane reaches `ghostty_surface_key` on the main thread, and libghostty
+  writes it to its own pty, which is the helper's standard input. The helper copies it to the
+  bridge's socket on its other thread. The bridge's helper thread reads it and hands it to
+  `LocalSocketLink.send`, which queues it as `data` frames of at most 64 KiB, and the link's writer
+  thread writes them to the server. The server's connection thread reads them and calls
+  `PaneStreamHub.send(session:bytes:)`, whose `onInput` hands the bytes, on that same thread, to the
+  writer `GhosttyService.open` registered for the session in `SharedTerminalState`: the pty's own
+  `write`. libghostty's answers to a program's queries (device attributes, a cursor position report)
+  take the same path.
+- A remote viewer's keystrokes arrive on the attach route's reader and take the same `send`,
+  `onInput` and writer.
 - MCP and the sidebar reach `GhosttyService.send`, which writes the same master.
 
-**No write to the master happens on the caller's thread.** `RawPTY.write` hands the bytes to that pty's
-own serial queue. A master write parks once the child stops reading and the queue fills, and
-`GhosttyService.send` is main actor code reached from MCP and from the sidebar (and was, until phase 3
-of issue #84, from remote keystrokes too), so performing the write there froze the whole UI until the
-foreground program read its stdin,
-which it need never do: measured at 5.17 s for a paste into a `sleep 5`. Local keystrokes were never
-exposed to it, arriving on the relay's own queue, which is what made this look like a remote-only
-problem rather than a property of the write.
+Nothing on these paths waits for the main actor past the keystroke itself, so a busy UI does not hold
+input back. A terminal whose child has exited has no writer, and its input is logged and dropped. The
+pane's input waits in one place: `LocalSocketLink.send` waits while 256 KiB of input is already
+queued for a server that is not reading, which holds back the bridge's helper thread, the helper and
+the surface rather than letting input pile up.
+
+**No write to the master happens on the caller's thread.** `RawPTY.write` hands the bytes to that
+pty's own serial write queue. A master write parks once the child stops reading and the queue fills,
+so a write performed on the caller's thread holds that thread until the foreground program reads its
+stdin, which it need never do. `GhosttyService.send` is main actor code reached from MCP and from the
+sidebar, and performing the write there froze the whole UI: measured at 5.17 s for a paste into a
+`sleep 5`. The hub's writer is called on a socket's reader thread, which would be held the same way.
 
 Two details, if you go probing. The block needs a completed line and not merely a full queue, because
 `ptcwrite` parks when the queue is full and either the canonical queue is non-empty or the tty is
@@ -129,52 +178,128 @@ non-canonical, so a paste of one enormous line into a canonical tty does not par
 has to be serial: input order is as load bearing as output order, so a concurrent queue would scramble a
 paste that arrives as several chunks.
 
-**Where ordering is guaranteed, and why it is arranged that way.** Output order is the read source's:
-one serial `DispatchSourceRead` per pty, with both destinations written from inside its handler, so
-the hub and the surface see the same bytes in the same order. Terminal output delivered out of order
-is corrupt on screen, and a caller that fanned these chunks onto unstructured `Task`s would corrupt
-it, since two Tasks created in order can still run in either order. Input order is the pty master's.
-A remote viewer's bytes are handed to the pty's writer on the thread that read them from the socket,
-one message after another, and the writer queues them on the pty's serial queue in that order, so a
-paste arriving as several messages cannot be reassembled scrambled. A `Task` per keystroke anywhere on
-that path would break it.
+**Where ordering is guaranteed, and why it is arranged that way.** Output order is the read queue's:
+one serial `DispatchSourceRead` per pty, and the hub writes each chunk into the model, into the
+queued viewers' buffer and to every local viewer from inside that handler, so the model and every
+viewer see the same bytes in the same order. What the hub's delivery queue has for a local viewer (a
+`resize`, a `repaint`, a claim's answer, the ending) is ordered against that output by the session's
+lock (see "Serving the stream"). Terminal output delivered out of order is corrupt on screen, and a
+caller that fanned these chunks onto unstructured `Task`s would corrupt it, since two Tasks created
+in order can still run in either order. Input order is the pty master's. Bytes are handed to the
+pty's writer on the thread that read them from a socket, one message after another, and the writer
+queues them on the pty's serial queue in that order; the pane's link writes its frames from one
+thread in the order `send` queued them. So a paste arriving as several messages cannot be
+reassembled scrambled. A `Task` per keystroke anywhere on that path would break it.
 
-Nothing is buffered for a pane that has not connected: the pty is not read until it has, so a prompt
-or a shell startup notice waits in the pty and reaches the pane through the stream.
+## The deferred read
 
-**Window size deliberately does not travel on the socket.** Wietty reads the surface's geometry
-from libghostty directly and resizes its own pty, so the socket stays a plain byte pipe with no
-framing and the helper needs no signal handling and no `SIGWINCH` story. See "Sizing" below.
+**A terminal's pty is not read until its pane's viewer has attached** (decision P2 of the phase 3
+design). `GhosttyService.open` registers the start of the read in `SharedTerminalState`, and two
+triggers race for it: the hub's `onLocalViewerAttached`, called on its delivery queue once the
+session's first local viewer has been sent its snapshot, and a timer of
+`GhosttyService.unattachedReadDelay`, 5 seconds, on a global queue. Whichever takes the start runs
+it, once. The timer's path is logged as an error ("terminal <id> is read without its pane: no local
+viewer attached within 5.0 seconds"): a pane that does not attach is a fault, but a terminal that
+is never read would hang its child at the first full buffer.
+
+So the pane's first snapshot is the empty screen, and every byte the child writes reaches the surface
+through the stream. None of it is folded into a snapshot taken before the pane could read, and a
+query the shell asks at startup reaches the surface, which answers it, and not only the model, which
+never answers. Nothing is buffered for the pane in the app: what the child wrote meanwhile waits in
+the pty.
+
+Until the read starts, the child sees a terminal whose reader is slow. Its output stays in the pty,
+and once the pty's buffer is full its next write blocks until the read starts. Input works from the
+start, because the writer is registered before the surface is asked for, and so does the census:
+the session is live before `createSurface` runs, since the bridge's link can attach while it runs. A
+terminal closed or stopped before either trigger is never read; its end is noticed by the close or
+the stop instead.
+
+The cost is a dependency on the frontend. A terminal opened through MCP or from the iPad produces
+no output for any viewer until its surface on this Mac has attached, or 5 seconds have passed, and a
+pane the local server refused (`busy`, see "The sockets, and what they cost") costs its terminal
+those 5 seconds. Running the core without a frontend, phase 5 of issue #84, has to remove it.
 
 ## Sizing
 
-The server is the only thing that resizes a terminal (decision P4 of the phase 3 design). A viewer
-claims a grid, and the hub resizes the pty (`TIOCSWINSZ`) and the model and tells every viewer, `own`
-true for the claimant. The own pane is one such viewer: `OwnPaneGrid` works out the grid that fits the
-pane from the surface's metrics, claims it through the pane's bridge (`PaneGrid` decides when: on
-opening, on a change while the pane owns the grid, at most one claim per 50 ms, and on a key, click,
-paste or drop while another viewer owns it). While it owns the grid its view fills the pane, also
-between a claim and its answer: the surface reflows at once and the pty and the model follow when the
-answer arrives, so for that round trip (plus the 50 ms debounce during a drag) the surface's grid and the
-model's can differ. While another viewer owns the grid the pane shows the grid in force through
-`impose(grid:on:)`, even when it equals the grid that fits the pane. `GhosttySurfaceView` still sends the
-surface its content scale and then its pixel size (in that order, because libghostty derives the grid
-from size divided by scale) and reports the grid it reads back through
-`TerminalSurfaceHosting.onResized`, but that report is not a claim and nothing resizes the pty from it.
+**The server is the only thing that resizes a terminal** (decision P4). A viewer says "I am active,
+this is my grid" by sending a `resize`, which is a claim. The hub handles each claim on its delivery
+queue (`PaneStreamHub.claim(connectionId:cols:rows:)`). For a grid other than the one it last
+announced, it calls `onClaim`, which reaches the resizer `GhosttyService.open` registered for the
+session and resizes the pty (`TIOCSWINSZ`) and then the model, and only then tells every viewer the
+grid with a `resize`, `own` true in the claimant's and false in everyone else's. A claim for the
+grid already in force resizes nothing and is answered to the claimant alone. Either way the claimant
+gets exactly one `resize` with `own` true per claim, and it carries the grid in force, which is the
+model's and can differ from the grid claimed (issue 92, under "Limitations"). A grid outside 1 to
+10,000 per side is ignored and not answered. The wire side is in `docs/remote-access.md`.
 
-Two details are load bearing:
+**Who claims, and when.** For this Mac's pane, `PaneGrid` decides and `OwnPaneGrid` carries it out
+on the main actor, through the pane's bridge, its link and the local socket. What the pane claims is
+its own grid: the largest grid that fits the pane at the surface's metrics
+(`SurfaceMetrics.grid(fitting:)`, below), worked out from the container's bounds and never from the
+view's own frame, which an imposed grid changes. The pane claims:
 
-- **A terminal is spawned with a size, not resized into one.** `GhosttyService.initialSize` is 120 by
-  34 and is applied to the pty as `forkpty` creates it. A full screen program lays itself out from the
-  size it finds at startup, so a terminal opened at 80 by 24 and corrected a moment later draws for a
-  grid that does not exist until something forces a redraw.
-- **The first grid and metrics reports are guaranteed to arrive after `createSurface` has returned**,
-  one main queue turn later, so a handler that resolves the session through its own registry finds it.
-  The first metrics report is what lets the pane work out its first grid to claim.
+- its first own grid, as soon as the surface is on display and its metrics are known;
+- a change of its own grid (the window, the sidebar, a font size, another scale) while it owns the
+  grid, at most one claim per 50 ms and always the latest value: the first change after a quiet
+  period goes out at once, and later ones inside the interval fold into one sent when it ends;
+- its own grid on a key, a press of any mouse button, a paste, or text that did not come from a key
+  (a dropped file's path, dictation, a Services item), while another viewer owns the grid;
+- its own grid when the surface comes back on display, if it owns the grid and its own grid is not
+  the grid in force;
+- its own grid once after its link was lost and made again, if it owned the grid before.
 
-A surface that is not in the view hierarchy is not laid out, so it keeps the grid it had until it is
-selected again. Two terminals in one window can therefore have different sizes, and the one on screen
-is always the one that matches the pane.
+It never claims because of what it received: not on output, a snapshot, a repaint or a `resize`. A
+pane that does not own the grid does not claim when its window changes either; it shows the grid in
+force. Ownership is the package's `GridOwnership`: the pane owns the grid while a claim it made is
+unanswered, or when the last `resize` it received was its own answer. It starts over when the link
+is lost, since a claim sent on a link that ended may never be answered.
+
+**Before the first claim the grid is 120 by 34** (`GhosttyService.initialSize`). The pty is spawned
+at that size as `forkpty` creates it and the model is built at it: a full screen program lays itself
+out from the size it finds at startup, so a terminal is spawned with a size rather than resized into
+one, and the pane's first claim corrects it moments later. A surface that is never shown claims
+nothing, so its terminal stays 120 by 34 until some viewer claims. The hub keeps no record of a grid
+until the first claim, so the first claim is handled as a new grid even when it is 120 by 34.
+
+**What the pane shows** follows one rule in `PaneGrid`:
+
+- While the pane owns the grid and nothing is outstanding, the surface's view fills the pane, and the
+  surface's grid is the grid in force.
+- While another viewer owns the grid, the view shows the grid in force through
+  `impose(grid:on:)`, even when that is the grid that fits the pane, so that a drag or a font change
+  cannot let the surface reflow by itself for a layout pass before the impose lands. That costs a
+  margin of a few pixels at most.
+- An owner whose last claim was answered with a grid other than its own, with no claim waiting,
+  shows the grid in force too: the server's word stands until the own grid changes again.
+
+An imposed grid sits at the top left of the pane. A smaller one has a margin around it in the
+terminal's background colour, and a larger one is cut off at the right and bottom edges. The view
+never scrolls. `docs/AsciiScreens/ContentView.md` draws both.
+
+**Between a claim and its answer**, as built (`PaneGrid.viewWhileClaimsOutstanding()`), an owner's
+view fills the pane. A claim the bridge accepted makes the pane the owner at once, so during a drag
+the view follows the window without waiting for the round trip: the surface reflows by itself, and
+the pty and the model are resized only when the hub handles the claim. For that round trip, plus up
+to 50 ms of debounce, the surface's grid and the model's differ. Output written meanwhile is the same
+bytes for both, but cursor addressed output (a full screen program drawing at absolute positions) is
+laid out by the surface for a grid the program did not draw for, so the surface and the model can
+disagree about the screen until the program redraws, which a full screen program does once it is
+told the new size. The other rule, which the code names in the same place, keeps showing the grid in
+force until the answer arrives: no such disagreement, but a view that lags the window by a round trip
+on every drag, with a margin or a clipped edge meanwhile. The choice is kept in that one function.
+
+**The surface's own grid report is not a claim.** `GhosttySurfaceView` still sends the surface its
+content scale and then its pixel size (in that order, because libghostty derives the grid from size
+divided by scale) and reports the grid it reads back through `TerminalSurfaceHosting.onResized`, but
+the service sets no handler for it and nothing resizes the pty from it. The first grid and metrics
+reports arrive one main queue turn after `createSurface` has returned, so a handler that resolves
+the session through its own registry finds it. The first metrics report is what lets the pane work
+out its first own grid.
+
+A surface that is not in the view hierarchy is not laid out and claims nothing. It keeps its last
+size, and a grid imposed on it meanwhile is kept and applied, so it comes back showing the grid in
+force.
 
 ### Metrics and an imposed size
 
@@ -182,24 +307,31 @@ The pane can also show a grid that is not the one that fits it. `TerminalSurface
 answers the surface's cell size in pixels, its configured padding in pixels (both sides together) and
 the backing scale it renders at, as a `SurfaceMetrics`, which turns a grid into the size in points of
 a view that shows exactly it, `(cols * cell_width + padding_x) / scale` by the same for rows, and a
-pane size back into the largest grid that fits. `impose(grid:on:)` gives the surface's view that size,
-pinned to the top left of the pane (see "The local terminal in the pane" in
-`AsciiScreens/ContentView.md`); nil returns it to the pane's size. The host keeps the grid and sizes
-the view again whenever the metrics change, and reports such a change through `onMetricsChanged`,
-which is separate from `onResized` because moving to a display with another scale changes the metrics
-and not the grid. The arithmetic was measured exact in a real window (`scripts/imposed-grid-check.sh`).
+pane size back into the largest grid that fits. The padding in that formula is the configured
+padding, both sides together, in pixels at the scale (each side's points times the scale, rounded
+down, as libghostty rounds them), and not the pixels a surface has left over beyond its whole cells,
+which also hold up to a cell of slack. The size is always rounded up to the next device pixel: a view
+one device pixel smaller loses a column or a row, and one up to a cell less a pixel larger keeps the
+grid. `impose(grid:on:)` gives the surface's view that size, pinned to the top left of the pane (see
+"The local terminal in the pane" in `AsciiScreens/ContentView.md`); nil returns it to the pane's
+size. The host keeps the grid and sizes the view again whenever the metrics change, and reports such
+a change through `onMetricsChanged`, which is separate from `onResized` because moving to a display
+with another scale changes the metrics and not the grid. The arithmetic was measured exact in a real
+window (`scripts/imposed-grid-check.sh`), for seven grids, with the default padding and with another,
+at scale 1 and at a simulated scale 2; a real scale 2 display has not been measured.
 
-The padding is read from the configuration files the host loads (`GhosttyPadding`), because
-`ghostty_config_get` does not expose `window-padding-x` or `window-padding-y`. One value sets both
-sides, two set left and right (or top and bottom). `window-padding-balance` does not change how many
-cells a size holds. The configured value is checked against what the surface itself reports: every
-report bounds the true padding (the pixels beyond its whole cells are the padding plus less than a
-cell), each surface keeps the intersection of those bounds across reports (`PaddingWindow`), and a
-configured value outside them is logged once and replaced by the upper bound, which is never below
-the true padding, so the pane never claims a column or row more than it can show. The bounds start
-over when the cell size, the scale or the configuration changes. With a grid imposed, a surface that
-shows another grid at its imposed size is logged and sized again from the narrowed bounds, at most
-twice per grid.
+The padding is read from the configuration files the host loads (`GhosttyPadding`: Ghostty's default
+files, then Wietty's overlay), because `ghostty_config_get` does not expose `window-padding-x` or
+`window-padding-y`. Ghostty's default is 2 points per side, and `config-file` includes are not
+followed. One value sets both sides, two set left and right (or top and bottom).
+`window-padding-balance` does not change how many cells a size holds. The configured value is checked
+against what the surface itself reports: every report bounds the true padding (the pixels beyond its
+whole cells are the padding plus less than a cell), each surface keeps the intersection of those
+bounds across reports (`PaddingWindow`), and a configured value outside them is logged once and
+replaced by the upper bound, which is never below the true padding, so the pane never claims a column
+or row more than it can show. The bounds start over when the cell size, the scale or the configuration
+changes. With a grid imposed, a surface that shows another grid at its imposed size is logged and
+sized again from the narrowed bounds, at most twice per grid.
 
 A reload reads the padding again and every surface takes its metrics again; a surface without a
 window keeps the scale it last rendered at. Measured with the imposed grid check: libghostty does not
@@ -209,7 +341,8 @@ terminal's reports disprove the new value and its metrics keep the padding it re
 `impose(grid:on:)` holds a grid to what can be shown: at least 1 by 1, at most the stream protocol's
 10,000 per side, and at most what fits Metal's largest texture side, 16384 pixels (measured on an M4:
 a 16385 wide texture is refused), at the surface's cell size and scale. Past that bound the view shows
-fewer columns or rows than the grid in force, which looks the same as clipping.
+fewer columns or rows than the grid in force, which looks the same as clipping, and the first such
+grid per surface is logged as an error.
 
 The margin around a smaller grid is the colour the terminal draws its background in: the configured
 `background` at the configured `background-opacity` (both read through `ghostty_config_get`), or the
@@ -269,7 +402,7 @@ handed rather than minting one.
 
 `GhosttyService` also owns retiring a dead terminal itself rather than leaving it to whoever wired the
 callback. The service's own dictionary is the source of truth, so a corpse left in it makes the census
-report a dead terminal as attachable, polls a closed master, and leaks the relay's socket file. Note
+report a dead terminal as attachable and polls a closed master. Note
 the ordering that follows: the terminal is reaped before `onTerminated` fires, so a handler asking what
 is live never sees the terminal it is being told about.
 
@@ -361,12 +494,14 @@ asks `OSC 7501 ; ?` before it reports anything, and Claude Code puts a device at
 behind the query so that every terminal answers something. Whichever reply comes back first decides:
 if libghostty's answer to the device attributes request arrives before ours, the program concludes the
 terminal has no support and stays silent for the rest of its run. libghostty answers as soon as it
-reads the chunk, so `ProgramStatusTap` writes the reply (`OSC 7501 ; ? ST`, the only bytes the protocol
-ever lets a terminal send back) while the relay still holds that chunk, before it is forwarded to the
-helper. The reply goes through `RawPTY.write`'s serial queue, which is also the queue libghostty's own
-replies reach the master through, so ours is queued ahead of anything libghostty can say about the same
-chunk. That ordering is by construction; no test can show the race itself, because it needs a real
-surface. `GhosttyServiceTests` does show that a child asking the question reads the exact reply.
+reads the chunk, so `ProgramStatusTap` writes the reply (`OSC 7501 ; ? ST`, the only bytes the
+protocol ever lets a terminal send back) while the pty's read queue still holds that chunk, before the
+hub has it and so before any viewer, the pane's surface included, can read it. The reply goes through
+`RawPTY.write`'s serial queue, which is also the queue libghostty's own replies reach the master
+through (by way of the helper, the bridge, the link and the hub's writer), so ours is queued ahead of
+anything libghostty can say about the same chunk. That ordering is by construction; no test can show
+the race itself, because it needs a real surface. `GhosttyServiceTests` does show that a child asking
+the question reads the exact reply.
 
 **`Pst` in the bundled terminfo** advertises support too, as the protocol suggests. It is a hint only:
 the query is authoritative, and over ssh or inside a multiplexer the entry may be missing.
@@ -377,12 +512,14 @@ Every terminal has a second emulator beside the surface: a `TerminalScreenModel`
 libghostty-vt parsing the same bytes with no window, no renderer and no child. The surface can only
 say what is on a terminal's screen while that terminal is displayed, in plain text and with no cursor.
 The model answers for any terminal at any time, with colours, modes, the cursor and the scrollback.
-Two things read it: the frames a remote viewer is sent, and `readOutput`.
+Two things read it: the frames every viewer is sent, this Mac's pane included, and `readOutput`.
 
 `GhosttyService.open` builds one model per terminal, at the grid the pty is spawned with and with
-grapheme clustering as the surface has it, and registers it in `SharedTerminalState` before the relay
-starts reading. It is resized by the same claim that resizes the pty, so its grid is the grid in force. It is released when the row
-is closed or reopened, together with the surface. An exited terminal keeps both.
+grapheme clustering as the surface has it, and registers it in `SharedTerminalState` before the
+surface is asked for, since the pane's viewer can attach, and be sent a snapshot of it, while the
+surface is being made. It is resized by the same claim that resizes the pty, right after the pty, so
+its grid is the grid in force (issue 92, under "Limitations", is the exception). It is released when
+the row is closed or reopened, together with the surface. An exited terminal keeps both.
 
 **The model never answers the program.** A terminal replies to queries (device attributes, a cursor
 position report) by writing to the pty, and the surface already does. A second answerer is a wrong
@@ -454,13 +591,13 @@ Two limits of the snapshot frame are known and not handled here:
 
 - A frame taken on the alternate screen leaves the receiver's primary screen empty, and its saved
   cursor wherever the receiver had it. The hub answers that by sending a fresh snapshot when the
-  terminal leaves the alternate screen (see "Serving a remote viewer"), which is the only remedy: the
+  terminal leaves the alternate screen (see "Serving the stream"), which is the only remedy: the
   formatter has no documented way to write the screen that is not active.
 - A cursor in the pending wrap state (a line written to the last column, nothing after it yet) is not
   restored, so on the receiver the next character overwrites the last column instead of wrapping. The
   paint frame has the same limit.
 
-Both frames leave out the palette, for the reason given under "Serving a remote viewer". Both paint
+Both frames leave out the palette, for the reason given under "Serving the stream". Both paint
 the active screen only: on the alternate screen the snapshot frame is that screen with no history,
 because the alternate screen has none, and the primary screen underneath is not in it. libghostty-vt's
 formatter is documented to read the active screen. It will in fact format the primary screen while the
@@ -471,11 +608,13 @@ leaving the alternate screen there, works within the contract at the cost of cop
 terminal. Neither is used.
 
 **One lock per model**, held for the whole of each call, because libghostty-vt is not reentrant and
-its callers are on three queues: the relay's for a write, the hub's delivery queue for a paint, and
-the main actor for a resize or a text read. What is called often is cheap (a parse runs at hundreds of
-megabytes a second, a paint frame formats one viewport). One call is not: **a change of column count
-reflows the whole scrollback under that lock**, and on a full scrollback that is slow enough to hold
-the terminal's own output behind each notch of a window drag. It is a known cost and not yet solved.
+its callers are on three queues: the pty's read queue for a write, the hub's delivery queue for a
+paint or a claim's resize, and the main actor for a text read. What is called often is cheap (a parse
+runs at hundreds of megabytes a second, a paint frame formats one viewport). One call is not: **a
+change of column count reflows the whole scrollback under that lock**, and on a full scrollback that
+is slow enough to hold the terminal's own output behind each claim of a window drag (at most one per
+50 ms from the pane). The resize runs on the hub's delivery queue, so while it reflows no queued
+viewer of any terminal is delivered to either. It is a known cost and not yet solved.
 
 **History is a setting**, `scrollback-lines` in `~/.config/wietty/config`
 (`ProjectStore.scrollbackLines`, `TerminalScrollback`). It has no control in the settings panel yet:
@@ -492,7 +631,7 @@ one page under it, depending on where in a page the last line fell: with short l
 
 **The limit is read when a terminal opens.** `GhosttyService.open` asks for it once, on the main
 actor, and builds the model with it, so a change applies to terminals opened afterwards and one that
-is already open keeps what it started with. Neither the relay's queue nor the hub's ever reads the
+is already open keeps what it started with. Neither the pty's read queue nor the hub's ever reads the
 setting. The service is built before the store that holds it, so `GhosttyStack.followScrollbackSetting(of:)`
 is what points one at the other. The floor is there because below about a thousand lines an MCP read
 starts coming back shorter than an agent asked for, to save under a megabyte per terminal; the ceiling
@@ -505,10 +644,12 @@ through. The setting here decides how far `readOutput` can reach.
 The two libraries share several hundred symbols. `scripts/coexistence-check.sh` is the run that shows
 they agree in one process, under the address sanitizer, with a real surface; `CLAUDE.md` describes it.
 
-## Serving a remote viewer
+## Serving the stream
 
-The producer is `TerminalRelay` writing into `PaneStreamHub.write`, so the bytes on the wire are the
-child's own, exactly: the hub delivers `StreamMessage` values (from `wietty-shared`) and a `data`
+Every viewer of a terminal is served by `PaneStreamHub`: a browser, an iPad and another Mac through
+`RemoteServer`'s attach route, and this Mac's own pane through `LocalStreamServer`. The producer is
+`TerminalRelay` writing into `PaneStreamHub.write`, so the bytes on the wire are the child's own,
+exactly: the hub delivers `StreamMessage` values (from `wietty-shared`) and a `data`
 message carries the bytes as they were read, with nothing decoded, replaced or held back. A viewer's
 terminal decodes them, as it would from any pty. `docs/remote-access.md` is the protocol reference. The
 things worth stating here follow.
@@ -621,21 +762,21 @@ protected in the same way: the model has consumed its first half, and the viewer
 half as text. It takes a join landing between two reads that cut a sequence, and the next redraw
 corrects it.
 
-**A second kind of viewer, written on the writer's thread.** Everything above is about a queued
-viewer, the kind the WebSocket route attaches: its output is batched, handed over on the delivery
-queue, and dropped and resynchronised when it falls behind.
-`PaneStreamHub.attachLocal(session:resize:write:)` attaches the other kind, a local viewer, which is
-what the Mac's own pane is: `LocalStreamServer` attaches one for each pane's link. The relay used to
-write each chunk to the pane's helper with a blocking write on the thread that reads the pty, and a
-local viewer keeps exactly that property. Its attach is the same join as any viewer's (a `resize`, a
-`snapshot` with the started half of a character behind it, then the stream), and after that each
-chunk is written to it by the thread that called `write(session:bytes:)`, before that call returns: no
-8 ms batch and no hop to the delivery queue. `write` may block, and while it does the pty's read thread
-waits with it, so the child waits on a full pty as it would behind a slow terminal. Nothing is ever
-dropped, so it is never resynchronised: the alternate screen rule does not apply to it, and a `resync`
-asked for its id answers `onUnavailable`. A session whose only viewers are local keeps nothing in its
-buffer and schedules no quiet flush. `onLocalViewerAttached` is called once per session, when its first
-local viewer has been sent its snapshot.
+**Two kinds of viewer** (decision P1). Everything above is about a queued viewer, the kind the
+WebSocket route attaches: its output is batched, handed over on the delivery queue, and dropped and
+resynchronised when it falls behind. `PaneStreamHub.attachLocal(session:resize:write:)` attaches the
+other kind, a local viewer, which is what the Mac's own pane is: `LocalStreamServer` attaches one for
+each connection of a pane's link, with the resize mode the link's `hello` names (`reflow`). A local
+viewer is written to with a blocking write on the thread that reads the pty. Its attach is the same
+join as any viewer's (a `resize`, a `snapshot` with the started half of a character behind it, then
+the stream), and after that each chunk is written to it by the thread that called
+`write(session:bytes:)`, before that call returns: no 8 ms batch and no hop to the delivery queue.
+`write` may block, and while it does the pty's read thread waits with it, so the child waits on a full
+pty as it would behind a slow terminal. Nothing is ever dropped, so it is never resynchronised: the
+alternate screen rule does not apply to it, and a `resync` asked for its id answers `onUnavailable`. A
+session whose only viewers are local keeps nothing in its buffer and schedules no quiet flush.
+`onLocalViewerAttached` is called once per session, when its first local viewer has been sent its
+snapshot.
 
 The messages for one local viewer come from two threads: output from the writer's, and the attach, a
 `resize`, a `repaint`, a claim's answer and `ended` from the delivery queue. At most one thread writes
@@ -684,7 +825,16 @@ control messages; `LocalStreamServer` gives each accepted socket 256 KiB. It als
 rest: the connection is ended if the client reads nothing for 5 seconds while a message other than
 `data` is being written to it, so a pane that stopped reading parks the delivery queue for 5 seconds
 at most. That bounds a client that has stopped, not one that reads very slowly, and several stopped
-panes cost 5 seconds each.
+panes cost 5 seconds each. `data` has no such deadline, by design: it waits for as long as the pane
+does not read, because that wait is the backpressure, and it runs on the pty's read queue rather than
+on the delivery queue.
+
+A pane the server dropped this way is not lost for good. Its link ends as a lost connection, and
+`OwnPaneBridge` makes a new one while the terminal lives: at once, then after 250 ms, doubling up to
+5 seconds, the count starting over once a link has stayed up for 10 seconds (`ReconnectBackoff`). The
+new link's attach brings a snapshot, which begins with a full reset, so the surface starts over from
+the server's screen. The backoff is there because a pane that is still stalled is dropped again
+within the deadline, and each attach costs the delivery queue a snapshot it cannot deliver.
 
 `PaneStreamLocalViewerTests`
 covers the thread, the backpressure, the order under a race with an attach and with grid changes into
@@ -703,13 +853,21 @@ delivery queue: the hub calls `onClaim` (wired to the resizer `GhosttyService` r
 `SharedTerminalState`, which resizes the pty and then the model) and only then takes the repaint, which
 comes from the model and would otherwise paint the screen as it was before the reflow. Every viewer is
 told the grid, with `own` true in the claimant's `resize` only. A claim for the grid already in force
-resizes nothing and is answered to the claimant alone, with one `resize` whose `own` is true.
+resizes nothing and is answered to the claimant alone, with one `resize` whose `own` is true; a
+queued claimant is first sent the bytes accepted before it, as a flush would send them. "Already in
+force" is judged against the grid the hub last announced, and it has announced none before the first
+claim. The grid announced is the repaint's when there is one, which is the model's and can differ
+from the grid claimed; it then becomes the record. Claims are handled one by one in the order they
+arrive and are never coalesced: each claim for a new grid resizes the pty, reflows the model under its
+lock, takes a repaint for the viewers that asked for repaints and sends every viewer a message, all on
+the delivery queue. The pane sends at most one per 50 ms; a viewer that floods claims costs every
+viewer of every terminal that much work on the one queue, and nothing on the server limits it.
 
 A claim's resize runs on the hub's delivery queue and reaches the pty and the model through
-`SharedTerminalState`, never through the service. The census, the model feed, the frames and the input writer
-are asked by the hub from the relay's queue, from its own, and from the thread a viewer's input
-arrived on, and answer from `SharedTerminalState` and the model, both lock guarded. Nothing on a hub
-queue reaches back into the main actor isolated service.
+`SharedTerminalState`, never through the service. The census, the model feed, the frames and the input
+writer are asked by the hub from the pty's read queue, from its own, and from the thread a viewer's
+input arrived on, and answer from `SharedTerminalState` and the model, both lock guarded. Nothing on a
+hub queue reaches back into the main actor isolated service.
 
 **A viewer is told when the terminal ends**, and that also takes wiring here. The census answers an
 attach that has not happened yet; a browser or an iPad already watching a session has nothing else to
@@ -729,12 +887,17 @@ answers `onUnavailable`, and on a resize the viewer is sent the bare `resize`.
 Two types in the app make this Mac's own pane a local viewer of the stream. `OwnPaneBridge` (in
 `Wietty/OwnPaneBridge.swift`) gives every local surface one of each: a `TerminalBridge` whose
 socket the surface's `wietty-pty` connects to, with a `LocalSocketLink` to the app's
-`LocalStreamServer` for that session. It makes a fresh link when one ends as `.connectionLost`
-while the terminal lives (at once, then after 250 ms, doubling up to 5 s, the count reset once a
-link stayed up 10 s). On `.sessionEnded` it stops the bridge instead, so the helper exits with the
-child and its socket goes, while the surface keeps its last screen until the row is closed or
-restarted. A `.refused` link (the server is at its cap and answered `busy`) is logged and not made
-again; the terminal is then read without its pane after 5 seconds.
+`LocalStreamServer` for that session. `PaneBridges`, which `GhosttySurfaceHost` owns, makes one
+`OwnPaneBridge` and one `OwnPaneGrid` per surface before the surface is created, and stops both when
+it is destroyed. `OwnPaneBridge` makes a fresh link when one ends as `.connectionLost` while the
+terminal lives (at once, then after 250 ms, doubling up to 5 s, the count reset once a link stayed
+up 10 s). Before it asks for the new link it tells the pane's grid, which drops the claims the bridge
+held since the end, starts its count of unanswered claims over, and claims its own grid again if it
+owned the grid. On `.sessionEnded` it stops the bridge instead, so the helper exits with the child
+and its socket goes, while the surface keeps its last screen until the row is closed or restarted. A
+`.refused` link (the server is at its cap and answered `busy`) is logged and not made again; the
+terminal is then read without its pane after 5 seconds. The helper going away means the surface
+went away, and the bridge is stopped.
 
 `LocalSocketLink` is a client of `LocalStreamServer` for one session, behind the protocol
 `TerminalStreamLink`. `start()` returns at once: a reader thread of its own connects and then decodes
@@ -852,8 +1015,9 @@ new sockets do set `FD_CLOEXEC`, but Darwin has no `SOCK_CLOEXEC`, so a fork on 
 the `socket` (or `accept`) and the `fcntl` would still hand the descriptor over; closing in the child
 makes that window irrelevant. On Darwin `getdtablesize()` is the soft `RLIMIT_NOFILE` clamped to
 `kern.maxfilesperproc`, and no descriptor can be numbered above it. The loop costs about 10 ms at the
-61440 a developer machine allows and well under a millisecond at the 256 an app opened from the Finder
-gets. It is deliberately not capped lower, since a cap would leak whatever is numbered above it.
+61440 a developer machine allows and about 1.2 ms at the 8192 the app raises its limit to at launch
+(see "The sockets, and what they cost"). It is deliberately not capped lower, since a cap would leak
+whatever is numbered above it.
 
 The other spawn sites get the same answer by other means. `PTYProcessLauncher` (managed processes,
 tests and checks) sets `POSIX_SPAWN_CLOEXEC_DEFAULT`, so its child keeps only the pty slave its file
@@ -907,10 +1071,8 @@ not an interactive one, so it reads `.zprofile` and never `.zshrc`. A normal set
 puts its `PATH` additions in `.zshrc` (`~/.local/bin`, a version manager, a
 language toolchain), so the command ran with a different `PATH` than the terminal
 the user opens themselves. `claude` was not found, the child exited 127 within
-milliseconds, the reap unlinked the relay socket, and the surface's helper, started
-by libghostty a few milliseconds later, found nothing to connect to and printed
-"Wietty: this terminal is gone" under a launch failure. Nothing in that pointed
-at a `PATH`.
+milliseconds, and the terminal ended before it had shown anything but a launch
+failure. Nothing in that pointed at a `PATH`.
 
 The second fault outlives the first. A command that exits takes its pty with it,
 so the row became a dead surface: no prompt, nothing to type into, and no way to
@@ -923,37 +1085,78 @@ did to revive a stopped agent, so both paths now mean the same thing by "a Claud
 row". Typing ahead is safe: the pty's line discipline buffers the bytes until the
 shell reaches its first read, exactly as typing into a slow terminal does.
 
-## The socket, and what it costs
+## The sockets, and what they cost
+
+Two kinds of Unix socket carry a terminal to its pane, both in the per user temp directory:
+
+- **The server's socket**, one for the app: `LocalStreamServer` listens at `wty-<pid>.sock`
+  (`LocalSocketPaths.server()`) and speaks the stream's framing (`docs/remote-access.md`, "The local
+  socket"). `GhosttyStack` binds and starts it at launch, whether or not remote access is on, and
+  stops it at quit. Every pane's link connects to it.
+- **Each bridge's socket**, one per local terminal: `TerminalBridge` listens at `wty-<pid>-<n>.sock`
+  (`LocalSocketPaths.bridge(_:)`, with a sequence number per process) and accepts one client, the
+  surface's helper, with raw bytes and no framing. A second client is closed.
 
 **`sockaddr_un.sun_path` is 104 bytes including the terminator**, and the per user temp directory
-spends roughly half of it. The names are short for that reason: `wty-<pid>.sock` for the app's
-`LocalStreamServer` and `wty-<pid>-<n>.sock` for each pane's bridge (`LocalSocketPaths`). A path that
-does not fit fails loudly rather than binding a truncated one, which would leave the helper connecting
-to a socket nobody listens on.
+spends roughly half of it. The names are short for that reason. A path that does not fit, or is not
+absolute, fails loudly rather than binding a truncated one, which would leave a client connecting to
+a socket nobody listens on; the check covers the temporary bind path below as well, which is the
+longer of the two. A server socket that cannot be made or bound is a startup error (see "Failing to
+start").
 
-Because the name carries the owner's pid, `LocalSocketPaths.sweep`, which `TerminalStack` runs at
-launch, removes exactly the sockets whose process is gone, and never those of a second Wietty running
-alongside. The `ipx-` sockets of older builds carry no pid and are swept by age (one hour,
-`LocalSocketPaths.staleAge`). A bind replaces a stale file atomically, so a leftover never blocks a
-new terminal.
+**Both are bound privately** (`PrivateSocket.listen`). The mode of a socket file comes from the
+process wide umask at `bind`, and `fchmod` does not reach a socket's file on macOS. So the socket is
+bound inside a fresh directory of mode 0700 next to its path (`mkdtemp`, named `.wty-` and six
+characters), set to mode 0600 there, listened on, and only then renamed onto its public name, which
+also replaces a stale file atomically. Nobody else can reach the file while its mode is wider,
+because nobody else can enter the directory, and from the moment it has its public name a connect
+finds a listener. An owner unlinks its socket only if the file at the path is still the one it bound.
+The server also checks every peer: one that is not this user (`getpeereid`) is closed before a byte
+is read. The bridge has no such check; it relies on the mode and accepts one client.
+
+**No child inherits them.** The listener, every accepted socket and the link's socket are set
+`FD_CLOEXEC` straight after they are made, and since Darwin has no `SOCK_CLOEXEC` the children Wietty
+spawns close everything above 2 themselves (see "Spawning the shell"). That matters because the
+server serves terminals with no token: a child holding its listener could accept a pane's connection,
+and one holding a connection could read a terminal.
+
+**The sweep at launch.** Because the names carry the owner's pid, `LocalSocketPaths.sweep`, which
+`TerminalStack` runs at launch, removes exactly the `wty-` sockets whose process is gone (`kill(pid,
+0)` fails with `ESRCH`), and never those of a second Wietty running alongside. It removes only a
+socket whose name is exactly one of the two forms, and follows no symbolic link. It also removes a
+`.wty-` bind directory a crash left behind, when it is older than an hour and holds nothing but at
+most its socket, and the `ipx-` sockets of older builds, which carry no pid and are swept by age (one
+hour, `LocalSocketPaths.staleAge`). At quit `TerminalQuitTeardown` closes every terminal, which stops
+every bridge, and stops the server, so a clean quit leaves nothing to sweep.
 
 **Each live local terminal costs the app four descriptors**: its pty's master, the socket its bridge
 accepted from the helper, its link's socket and the server's end of it, plus what libghostty's surface
 holds. The bridge's listener is closed as soon as the helper has connected, since it accepts only one
-(its file stays until the bridge stops). The relay used to cost three. An app launched from the Finder
-gets a soft limit of 256 open descriptors, which a few dozen terminals would reach, so the app raises
-the soft `RLIMIT_NOFILE` at launch (`DescriptorLimit.raise`, called first in `WiettyApp.init`) to
-8192, or to the hard limit or `kern.maxfilesperproc` when either is lower, falling back to lower
-values when the system refuses one. A spawned child closes every inherited descriptor up to that limit
-(`RawPTY.spawn`), which costs about 1.2 ms at 8192.
+(its file stays until the bridge stops). An app launched from the Finder gets a soft limit of 256 open
+descriptors, which a few dozen terminals would reach, so the app raises the soft `RLIMIT_NOFILE` at
+launch (`DescriptorLimit.raise`, called first in `WiettyApp.init`) to 8192, or to the hard limit or
+`kern.maxfilesperproc` when either is lower, falling back to lower values when the system refuses
+one, and logs the limit before and after. A limit already above 8192 is left alone. A spawned child
+closes every inherited descriptor up to that limit (`RawPTY.spawn`), which costs about 1.2 ms at 8192.
+Out of descriptors, the server and the bridge stop accepting for 100 ms rather than spin, and a
+client waits in the backlog meanwhile.
+
+**The server serves at most 1024 connections at once** (`LocalStreamServer.maxConnections`). Every
+live local terminal's pane holds one for as long as the terminal lives, so this is a limit on live
+terminals, set far above what a person opens. One more is answered `error` with code `busy` once its
+first frame has arrived, and closed; its link ends as refused and is not made again, and its terminal
+is read without the pane after 5 seconds (see "The deferred read"), so remote viewers still have it.
+Each accepted socket gets a send buffer of 256 KiB, so the hub's control messages fit without
+waiting for a pane that is momentarily not reading.
 
 **Writing to a vanished peer raises `SIGPIPE`, whose default disposition kills the process.** Measured
 as exit status 141 on a one byte write, and the peer vanishing is routine rather than exotic, since the
 helper is a child of the surface and goes away whenever a terminal is closed. Darwin has no
-`MSG_NOSIGNAL` and an accepted socket does not inherit the option from its listener, so the bridge
-and the server set `SO_NOSIGPIPE` per connection; the write then fails with `EPIPE`, which the writer already reads as
-"the helper is gone". The helper cannot use the same option, because its other write target is its own
-stdout rather than a socket, so it ignores `SIGPIPE` process wide instead.
+`MSG_NOSIGNAL` and an accepted socket does not inherit the option from its listener, so the bridge,
+the server and the link set `SO_NOSIGPIPE` on every socket they write; the write then fails with
+`EPIPE`, which the writer already reads as the peer being gone. The helper cannot use the same option,
+because its other write target is its own stdout rather than a socket, so it ignores `SIGPIPE`
+process wide instead.
 
 Descriptor lifetime is the other hazard on this path, and it is not a theoretical one: descriptors are
 recycled, so closing one out from under an in-flight syscall does not fail, it writes a screenful of
@@ -990,11 +1193,13 @@ a socket that then stays silent forever.
 
 - **Terminals do not survive quitting Wietty.** The PTYs are this process's children. Every
   terminal is torn down explicitly on `NSApplication.willTerminateNotification`, synchronously, since
-  an object still alive at exit gets no `deinit` and the relay's socket file would otherwise sit in the
-  temp directory until the stale sweep reached it.
-- **A remote viewer's first paint carries the viewport and nothing above or beneath it.** No
-  scrollback, and not the screen under an alternate screen. Causes above, under "Serving a remote
-  viewer".
+  an object still alive at exit gets no `deinit` and every bridge's socket file and the server's would
+  otherwise sit in the temp directory until the next launch's sweep found their owner gone
+  (`TerminalQuitTeardown`, `GhosttyStack.shutDown`).
+- **A viewer's snapshot does not carry the screen beneath an alternate screen.** A viewer that
+  attaches while a full screen program runs gets that program's screen with no history, and a fresh
+  snapshot when the program leaves it. Causes above, under "Serving the stream" and "The server's own
+  terminal".
 - **The palette is left out of the paint frame, on purpose.** A viewer draws indexed colours with its
   own theme, for the paint as for the stream, so the same terminal can look different on the Mac, in the
   browser and on the iPad. What the model could send is the library's default table, which is neither
@@ -1008,9 +1213,44 @@ a socket that then stays silent forever.
   split the same way is protected: the hub puts its first bytes behind the snapshot. An escape
   sequence is not.
 - **A column change reflows the whole scrollback under the model's lock**, so the output of the
-  terminal being resized waits behind it, on each notch of a window drag once its scrollback is full.
-  Other terminals are not held: the lock is per session and the flush timer skips a busy one. The cost
-  grows with the `scrollback-lines` setting. See "The server's own terminal".
+  terminal being resized waits behind it, on each claim of a window drag once its scrollback is full.
+  The resize runs on the hub's delivery queue, so the queued viewers of every terminal wait for it
+  too. The cost grows with the `scrollback-lines` setting. See "The server's own terminal".
+- **Claims are not coalesced by the server.** Each one is handled on the hub's delivery queue, and
+  each claim for a new grid resizes the pty, reflows the model and sends every viewer a message. The
+  pane claims at most once per 50 ms; a viewer that floods claims costs every viewer of every
+  terminal, and nothing on the server limits it.
+- **A pane that stops reading holds back its terminal** (decision P1). Output is written to the
+  pane on the pty's read queue with a blocking write, so a surface that does not read stops the
+  child at a full pty, and the terminal's other local viewers with it. A control message written
+  to a pane that has stopped (its snapshot, a `resize`, a claim's answer, the ending) parks the hub's
+  delivery queue, and with it every queued viewer of every terminal, for up to 5 seconds per stopped
+  pane before the server drops it; the pane then reconnects with a backoff. See "Serving the stream".
+- **A terminal produces nothing until its pane has attached, or for 5 seconds** (decision P2). A
+  terminal opened through MCP or from the iPad depends on its surface on this Mac for that long. See
+  "The deferred read".
+- **The surface is the only thing that answers a terminal's queries**, and the only source of its
+  titles, bells and desktop notifications: the model is built with no callbacks, so that nothing
+  answers twice. A terminal whose pane is not on the stream (refused by the server, or read after the
+  5 second wait without it) answers no query and reports no title or bell, and a server without a
+  frontend would answer nothing at all.
+- **A query is answered once per attached viewer** (issue 91). The surface answers, and so does every
+  emulator viewing the terminal elsewhere (xterm.js in the browser, SwiftTerm on the iPad), and each
+  answer reaches the pty as input. A program that reads one answer finds the others in its input.
+- **The model follows a switch to 132 columns by itself** (issue 92). After `ESC [ ? 40 h` a program's
+  `ESC [ ? 3 h` or `ESC [ ? 3 l` changes the model's column count while the pty and the surface keep
+  theirs. The model keeps that width until a claim for another grid resizes it, since a claim for the
+  grid already in force resizes nothing, and a viewer attaching meanwhile is told the model's grid.
+- **A terminal that is never shown stays 120 by 34** until some viewer claims a grid, because its pane
+  claims only once its surface is on display.
+- **A click claims the grid.** A press of any mouse button in the pane counts as using it, so a click
+  that only starts a selection, or opens the context menu, takes the grid from another viewer.
+- **The imposed size is measured at scale 1 and at a simulated scale 2 only.** No real scale 2
+  display was available, so how AppKit aligns a frame to device pixels there, and the layer's
+  contents scale on such a screen, are unchecked.
+- **A changed padding does not reach a surface that is already open.** libghostty keeps an existing
+  surface's padding through a reload, so its reports disprove the new value and its metrics keep the
+  padding it really uses. See "Metrics and an imposed size".
 - **The scrollback limit and grapheme clustering are both read when a terminal opens.** A terminal
   that is already open keeps the history limit it started with after `scrollback-lines` changes, and
   keeps the clustering mode its surface resolved from the Ghostty configuration at that moment
@@ -1035,8 +1275,9 @@ a socket that then stays silent forever.
   once the session has ended, `LocalTerminalView` draws a stopped screen with Restart instead of the
   surface (`GhosttyPaneState.stopped`, issue #70). Wietty does not set
   `ghostty_surface_config_s.wait_after_command`, so this is `ghostty_surface_config_new`'s default
-  rather than a choice made here. It costs nothing: the row's own state comes from the relay reaching
-  EOF, through `GhosttyService.reap`, which is the one path that knows whether the shell exited.
+  rather than a choice made here. It costs nothing: the row's own state comes from the pty's read
+  noticing the child's exit, through `GhosttyService.reap`, which is the one path that knows whether
+  the shell exited.
   `GHOSTTY_ACTION_SHOW_CHILD_EXITED` is deliberately left unhandled for the same reason, and answered
   false so libghostty knows nothing was shown. On this substrate the surface's command is the helper,
   which ends because the terminal ended rather than the other way round, and the action also fires
@@ -1112,11 +1353,16 @@ empty artifacts directory. It is not the "cannot lock ref" failure and clearing 
 
 ## Where the terminal lives
 
-Everything above except the surface is in `WiettyCore`, a framework target that imports
-neither SwiftUI nor AppKit. The pty, the relay, the stream hub, the service and the
-stack are all there; `GhosttySurfaceHost`, the one type that touches libghostty and an
-`NSView`, stays in the app. The split is not for reuse. It is so the compiler refuses
-an import of the UI on the side that will become a separate process in phase 5 of issue
+The terminal is split over the two targets along the stream. `WiettyCore`, a framework target that
+imports neither SwiftUI nor AppKit, holds everything a terminal is without a window: the pty, the
+relay, the screen model, the stream hub, the local stream server, the socket names and the private
+bind, the descriptor limit, the arithmetic of an imposed size (`SurfaceMetrics`), the service and the
+stack. The app holds the pane's side of the stream: `GhosttySurfaceHost`, the one type that touches
+libghostty and an `NSView`, and the bridge it makes for every surface (`PaneBridges`, `OwnPaneBridge`,
+`TerminalBridge`, `LocalSocketLink`), the pane's grid (`PaneGrid`, `OwnPaneGrid`) and the padding it
+reads (`GhosttyPadding`). The pane's bytes reach the core's terminal only through the stream. The
+split is not for reuse. It is so the compiler refuses an import of the UI on the side that will become
+a separate process in phase 5 of issue
 #84, years before the process is cut.
 
 Two seams follow from it and are worth knowing before changing this code.
@@ -1134,6 +1380,7 @@ opened, when the displayed one is closed and another remains, and when everythin
 torn down, and `ProjectStore` raises `StoreEvent.showTerminal` when a row is asked for.
 `TerminalSelection`, owned by `WiettyApp` and wired by `TerminalSelectionWiring`,
 honours them synchronously, so with a window open the pane moves exactly when it did
-before. The service still has to be told which terminal is displayed, through
-`displayedSessionChanged(from:to:)`, because libghostty reads an off screen surface as
-empty and the one leaving the pane has to have its screen recorded on the way out.
+before. The service is still told which terminal is displayed, through
+`displayedSessionChanged(from:to:)`, and only remembers it: when the terminal that is
+closed is the one on screen, it asks for another to be shown. Nothing that can be read
+depends on it, since a terminal's screen is held by its model.

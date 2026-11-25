@@ -160,8 +160,8 @@ settings panel belongs to no workspace at all. See `WorkspaceSettingsView.md`.
 
 The pane shows the selected terminal's surface and nothing else. Only one surface
 is in the window's view hierarchy at a time; every other one stays alive and keeps
-reading, which is how Ghostty's own tabs behave and is why a terminal keeps
-running while another is on screen. Selecting a row moves that one view rather
+receiving its terminal's stream, which is how Ghostty's own tabs behave and is why
+a terminal keeps running while another is on screen. Selecting a row moves that one view rather
 than building a new one, and a surface is never rebuilt: rebuilding is what would
 lose the scrollback. The pane reads `TerminalSelection.current`, which every path
 that can move it reaches through a request: the service raises one when a terminal is
@@ -174,18 +174,24 @@ terminal, a stopped screen when the selected terminal has ended, or a placeholde
 when nothing is selected. See `LocalTerminalView`.
 
 The surface's view sits in a `SurfaceContainerView`, pinned to its top left corner
-with a width and a height of its own. Normally those follow the container, so the
-terminal fills the pane, live resize included. A grid can also be imposed on a
-terminal (`TerminalSurfaceHosting.impose(grid:on:)`), and then the view gets exactly
-the size that grid needs, worked out from the surface's cell size, its configured
-padding and the display's scale (`SurfaceMetrics`), rounded up to the next device
-pixel. The most recently active viewer of a terminal decides its grid for every
-viewer, so the pane shows another viewer's grid this way. A smaller grid sits at the top left in a
-margin the container paints in the colour the terminal's background has (the configured one, or
-the one a program set with `OSC 11`, at the configured `background-opacity`), only where the grid
-leaves the pane uncovered. With nothing imposed the container paints nothing. A larger grid is cut
-off at the right and bottom edges and does not scroll; a grid too large for the renderer's largest
-texture shows fewer columns or rows, which looks the same.
+with a width and a height of its own. The server decides a terminal's grid, from the
+claim of whichever viewer used it last: this pane claims the grid that fits it when
+the terminal opens, when the pane changes size while it holds the grid, and on a key,
+a click, a paste or a drop while another viewer (a browser, an iPad, another Mac)
+holds it. While the pane holds the grid, the view's width and height follow the
+container, so the terminal fills the pane, live resize included. While another viewer
+holds it, the grid in force is imposed (`TerminalSurfaceHosting.impose(grid:on:)`) and
+the view gets exactly the size that grid needs, worked out from the surface's cell
+size, its configured padding and the display's scale (`SurfaceMetrics`), rounded up
+to the next device pixel. That happens even when the grid in force is the one that
+fits the pane, which leaves a margin of a few pixels at most. `docs/terminal.md`,
+"Sizing", has the rule. A smaller grid sits at the top left in a margin the container
+paints in the colour the terminal's background has (the configured one, or the one a
+program set with `OSC 11`, at the configured `background-opacity`), only where the
+grid leaves the pane uncovered. With nothing imposed the container paints nothing. A
+larger grid is cut off at the right and bottom edges and does not scroll; a grid too
+large for the renderer's largest texture shows fewer columns or rows, which looks the
+same.
 
 ```
 smaller grid imposed                      larger grid imposed
@@ -567,7 +573,8 @@ tree as a side effect. `NavBarView` shows the result, since the bar reads
 
 The `store.lastError` alert can appear on launch, before the user has clicked
 anything, and one thing sets it from the `.task`: `terminals.setupError`, which is
-libghostty or the bundled helper failing to start. There is nothing to fall back
+libghostty or the bundled helper failing to start, or the local stream socket that
+every pane connects to failing to bind. There is nothing to fall back
 to, so that message is all the user gets and it has to say what they can do about
 it.
 

@@ -67,11 +67,11 @@ The path from the browser back to the terminal, in order:
   MCP server. It serves the web client, the token gated session and workspace
   listings, the token gated per session socket, and the control socket
   described below.
-- **`ScreenStreaming`.** The protocol `RemoteServer` is built against. It
-  declares only `attach`, `detach`, `send`, `resync`, and `stop`, so the server
-  does not know what is behind it, which is what lets a test back the server
-  with a fake. It speaks `StreamMessage` from `wietty-shared`, which the route
-  frames with `StreamCodec`.
+- **`ScreenStreaming`.** The protocol `RemoteServer` and `LocalStreamServer`
+  are built against. It declares only `attach`, `attachLocal`, `detach`, `send`,
+  `resync`, `claim` and `stop`, so neither server knows what is behind it, which
+  is what lets a test back them with a fake. It speaks `StreamMessage` from
+  `wietty-shared`, which each server frames with `StreamCodec`.
 - **`AttachedViewer` and `ViewerQueue`.** Between the hub and one socket: the
   viewer's bounded queue, its registration with the streamer, and the rate
   limited resync that answers an overflow. See "The terminal stream (protocol
@@ -81,9 +81,10 @@ The path from the browser back to the terminal, in order:
   into the hub, which coalesces on an 8 ms timer (a shell echoing a typed line
   emits one notification per character) and fans it out to every viewer of that
   session: the browser and the iPad consume the same bytes, so a rendering fault in
-  either is fixed once. The app's own pane is among them too, as a local viewer
-  that `LocalStreamServer` attaches with `PaneStreamHub.attachLocal`, below. The bytes are delivered exactly as they were read, with nothing
-  decoded or held back; a multibyte character straddling two flushes arrives in
+  either is fixed once. The serving Mac's own pane is among them too, as a local
+  viewer that `LocalStreamServer` attaches with `PaneStreamHub.attachLocal` (see
+  "The local socket" below). The bytes are delivered exactly as they were read,
+  with nothing decoded or held back; a multibyte character straddling two flushes arrives in
   two messages and the viewer's terminal joins it. A write into a quiet session
   that has a viewer is delivered at once rather than on the next tick. A viewer that attaches is
   sent the grid and a snapshot first, from the terminal's screen model: the
@@ -100,23 +101,25 @@ The path from the browser back to the terminal, in order:
   viewer; a census that merely failed leaves the attach alone, because one
   transient error must not end a viewer whose terminal is fine.
 
-Remote viewers do not resize anything. The grid is the libghostty surface's own,
-derived from the pane in the app window, so a small phone cannot reflow the Mac
-session: it letterboxes when larger and scrolls or scales when smaller. Managed
+Only the server resizes a terminal, and it does so when a viewer claims a grid
+(see "A viewer's `resize`" below): the most recent claim of any viewer, the
+serving Mac's own pane included, decides the grid for every viewer. Managed
 process PTYs remain outside this path; only terminal sessions are served.
 
 ### The producer
 
-The producer is `TerminalRelay`, which owns the read
-source on the pty Wietty spawned and writes every chunk into
-`PaneStreamHub.write` before it writes it to the surface. **The bytes on the
-wire are the child's own**, so a rendering fault is fixed once for the browser,
-the iPad, and the pane of another Mac showing this session. The serving Mac's own
-pane is not a client of this route: it shows the libghostty surface, and only
-phase 3 of issue #84 puts it on the stream. Remote keystrokes take the same path
-a local one takes, into the pty master, so both orders are the pty's: the hub
-hands them to the pty's writer on the thread they arrived on, without the main
-actor. Four things are worth knowing on the client side:
+The producer is `TerminalRelay`, which starts the read on the pty Wietty spawned
+and hands every chunk to `PaneStreamHub.write`; the relay only reads. **The bytes
+on the wire are the child's own**, so a rendering fault is fixed once for the
+browser, the iPad, the pane of another Mac showing this session, and the serving
+Mac's own pane, which is a client of the same stream on the local socket. The pty
+is not read until that pane has attached, or 5 seconds have passed without it
+(`docs/terminal.md`, "The deferred read"), so a viewer that attaches to a new
+terminal first can be sent an empty snapshot and then nothing for that long.
+Remote keystrokes take the same path the pane's take, into the pty master, so
+both orders are the pty's: the hub hands them to the pty's writer on the thread
+they arrived on, without the main actor. Four things are worth knowing on the
+client side:
 
 - **`TERM` is `xterm-ghostty` in the ordinary case, and `xterm-256color` only
   on a build that did not produce the bundled terminfo entry**
@@ -151,12 +154,15 @@ actor. Four things are worth knowing on the client side:
 
 A grid that moves after a viewer attached reaches it through one entry point. The
 grid moves only by a viewer's claim (`PaneStreamHub.claim(connectionId:cols:rows:)`),
-and the Mac's own pane is one such viewer: the surface's own grid report resizes
-nothing. Every viewer receives a fresh `resize`; one that attached asking for
-repaints also receives a `repaint` of the reflowed screen, and one that reflows by
-itself nothing more. The attach route asks for what the query says
-(`resize=repaint` or `resize=reflow`), and for repaints when it says neither. A
-claim that did not move the grid is answered to its claimant alone.
+and the serving Mac's own pane is one such viewer: the surface's own grid report
+resizes nothing. Every viewer receives a fresh `resize`; one that attached asking
+for repaints also receives a `repaint` of the reflowed screen, and one that
+reflows by itself nothing more. The attach route asks for what the query says
+(`resize=repaint` or `resize=reflow`), and for repaints when it says neither; the
+local socket takes the `hello`'s `resize`, and `reflow` when it names none, and
+the Mac's own pane asks for `reflow`. A claim that did not move the grid is
+answered to its claimant alone. Until the first claim the grid is the one the
+terminal was spawned with, 120 by 34.
 
 ### The terminal stream (protocol version 2)
 
@@ -198,13 +204,13 @@ WS /attach?session=<id>&token=<t>&protocol=2&resize=repaint
 |---|---|---|---|---|
 | server to viewer | `hello` | JSON | `protocol` | accepted; always the first frame |
 | server to viewer | `error` | JSON | `code`, `message` | refused; the server closes after it |
-| server to viewer | `resize` | JSON | `cols`, `rows`, `own` | the grid in force; `own` is always false in this version of the server |
+| server to viewer | `resize` | JSON | `cols`, `rows`, `own` | the grid in force; `own` is true only in the answer to this viewer's own claim |
 | server to viewer | `snapshot` | binary | VT bytes | a full reset (`ESC c`), then history and screen |
 | server to viewer | `repaint` | binary | VT bytes | the visible screen again, history untouched |
 | server to viewer | `data` | binary | raw bytes | the child's output, byte exact |
 | server to viewer | `ended` | JSON | none | the terminal has stopped; the server closes after it |
 | viewer to server | `data` | binary | raw bytes | input, byte exact |
-| viewer to server | `resize` | JSON | `cols`, `rows`, `own` | "I am active, this is my grid" |
+| viewer to server | `resize` | JSON | `cols`, `rows`, `own` | a claim: "I am active, this is my grid" |
 
 **Frames.** A JSON message is a text frame holding one object with a `type`
 (`hello`, `error`, `resize`, `ended`) and the fields above, for example
@@ -217,22 +223,31 @@ type a side does not know is skipped, which is how a newer peer can say somethin
 an older one does not need. A `resize` in either direction carries `own` as the
 codec writes it, always present; a viewer sends `false`, and a reader takes a
 missing `own` as `false`. A `resize` whose `cols` or `rows` is outside 1 to
-10,000 is no message, and is skipped like an unknown one. The codec also defines a framing for a Unix socket
-(four byte big endian length, type byte, payload).
+10,000 is no message, and is skipped like an unknown one. The codec also defines a
+framing for a Unix socket: four bytes of big endian length, which counts the type
+byte and the payload, then the type byte (the same values, `0x01` for JSON), then
+the payload. A length of zero is a frame the reader refuses.
 
 **The local socket.** `LocalStreamServer` speaks that framing on a Unix socket at
-`<tmp>/wty-<pid>.sock` (`LocalSocketPaths`), for the Mac's own panes. The path
-must be absolute. The file has mode 0600, and a peer that is not this user
-(`getpeereid`) is closed before a byte is read. Every live local terminal's pane
-holds one connection for as long as the terminal lives, so the cap is a limit on
-live terminals: at most 1024 connections are served at once. One more is not
-attached: once its first frame has arrived it is answered with one `error`,
-code `busy`, and closed (one that sends nothing is closed at the hello timeout
-with no reply). The pane's link then ends as refused and is not made again; its
-terminal is read without it after 5 seconds, so remote viewers still have it.
+`<tmp>/wty-<pid>.sock` (`LocalSocketPaths`), for the serving Mac's own panes: each
+local terminal's pane is a client of it, through the pane's `LocalSocketLink`, and
+renders what it receives in its libghostty surface (`docs/terminal.md`, "The link
+and the bridge"). There is no token on this socket. The path must be absolute. The
+file has mode 0600 (bound in a private directory and renamed into place), and a
+peer that is not this user (`getpeereid`) is closed before a byte is read. Every
+live local terminal's pane holds one connection for as long as the terminal lives,
+so the cap is a limit on live terminals: at most 1024 connections are served at
+once. One more is not attached: once its first frame has arrived it is answered
+with one `error`, code `busy`, and closed (one that sends nothing is closed at the
+hello timeout with no reply). The pane's link then ends as refused and is not made
+again; its terminal is read without it after 5 seconds, so remote viewers still
+have it.
 
 The first frame must be a `hello` carrying `protocol` 2, a `session`, and
-optionally `resize` (missing means `reflow`). A first message that is anything
+optionally `resize` (missing means `reflow`), for example
+`{"protocol":2,"resize":"reflow","session":"<id>","type":"hello"}`, which is what
+the pane's link sends. The server answers with a `hello` carrying `protocol`
+alone, as on the WebSocket. A first message that is anything
 else is answered with one `error` and closed, and nothing is attached: code
 `hello` for a first message that is not a `hello`, and for a first frame the
 reader refuses (a zero length, or a length over 1 MiB); `protocol` for another
@@ -304,13 +319,41 @@ the viewers of every other terminal. An overflow sooner than 250 ms after the la
 resync is answered when the 250 ms are over, as one resync however many overflows
 came in between. A viewer that disconnects before then gets none.
 
-**A viewer's `resize`** is a claim, and is acted on: the route hands it to
-`PaneStreamHub.claim(connectionId:cols:rows:)` with that viewer's id, which resizes
-the pty and the model when the grid is new and tells every viewer, `own` true for
-the claimant alone, or answers the claimant alone when the grid is already in
-force. Every claim is answered with exactly one `resize` whose `own` is true. A
-claim outside 1 to 10,000 columns or rows is refused by the codec and never
-answered, so a client must not count such a claim among the ones it waits for.
+**A viewer's `resize`** is a claim, and is acted on. It means "I am active, this
+is my grid"; the `own` a viewer sends means nothing and is sent as `false`. Both
+servers hand it to `PaneStreamHub.claim(connectionId:cols:rows:)` with that
+viewer's id: the attach route for a WebSocket viewer, `LocalStreamServer` for the
+serving Mac's pane. The hub handles claims one at a time, in the order they
+arrive, on its delivery queue:
+
+- A claim for a grid other than the one the hub last announced resizes the pty
+  (`TIOCSWINSZ`) and then the terminal's screen model, and only then tells every
+  viewer of the session the grid with a `resize`: `own` true in the claimant's,
+  false in everyone else's. A viewer that asked for repaints also gets a
+  `repaint`, taken after the resize.
+- A claim for the grid already in force resizes nothing and signals nobody. Only
+  the claimant is answered, with one `resize` whose `own` is true (a WebSocket
+  claimant is first sent the output the hub had accepted before the claim). The
+  hub has announced no grid before the first claim of a session, so that claim is
+  handled as a new grid even when it names 120 by 34.
+
+So every accepted claim is answered with exactly one `resize` whose `own` is true,
+to the claimant, in the order the claims were sent. That answer carries the grid
+in force, which need not be the grid claimed: it is the screen model's, and the
+model can have changed its own width (`docs/terminal.md`, issue 92 under
+"Limitations"). A client therefore takes the grid from the answer and never
+assumes its claim won. A claim whose `cols` or `rows` is outside 1 to 10,000 is
+no message to the codec and is never answered, so a client must not count it
+among the claims it waits for; nor is a claim from a viewer whose session has
+already ended.
+
+Claims are not coalesced by the server. Each claim for a new grid costs a pty
+resize, a reflow of the terminal's whole history in the model, a repaint for the
+viewers that asked for one and a message to every viewer, all on the hub's one
+delivery queue, which every viewer of every terminal shares. A client is expected
+to limit itself (the serving Mac's pane sends at most one claim per 50 ms while a
+window is dragged); a client that floods claims slows every viewer, and nothing on
+the server stops it. This is a known limit.
 
 **Ending.** After `ended` or `error` the server closes the socket. When the
 viewer closes, or its socket fails, the server detaches it from the hub, and so
@@ -511,12 +554,13 @@ session lands beside the sidebar with no second window and no tab bar, and its
 sidebar row is marked the same way a local one is. One terminal is on screen at a
 time, local or remote, and `PaneSelection` is what decides which.
 
-Only the session on screen holds a `WS /attach` connection: switching away discards
-its view, which stops the socket, and coming back attaches again. That loses the
-scrollback that viewer had accumulated and not the screen, because the server
-paints the current grid on attach. A session that ends while it is on screen keeps
-its last output with the `[session ended]` banner under it, matching what the pane
-does for a local terminal whose command exited.
+Only the session on screen holds a `WS /attach` connection: switching away
+discards its view, which stops the socket, and coming back attaches again. Nothing
+is lost by that beyond what the server's screen model no longer holds, because the
+server sends a snapshot of the history it keeps and the screen on every attach. A
+session that ends while it is on screen keeps its last output with the
+`[session ended]` banner under it, matching what the pane does for a local
+terminal whose command exited.
 
 A session that rings the bell on a connected Mac also posts a notification here,
 built by diffing the `needs_attention` flag across successive snapshots, since
@@ -559,5 +603,9 @@ Accepted risk: on a shared or hostile network, screen contents, keystrokes,
 and workspace state travel unencrypted, and the token can be observed by an
 on path attacker. Use these features only on networks you trust; the
 Settings UI states this. TLS and internet (WAN) access are future work, as
-are Bonjour discovery, scrollback, and remote resize. An iPadOS client is in
-development.
+is Bonjour discovery. An iPadOS client is in development.
+
+The serving Mac's own panes use the local socket, which takes no token. It is
+reachable only by this user: its file has mode 0600 and the server closes any
+peer of another user before reading a byte. Every process this user runs can
+connect to it and read or type into any terminal whose session id it knows.
