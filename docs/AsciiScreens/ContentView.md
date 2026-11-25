@@ -173,6 +173,33 @@ four states are `GhosttyPaneState`: the terminal's setup error, the selected
 terminal, a stopped screen when the selected terminal has ended, or a placeholder
 when nothing is selected. See `LocalTerminalView`.
 
+The surface's view sits in a `SurfaceContainerView`, pinned to its top left corner
+with a width and a height of its own. Normally those follow the container, so the
+terminal fills the pane, live resize included. A grid can also be imposed on a
+terminal (`TerminalSurfaceHosting.impose(grid:on:)`), and then the view gets exactly
+the size that grid needs, worked out from the surface's cell size, its configured
+padding and the display's scale (`SurfaceMetrics`), rounded up to the next device
+pixel. Nothing imposes one yet; the next step lets the most recently active viewer of
+a terminal decide its grid for every viewer. A smaller grid sits at the top left in a
+margin the container paints in the terminal's background colour. A larger one is cut
+off at the right and bottom edges and does not scroll.
+
+```
+smaller grid imposed                      larger grid imposed
+┌────────────────────────────────┐        ┌────────────────────────────────┐
+│$ ls                  ░░░░░░░░░░│        │$ ls -la ~/repos/wietty/Wietty/G│  cut off at the
+│README.md  docs/      ░░░░░░░░░░│        │total 312                       │  right edge
+│$ _                   ░░░░░░░░░░│        │drwxr-xr-x  41 wiebe  staff  131│
+│                      ░░░░░░░░░░│        │-rw-r--r--   1 wiebe  staff  742│
+│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│        │-rw-r--r--   1 wiebe  staff  918│
+│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│        │-rw-r--r--   1 wiebe  staff  263│  and at the
+└────────────────────────────────┘        └────────────────────────────────┘  bottom
+ ░ margin in the background colour
+```
+
+Imposing or clearing a grid changes two constraints and nothing else: the view is
+not moved, so it keeps the keyboard focus and its scrollback.
+
 A terminal that has ended (stopped from its row, or its shell exited) keeps its
 surface until the row is closed, but the pane no longer shows it: all it adds is
 libghostty's "Process exited. Press any key to close the terminal." line, and that

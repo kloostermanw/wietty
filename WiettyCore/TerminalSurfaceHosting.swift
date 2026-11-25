@@ -45,6 +45,25 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// for the substrate: Wietty resizes its own pty to match.
     func size(id: String) -> TerminalSize?
 
+    /// The surface's cell size, configured padding and backing scale, which is what
+    /// turns a grid into the size of a view that shows it and back
+    /// (`SurfaceMetrics`). Nil for an unknown surface, and for one whose cell size is
+    /// not known yet. A real host knows it from `createSurface` on, at the scale the
+    /// view was last laid out at; `onMetricsChanged` says when that changes.
+    func metrics(id: String) -> SurfaceMetrics?
+
+    /// Gives the surface's view the size that shows `grid`. Nil returns it to the
+    /// pane's size.
+    ///
+    /// Kept for the surface whether or not it is on display, and applied when it is
+    /// shown. The view stays pinned to the top left of the pane: a smaller grid
+    /// leaves a margin in the terminal's background colour, a larger one is clipped.
+    /// The size follows the surface's metrics, so it is recomputed when they change
+    /// (another display's scale, a font or padding change) without being imposed
+    /// again. `onResized` keeps reporting the surface's grid as its view's size
+    /// changes, an imposed size included.
+    func impose(grid: TerminalSize?, on id: String)
+
     /// libghostty reported a title change (OSC 0 or OSC 2).
     var onTitle: (@MainActor (_ id: String, _ title: String) -> Void)? { get set }
     /// libghostty reported a bell.
@@ -65,6 +84,16 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// during `createSurface` would be dropped by a handler whose registry is not
     /// populated yet, and nothing would ever correct the size.
     var onResized: (@MainActor (_ id: String, _ size: TerminalSize) -> Void)? { get set }
+    /// The surface's `metrics(id:)` changed: its window moved to a display with
+    /// another scale, its font changed, or a reloaded configuration changed its
+    /// padding.
+    ///
+    /// Separate from `onResized` because the two do not imply each other: a move
+    /// between a scale 1 and a scale 2 display doubles the cell and the padding and
+    /// leaves the grid as it was, so no grid is reported, yet the grid a pane of a
+    /// given size holds can change. Like the grid, the first report arrives after
+    /// `createSurface` has returned.
+    var onMetricsChanged: (@MainActor (_ id: String) -> Void)? { get set }
     /// libghostty asked for a surface to be closed: the command it was running
     /// exited, or a `close_surface` keybinding fired.
     ///
@@ -132,6 +161,7 @@ package final class InertSurfaceHost: TerminalSurfaceHosting {
     package var onBell: (@MainActor (String) -> Void)?
     package var onDesktopNotification: (@MainActor (String, String, String) -> Void)?
     package var onResized: (@MainActor (String, TerminalSize) -> Void)?
+    package var onMetricsChanged: (@MainActor (String) -> Void)?
     package var onCloseRequested: (@MainActor (String) -> Void)?
     package var onInput: (@MainActor (String) -> Void)?
 
@@ -140,6 +170,8 @@ package final class InertSurfaceHost: TerminalSurfaceHosting {
     }
     package func destroySurface(id: String) {}
     package func size(id: String) -> TerminalSize? { nil }
+    package func metrics(id: String) -> SurfaceMetrics? { nil }
+    package func impose(grid: TerminalSize?, on id: String) {}
     /// libghostty's own default, which is what a launch with no libghostty would
     /// have resolved to. Reporting the default rather than false keeps the Settings
     /// toggle from claiming notifications are turned off when the truth is that

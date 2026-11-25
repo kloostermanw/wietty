@@ -137,12 +137,15 @@ test run the suite is counted and reported as skipped.
 
 The own pane shows a grid another viewer chose by giving the surface's view exactly the size that
 belongs to it: `(cols * cell_width_px + padding_x) / scale` by the same for rows, where the padding is
-both sides together, `2 * window-padding * scale` in pixels. `ImposedGridMeasurementTests` sets that
-size on a real surface in a real window for seven grids and reads the grid back from the surface and
-from `stty size` in its child, at the display's scale and at the other one (1 or 2, simulated by a
-window that reports it, so the display is never touched), with the default padding and with one
-that is not. It prints one line per grid starting with `IMPOSED`. Run it after changing the pin of
-libghostty, or the way a pane sizes its surface:
+both sides together, `2 * window-padding * scale` in pixels (`SurfaceMetrics`). `ImposedGridMeasurementTests`
+sets that size on a real surface in a real window for seven grids and reads the grid back from the
+surface and from `stty size` in its child, at the display's scale and at the other one (1 or 2,
+simulated by a window that reports it, so the display is never touched), with the default padding,
+with one that is not, and with two values per axis and `window-padding-balance` on. Each grid is set
+by hand on the bare view and then through the pane's own API (`impose(grid:on:)` with the view in
+its `SurfaceContainerView`, sized from `metrics(id:)`). It prints one line per grid and variant
+starting with `IMPOSED`. Run it after changing the pin of libghostty, or the way a pane sizes its
+surface:
 
 ```sh
 scripts/imposed-grid-check.sh

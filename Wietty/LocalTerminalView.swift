@@ -136,6 +136,24 @@ struct LocalTerminalView: View {
     }
 }
 
+/// A surface view that can be given the size of a grid.
+///
+/// The pane knows nothing about libghostty, so what it needs from a surface view is
+/// said here: the size it has to have, if it has one, and the colour of the margin
+/// around it. `GhosttySurfaceView` is the one real conformer; a view that does not
+/// conform simply fills its container.
+@MainActor
+protocol GridSizedSurface: AnyObject {
+    /// The size in points that shows the grid imposed on this surface, or nil to
+    /// fill the pane. Set through `TerminalSurfaceHosting.impose(grid:on:)`.
+    var imposedSize: CGSize? { get }
+    /// The terminal's background colour, which the pane draws around a grid
+    /// smaller than itself.
+    var marginColor: NSColor { get }
+    // A conformer calls `SurfaceContainerView.surfaceSizingDidChange()` on its
+    // superview whenever either of these changes.
+}
+
 /// Puts an existing `NSView` into SwiftUI without owning it.
 ///
 /// The view belongs to `GhosttySurfaceHost` for the terminal's whole life, so this
@@ -147,14 +165,13 @@ struct LocalTerminalView: View {
 struct SurfaceContainer: NSViewRepresentable {
     let surface: NSView
 
-    func makeNSView(context: Context) -> NSView {
-        let container = NSView()
-        container.wantsLayer = true
+    func makeNSView(context: Context) -> SurfaceContainerView {
+        let container = SurfaceContainerView()
         Self.attach(surface, to: container)
         return container
     }
 
-    func updateNSView(_ container: NSView, context: Context) {
+    func updateNSView(_ container: SurfaceContainerView, context: Context) {
         // Only when the surface is not already where it belongs. SwiftUI calls
         // this for every unrelated redraw of the window, and re-parenting on each
         // one would take the first responder away from whatever the user is
@@ -170,23 +187,12 @@ struct SurfaceContainer: NSViewRepresentable {
     /// terminal the user just switched away from, which is the one failure this
     /// design exists to avoid. `GhosttyService.close` is what tears a terminal
     /// down, and only when the row is closed.
-    static func dismantleNSView(_ container: NSView, coordinator: ()) {
+    static func dismantleNSView(_ container: SurfaceContainerView, coordinator: ()) {
         container.subviews.forEach { $0.removeFromSuperview() }
     }
 
-    static func attach(_ surface: NSView, to container: NSView) {
-        // Any previous occupant first, so a container that is being handed a
-        // different terminal does not end up holding two.
-        container.subviews.forEach { $0.removeFromSuperview() }
-        surface.removeFromSuperview()
-        surface.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(surface)
-        NSLayoutConstraint.activate([
-            surface.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            surface.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            surface.topAnchor.constraint(equalTo: container.topAnchor),
-            surface.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        ])
+    static func attach(_ surface: NSView, to container: SurfaceContainerView) {
+        container.hold(surface)
         focus(surface)
     }
 
@@ -206,5 +212,117 @@ struct SurfaceContainer: NSViewRepresentable {
             guard let window = surface.window, window.firstResponder !== surface else { return }
             window.makeFirstResponder(surface)
         }
+    }
+}
+
+/// The pane's view around a surface: the surface pinned to its top left, either
+/// filling it or at the size of an imposed grid.
+///
+/// The surface's top and leading edges are pinned to the container and it has a
+/// width and a height constraint. With no imposed grid those equal the container's
+/// own width and height, so the surface fills the pane exactly as four pinned edges
+/// did, live resize included, with no lag and no frame of margin. With one they are
+/// the constants `GridSizedSurface.imposedSize` gives. Switching between the two
+/// swaps two constraints and nothing else: the surface is not re-parented, so it
+/// keeps the first responder and libghostty sees one resize.
+///
+/// The container clips to its bounds, so a grid larger than the pane is cut off at
+/// its right and bottom edges and never scrolls, and draws the terminal's background
+/// colour, so a smaller one sits in a margin of that colour.
+final class SurfaceContainerView: NSView {
+    /// The surface this container holds, if any.
+    private(set) weak var surface: NSView?
+    private var width: NSLayoutConstraint?
+    private var height: NSLayoutConstraint?
+    /// The size the current width and height constraints were built for: nil when
+    /// they follow the container.
+    private var appliedSize: CGSize?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        clipsToBounds = true
+        layer?.masksToBounds = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Puts `surface` in this container, evicting any previous occupant, pinned top
+    /// left and sized as it asks.
+    func hold(_ surface: NSView) {
+        // Any previous occupant first, so a container that is being handed a
+        // different terminal does not end up holding two.
+        subviews.forEach { $0.removeFromSuperview() }
+        surface.removeFromSuperview()
+        surface.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(surface)
+        self.surface = surface
+        width = nil
+        height = nil
+        appliedSize = nil
+        NSLayoutConstraint.activate([
+            surface.leadingAnchor.constraint(equalTo: leadingAnchor),
+            surface.topAnchor.constraint(equalTo: topAnchor)
+        ])
+        applySize(force: true)
+        refreshMargin()
+    }
+
+    override func willRemoveSubview(_ subview: NSView) {
+        super.willRemoveSubview(subview)
+        guard subview === surface else { return }
+        // The constraints against this container go with the view; the ones on the
+        // view itself (an imposed width and height) are removed here, so a surface
+        // shown in another container next arrives with none of this one's.
+        if let width, let height, appliedSize != nil { NSLayoutConstraint.deactivate([width, height]) }
+        surface = nil
+        width = nil
+        height = nil
+        appliedSize = nil
+    }
+
+    /// The surface's imposed size or margin colour changed. Applied at once rather
+    /// than through `needsUpdateConstraints`: under SwiftUI's hosting view the
+    /// update constraints pass did not reach this container (measured in
+    /// `SurfaceContainerSizingTests`), while a constraint changed here is laid out in
+    /// the next layout pass, before anything draws.
+    func surfaceSizingDidChange() {
+        applySize(force: false)
+        refreshMargin()
+    }
+
+    /// Builds the surface's width and height constraints for what it asks now, or
+    /// only moves their constants when it is still imposed and only the size moved.
+    private func applySize(force: Bool) {
+        guard let surface else { return }
+        let wanted = (surface as? GridSizedSurface)?.imposedSize
+        guard force || wanted != appliedSize else { return }
+        if let wanted, appliedSize != nil, let width, let height {
+            width.constant = wanted.width
+            height.constant = wanted.height
+            appliedSize = wanted
+            return
+        }
+        if let width, let height { NSLayoutConstraint.deactivate([width, height]) }
+        let next: [NSLayoutConstraint]
+        if let wanted {
+            next = [surface.widthAnchor.constraint(equalToConstant: wanted.width),
+                    surface.heightAnchor.constraint(equalToConstant: wanted.height)]
+        } else {
+            next = [surface.widthAnchor.constraint(equalTo: widthAnchor),
+                    surface.heightAnchor.constraint(equalTo: heightAnchor)]
+        }
+        NSLayoutConstraint.activate(next)
+        width = next[0]
+        height = next[1]
+        appliedSize = wanted
+    }
+
+    /// The terminal's background colour behind the surface, which is what shows in
+    /// the margin around a smaller grid. Clear for a surface that has no opinion.
+    private func refreshMargin() {
+        layer?.backgroundColor = (surface as? GridSizedSurface)?.marginColor.cgColor
+            ?? NSColor.clear.cgColor
     }
 }
