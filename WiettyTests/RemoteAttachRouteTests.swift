@@ -181,13 +181,13 @@ private final class Client: @unchecked Sendable {
     }
 
     private func start(_ streamer: RouteStreamer = RouteStreamer(),
-                       oldClientGrace: Duration = RemoteServer.defaultOldClientGrace) async throws -> Running {
+                       closeGrace: Duration = RemoteServer.defaultCloseGrace) async throws -> Running {
         let suite = "test.remote.attach.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         let token = RemoteAccessToken(defaults: defaults)
         let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
         let server = RemoteServer(store: store, streamer: streamer, token: token,
-                                  host: "127.0.0.1", port: 0, oldClientGrace: oldClientGrace)
+                                  host: "127.0.0.1", port: 0, closeGrace: closeGrace)
         await server.start()
         let deadline = Date().addingTimeInterval(10)
         while server.boundPort == nil && Date() < deadline {
@@ -215,7 +215,7 @@ private final class Client: @unchecked Sendable {
     /// to update, and the server closes once the grace has passed without the
     /// client closing. Nothing is attached.
     @Test func anOldClientIsToldToUpdateAndClosed() async throws {
-        let running = try await start(oldClientGrace: .milliseconds(200))
+        let running = try await start(closeGrace: .milliseconds(200))
         defer { running.stop() }
         let client = Client(url: running.url("&session=gt:1"))
         defer { client.close() }
@@ -345,6 +345,99 @@ private final class Client: @unchecked Sendable {
         #expect(running.streamer.attaches.map(\.resize) == [.repaint, .repaint])
     }
 
+    /// After `ended` the server leaves the close to the client, as it does for an
+    /// old client after the notice, and drops what the client sends meanwhile. A
+    /// close sent with `ended` can be read by `URLSessionWebSocketTask` ahead of the
+    /// frames it has not handed over yet; the package's client then writes its held
+    /// input or claim, the send fails, and the unread `ended` is lost to a reported
+    /// lost connection. Both ways a viewer is sent `ended`: on a running stream, and
+    /// at once for a session that is gone.
+    @Test(arguments: [false, true])
+    func theServerLeavesTheCloseToAViewerAfterEnded(sessionIsGone: Bool) async throws {
+        let streamer = RouteStreamer()
+        if sessionIsGone { streamer.onAttach = [.ended] }
+        let running = try await start(streamer)
+        defer { running.stop() }
+        let client = Client(url: running.url("&session=gt:1&protocol=2"))
+        defer { client.close() }
+
+        #expect(try await client.message() == .hello(protocolVersion: 2, session: nil, resize: nil))
+        if !sessionIsGone {
+            for _ in 0..<2 { _ = try await client.message() }
+            running.streamer.deliver(.ended)
+        }
+        #expect(try await client.message() == .ended)
+        let task = client.task
+        let pending = Task { (try? await task.receive()) != nil }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        #expect(task.closeCode == .invalid)
+        try await client.send(.data([0x78]))
+        try await client.send(.resize(cols: 90, rows: 30, own: false))
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(running.streamer.sent.isEmpty)
+        #expect(running.streamer.claims.isEmpty)
+        let id = try #require(running.streamer.attaches.first?.id)
+        #expect(running.streamer.detached.isEmpty)
+        client.close()
+        #expect(await pending.value == false)
+        #expect(try await eventually { running.streamer.detached == [id] })
+    }
+
+    /// The grace costs nothing with the real client: the package's
+    /// `TerminalStreamConnection`, which the iPad and this app's remote pane use,
+    /// closes its socket as soon as it reads `ended`, so the viewer is detached long
+    /// before a grace of a minute, and the client reports the session as ended.
+    @Test(arguments: [false, true])
+    func thePackagesClientClosesOnEndedWellBeforeTheGrace(sessionIsGone: Bool) async throws {
+        let streamer = RouteStreamer()
+        if sessionIsGone { streamer.onAttach = [.ended] }
+        let running = try await start(streamer, closeGrace: .seconds(60))
+        defer { running.stop() }
+        let connection = TerminalStreamConnection(
+            connection: RemoteConnection(id: UUID(), name: "route", host: "127.0.0.1",
+                                         port: running.port, token: running.token),
+            sessionId: "gt:1", resize: .repaint, callbackQueue: DispatchQueue(label: "route.client"))
+        let reasons = Reasons()
+        connection.onEnded = { reasons.append($0) }
+        connection.start()
+        defer { connection.stop() }
+
+        #expect(try await eventually { running.streamer.attaches.count == 1 })
+        let id = try #require(running.streamer.attaches.first?.id)
+        if !sessionIsGone { running.streamer.deliver(.ended) }
+        let ended = Date()
+        #expect(try await eventually { running.streamer.detached == [id] })
+        #expect(Date().timeIntervalSince(ended) < 5)
+        #expect(try await eventually { !reasons.all.isEmpty })
+        #expect(reasons.all == [.sessionEnded])
+    }
+
+    private final class Reasons: @unchecked Sendable {
+        private let lock = NSLock()
+        private var list: [TerminalEndReason] = []
+        func append(_ reason: TerminalEndReason) { lock.withLock { list.append(reason) } }
+        var all: [TerminalEndReason] { lock.withLock { list } }
+    }
+
+    /// The server stopping ends the wait after `ended` at once rather than after
+    /// the grace.
+    @Test func stoppingTheServerEndsTheWaitAfterEnded() async throws {
+        let running = try await start(closeGrace: .seconds(60))
+        defer { running.stop() }
+        let client = Client(url: running.url("&session=gt:1&protocol=2"))
+        defer { client.close() }
+        for _ in 0..<3 { _ = try await client.message() }
+        running.streamer.deliver(.ended)
+        #expect(try await client.message() == .ended)
+        let id = try #require(running.streamer.attaches.first?.id)
+
+        let stopped = Date()
+        running.server.stop()
+        #expect(try await eventually { running.streamer.detached == [id] })
+        #expect(Date().timeIntervalSince(stopped) < 5)
+        #expect(await client.isClosedByServer())
+    }
+
     // MARK: - Outbound
 
     /// Frames reach the socket in the order the streamer emits them.
@@ -379,10 +472,11 @@ private final class Client: @unchecked Sendable {
         #expect(received == .snapshot(big))
     }
 
-    /// An `ended` the streamer pushes reaches the client, then the server closes
-    /// the socket and the viewer is detached.
+    /// An `ended` the streamer pushes reaches the client. A client that does not
+    /// close is closed by the server once the grace has passed, and the viewer is
+    /// detached.
     @Test func anEndedReachesTheClientAndTheServerCloses() async throws {
-        let running = try await start()
+        let running = try await start(closeGrace: .milliseconds(200))
         defer { running.stop() }
         let client = Client(url: running.url("&session=gt:1&protocol=2"))
         defer { client.close() }

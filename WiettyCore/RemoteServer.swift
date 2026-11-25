@@ -30,7 +30,7 @@ package final class RemoteServer {
     private let token: RemoteAccessToken
     private let host: String
     private let port: Int
-    private let oldClientGrace: Duration
+    private let closeGrace: Duration
     private let onStartupError: (@MainActor @Sendable (String) -> Void)?
     private var runTask: Task<Void, Never>?
 
@@ -43,18 +43,19 @@ package final class RemoteServer {
     /// - Parameters:
     ///   - host: the address to bind, every interface unless a test binds
     ///     loopback only.
-    ///   - oldClientGrace: how long the server waits for an old client to close
-    ///     after the notice before it closes itself. Shorter only in a test.
+    ///   - closeGrace: how long the server waits for a client to close after the
+    ///     last frame (the notice to an old client, `ended` to a version 2 viewer)
+    ///     before it closes itself. Shorter only in a test.
     package init(store: ProjectStore, streamer: any ScreenStreaming,
          token: RemoteAccessToken, host: String = "0.0.0.0", port: Int = RemoteServer.defaultPort,
-         oldClientGrace: Duration = RemoteServer.defaultOldClientGrace,
+         closeGrace: Duration = RemoteServer.defaultCloseGrace,
          onStartupError: (@MainActor @Sendable (String) -> Void)? = nil) {
         self.store = store
         self.streamer = streamer
         self.token = token
         self.host = host
         self.port = port
-        self.oldClientGrace = oldClientGrace
+        self.closeGrace = closeGrace
         self.onStartupError = onStartupError
     }
 
@@ -64,7 +65,7 @@ package final class RemoteServer {
         let host = self.host
         let store = self.store
         let streamer = self.streamer
-        let oldClientGrace = self.oldClientGrace
+        let closeGrace = self.closeGrace
 
         // HTTP routes.
         let router = Router()
@@ -130,8 +131,12 @@ package final class RemoteServer {
                 // The version first: an old client is recognised by its missing
                 // `protocol` parameter and is told to update, not attached.
                 guard let version = Self.query(request, "protocol") else {
-                    for text in Self.oldClientNotice { try? await outbound.write(.text(text)) }
-                    await Self.awaitClose(of: inbound, grace: oldClientGrace)
+                    await Self.exchange(on: inbound, grace: closeGrace, write: {
+                        do {
+                            for text in Self.oldClientNotice { try await outbound.write(.text(text)) }
+                        } catch { return false }
+                        return true
+                    }, read: { _ in })
                     return
                 }
                 guard version == String(StreamProtocol.version) else {
@@ -151,7 +156,7 @@ package final class RemoteServer {
                 }
                 let resize = Self.query(request, "resize").flatMap(ResizeMode.init(rawValue:)) ?? .repaint
                 await Self.serve(session: session, resize: resize, streamer: streamer,
-                                 inbound: inbound, outbound: outbound)
+                                 inbound: inbound, outbound: outbound, grace: closeGrace)
             })
 
         wsRouter.ws("control",
@@ -248,25 +253,57 @@ package final class RemoteServer {
         return [json(["type": "data", "vt": text]), json(["type": "ended"])]
     }()
 
-    /// How long an old client is given to close after the notice.
-    package nonisolated static let defaultOldClientGrace: Duration = .seconds(10)
+    /// How long a client is given to close after the last frame the server writes to
+    /// it, the notice to an old client or `ended` to a version 2 viewer.
+    package nonisolated static let defaultCloseGrace: Duration = .seconds(10)
 
-    /// Drops whatever the client sends until it closes, or until `grace` has passed.
+    /// One socket's exchange, from the first frame the server writes to the close.
     ///
-    /// The old client closes when it reads `ended`, and the close is left to it. A
-    /// close the server sends with the notice can be read by the client's
-    /// `URLSessionWebSocketTask` ahead of the two frames (it is when all three
-    /// arrive with the answer to the upgrade). The task answers it, the server
-    /// drops the connection, and the next input the terminal view sends fails the
-    /// task, which then hands its next receive that error instead of the frames it
-    /// holds: the client loses `ended` and reports a lost connection.
-    private nonisolated static func awaitClose(of inbound: WebSocketInboundStream,
-                                               grace: Duration) async {
+    /// `write` is the only thing that writes to the socket. It returns true once it
+    /// has written the last frame, and false when it stops for any other reason (a
+    /// write failed, its source finished, the handler was cancelled). `read` is
+    /// handed each frame the client sends until the last frame is written; after it,
+    /// what the client sends is dropped. The two run side by side, and whichever
+    /// ends first cancels the other. Returning lets the library send the close frame
+    /// and close the socket. Cancelling the handler (the server stopping) ends it at
+    /// once.
+    ///
+    /// **After the last frame the close is left to the client**, which closes when it
+    /// reads that frame: the old client on `ended`, the package's
+    /// `TerminalStreamConnection` and the browser on `ended` or `error`. Only a
+    /// client that has not closed after `grace` is closed by the server. A close the
+    /// server sends right after the last frame can be read by the client's
+    /// `URLSessionWebSocketTask` ahead of frames it has not handed over yet (it is
+    /// when they arrive together, as the notice does with the answer to the
+    /// upgrade, and as `hello` and `ended` do for a session that is gone). The task
+    /// answers it, the server drops the connection, and the next thing the client
+    /// sends (held input, a held claim, a keystroke) fails the task, which then hands
+    /// its next receive that error instead of the frames it holds: the client loses
+    /// `ended` and reports a lost connection, and an owner that reconnects on a lost
+    /// connection tries again.
+    ///
+    /// A refusal (`error`) is not routed through here: the server writes it and closes
+    /// at once. The package's client sends nothing before the `hello`, so there is no
+    /// send to fail, and the browser's `WebSocket` hands over every message before it
+    /// reports the close.
+    private nonisolated static func exchange(on inbound: WebSocketInboundStream, grace: Duration,
+                                             write: @escaping @Sendable () async -> Bool,
+                                             read: @escaping @Sendable (WebSocketMessage) -> Void) async {
+        let lastWritten = OSAllocatedUnfairLock(initialState: false)
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
-                do { for try await _ in inbound.messages(maxSize: maxInboundMessage) {} } catch {}
+                guard await write() else { return }
+                lastWritten.withLock { $0 = true }
+                try? await Task.sleep(for: grace)
             }
-            group.addTask { try? await Task.sleep(for: grace) }
+            group.addTask {
+                do {
+                    for try await frame in inbound.messages(maxSize: maxInboundMessage)
+                    where !lastWritten.withLock({ $0 }) {
+                        read(frame)
+                    }
+                } catch {}
+            }
             await group.next()
             group.cancelAll()
         }
@@ -274,53 +311,47 @@ package final class RemoteServer {
 
     /// One accepted version 2 viewer, from the hello to the close.
     ///
-    /// Two child tasks: the writer, the only thing that writes to the socket,
-    /// drains the viewer's queue in order; the reader hands input and claims to the
-    /// streamer.
-    /// Whichever ends first cancels the other, and then the viewer is closed
-    /// (detached, queue finished). The writer ends after it has written `ended`,
-    /// when a write fails, or when the queue is finished; the reader when the
-    /// client closes, the socket fails or a message is too large. Cancelling the
-    /// handler (the server stopping) cancels both. Returning lets the library send
-    /// the close frame and close the socket.
+    /// The writer drains the viewer's queue in order and is done once it has written
+    /// `ended`, which is the last frame: the close is then left to the client (see
+    /// `exchange`). It also stops when a write fails or the queue is finished. The
+    /// reader hands input and claims to the streamer, and stops when the client
+    /// closes, the socket fails or a message is too large. Then the viewer is closed
+    /// (detached, queue finished).
+    ///
+    /// Every way a viewer is sent `ended` comes through here alike: a session that is
+    /// gone when the viewer attaches (`hello` and `ended` together), and a session
+    /// that ends while it is streamed.
     private nonisolated static func serve(session: String, resize: ResizeMode,
                                           streamer: any ScreenStreaming,
                                           inbound: WebSocketInboundStream,
-                                          outbound: WebSocketOutboundWriter) async {
+                                          outbound: WebSocketOutboundWriter,
+                                          grace: Duration) async {
         let viewer = AttachedViewer(
             streamer: streamer, session: session, resize: resize,
             greeting: .hello(protocolVersion: StreamProtocol.version, session: nil, resize: nil))
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                while let message = await viewer.queue.next() {
-                    do { try await write(message, to: outbound) } catch { return }
-                    if message == .ended { return }
-                }
+        await exchange(on: inbound, grace: grace, write: {
+            while let message = await viewer.queue.next() {
+                do { try await write(message, to: outbound) } catch { return false }
+                if message == .ended { return true }
             }
-            group.addTask {
-                do {
-                    for try await frame in inbound.messages(maxSize: maxInboundMessage) {
-                        let decoded: StreamMessage? = switch frame {
-                        case let .text(text): StreamCodec.message(from: .text(text))
-                        case let .binary(buffer):
-                            StreamCodec.message(from: .binary(Array(buffer.readableBytesView)))
-                        }
-                        switch decoded {
-                        case let .data(bytes) where !bytes.isEmpty:
-                            streamer.send(session: session, bytes: bytes)
-                        case let .resize(cols, rows, _):
-                            // A claim: the hub resizes the terminal and answers it with
-                            // exactly one `resize` carrying `own: true`.
-                            viewer.claim(cols: cols, rows: rows)
-                        default:
-                            break
-                        }
-                    }
-                } catch {}
+            return false
+        }, read: { frame in
+            let decoded: StreamMessage? = switch frame {
+            case let .text(text): StreamCodec.message(from: .text(text))
+            case let .binary(buffer):
+                StreamCodec.message(from: .binary(Array(buffer.readableBytesView)))
             }
-            await group.next()
-            group.cancelAll()
-        }
+            switch decoded {
+            case let .data(bytes) where !bytes.isEmpty:
+                streamer.send(session: session, bytes: bytes)
+            case let .resize(cols, rows, _):
+                // A claim: the hub resizes the terminal and answers it with
+                // exactly one `resize` carrying `own: true`.
+                viewer.claim(cols: cols, rows: rows)
+            default:
+                break
+            }
+        })
         viewer.close()
     }
 
