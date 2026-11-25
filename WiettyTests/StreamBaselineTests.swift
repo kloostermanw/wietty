@@ -150,14 +150,16 @@ struct StreamBaselineTests {
     /// waiting to be read. Both are there because one echo arriving after the pause
     /// would otherwise be read by the next round as its own, in microseconds, and
     /// every sample after it would be shifted with no error.
-    private static let echoCommand = "exec /bin/cat"
+    ///
+    /// The command first prints a token (see `skipThrough(token:in:)`), so the
+    /// snapshot the helper side is sent first is consumed before the first round.
+    private static func echoCommand(token: String) -> String { "printf \(token); exec /bin/cat" }
     /// The pause is well past the hub's 8 ms quiet interval, as a person's typing is.
-    /// It matters once a viewer is in the path (the own pane, from step 4 of phase 3):
-    /// every round's echo then finds a quiet session and measures the flush after
-    /// quiet, where at 5 ms the rounds after the first would measure the timer. With no
-    /// viewer attached, as in this harness today, the quiet rule does not apply and the
-    /// echo is read at the helper socket, which never waits for the hub's flush. 750
-    /// rounds of 20 ms keep a run at about 15 s, a multiple of `echoRoundsPerLine`.
+    /// That interval matters to a queued viewer (a browser or an iPad), whose echo
+    /// finds a quiet session and is flushed at once, where at 5 ms the rounds after the
+    /// first would measure the timer. The pane in this harness is a local viewer,
+    /// written on the pty's thread with no batch, so its echo never waits for a flush.
+    /// 750 rounds of 20 ms keep a run at about 15 s, a multiple of `echoRoundsPerLine`.
     private static let echoRounds = 750
     private static let echoPause: useconds_t = 20_000
     /// The canonical queue holds 1,024 bytes (`MAX_CANON`), and a full one rings the
@@ -207,11 +209,45 @@ struct StreamBaselineTests {
     }
 
     private static let throughputBytes = 100_000_000
-    /// Every throughput command waits for one line of input first, because the
-    /// route may drop output that arrives before the helper side is connected (the
-    /// relay keeps the newest megabyte). Echo goes off first so the line costs no
-    /// output, and one `R` says it has. The clock starts with the line.
-    private static let handshake = "stty -echo; printf R; read go; "
+    /// Every throughput command waits for one line of input first. The pty is not
+    /// read until the pane (here the helper side) has attached, and the helper side
+    /// first receives a snapshot of the screen, escape sequences and all, so the
+    /// payload must not start before that has been read past. Echo goes off first so
+    /// the line costs no output, and a random token says it has: everything up to and
+    /// including the token is discarded (`skipThrough(token:in:)`), and the clock
+    /// starts with the line.
+    private static func handshake(token: String) -> String { "stty -echo; printf \(token); read go; " }
+
+    /// 16 hex characters, new for each session: printed by the child once it is
+    /// ready, and found nowhere before it, unlike any single byte, which a snapshot
+    /// may contain.
+    private static func makeToken() -> String {
+        String(format: "%016llx", UInt64.random(in: 1...UInt64.max))
+    }
+
+    /// Reads and discards everything up to and including `token`: the snapshot, and
+    /// whatever the child printed before it. Throws if anything follows the token in
+    /// the same read, since the child prints nothing more until it is sent a byte.
+    fileprivate static func skipThrough(token: String, in fd: Int32,
+                                        timeout: TimeInterval = 30) throws {
+        let needle = Array(token.utf8)
+        var seen: [UInt8] = []
+        var buffer = [UInt8](repeating: 0, count: 1 << 16)
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { throw BaselineError.timedOut }
+            let count = try readSome(fd, into: &buffer, timeout: remaining)
+            seen += buffer[0..<count]
+            guard seen.count >= needle.count else { continue }
+            let last = seen.count - needle.count
+            if let start = (0...last).first(where: { Array(seen[$0..<($0 + needle.count)]) == needle }) {
+                let after = start + needle.count
+                guard after == seen.count else { throw BaselineError.unexpectedByte(seen[after]) }
+                return
+            }
+        }
+    }
 
     /// One endless line: 100,000,000 bytes of `a` with no newline, so the screen
     /// model wraps it every row for the whole run.
@@ -224,8 +260,9 @@ struct StreamBaselineTests {
             .appendingPathComponent("wietty-baseline-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: file) }
         try Data(repeating: UInt8(ascii: "a"), count: Self.throughputBytes).write(to: file)
-        try await measureThroughput(name: "throughput-oneline",
-                                    command: Self.handshake + "cat '\(file.path)'",
+        let token = Self.makeToken()
+        try await measureThroughput(name: "throughput-oneline", token: token,
+                                    command: Self.handshake(token: token) + "cat '\(file.path)'",
                                     payload: Self.throughputBytes, lines: 0)
     }
 
@@ -233,8 +270,9 @@ struct StreamBaselineTests {
     /// newline each, so 1,250,000 lines.
     @Test func throughputLines() async throws {
         let line = String(repeating: "abcdefghij", count: 8).prefix(79)
-        try await measureThroughput(name: "throughput-lines",
-                                    command: Self.handshake + "yes \(line) | head -c \(Self.throughputBytes)",
+        let token = Self.makeToken()
+        try await measureThroughput(name: "throughput-lines", token: token,
+                                    command: Self.handshake(token: token) + "yes \(line) | head -c \(Self.throughputBytes)",
                                     payload: Self.throughputBytes, lines: Self.throughputBytes / 80)
     }
 
@@ -251,7 +289,7 @@ struct StreamBaselineTests {
     /// count is not fixed. What is fixed is the payload: the bytes that arrived,
     /// less every carriage return, must be exactly `payload`, and there must be
     /// exactly `lines` line feeds. A truncated stream fails either check.
-    private func measureThroughput(name: String, command: String,
+    private func measureThroughput(name: String, token: String, command: String,
                                    payload: Int, lines: Int) async throws {
         // The child stays alive after the mark, so the end of the stream is never a
         // race with the terminal closing.
@@ -265,9 +303,7 @@ struct StreamBaselineTests {
         let result = try await Self.offMain { () -> (nanoseconds: UInt64, bytes: Int, crs: Int, lfs: Int) in
             // Echo must be off before the line is sent, or the newline is echoed
             // into the count.
-            var ready = [UInt8](repeating: 0, count: 1)
-            _ = try Self.readSome(fd, into: &ready, timeout: 30)
-            guard ready[0] == UInt8(ascii: "R") else { throw BaselineError.unexpectedByte(ready[0]) }
+            try Self.skipThrough(token: token, in: fd)
             let stream = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: 16)
             defer { stream.deallocate() }
             // Every page touched now, so no first touch page fault lands in the clock.
@@ -304,11 +340,15 @@ struct StreamBaselineTests {
     }
 
     private func measureEcho() async throws -> [UInt64] {
-        let session = try Session(command: Self.echoCommand)
+        let token = Self.makeToken()
+        let session = try Session(command: Self.echoCommand(token: token))
         defer { session.close() }
         let fd = try openHelperSide(session: session)
         defer { Darwin.close(fd) }
         return try await Self.offMain {
+            // The snapshot and anything before `cat` runs, so the first byte read
+            // below is the echo of the first byte sent.
+            try Self.skipThrough(token: token, in: fd)
             var echo = Echo(fd: fd)
             // One untimed round first: it proves the echo works and absorbs
             // whatever the start of the stream costs. Then a newline, so the timed
