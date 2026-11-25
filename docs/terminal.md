@@ -1035,9 +1035,11 @@ tests and checks) sets `POSIX_SPAWN_CLOEXEC_DEFAULT`, so its child keeps only th
 actions put on 0, 1 and 2. `ProcessCommandRunner` (the git and freshness probes) uses Foundation's
 `Process`, which already closes everything above 2. `InheritedDescriptorTests` holds all three to it
 with a listening socket and a file open and not `FD_CLOEXEC`. The one spawn Wietty does not control is
-libghostty starting the `wietty-pty` helper: what the surface library passes on is its own choice. The
-helper is Wietty's own binary, it starts nothing, and it uses no descriptor but its standard streams
-and the socket it opens itself.
+libghostty starting the `wietty-pty` helper: what the surface library passes on is its own choice, and
+it passes on everything. So the helper, Wietty's own binary, closes every descriptor from 3 up to
+`getdtablesize()` as its first act, before it opens its socket, and then uses no descriptor but its
+standard streams and that socket. It starts nothing. `WiettyPtyHelperTests` spawns it holding the
+write end of a pipe and shows the reader sees the end of the pipe while the helper still runs.
 
 **`proc_name` refuses a `MAXCOMLEN + 1` buffer.** It copies all 32 bytes of `proc_bsdinfo.pbi_name`,
 so it needs `2 * MAXCOMLEN` plus a terminator; handed less it returns 0 with `ENOMEM` and no name for
@@ -1127,7 +1129,11 @@ is read. The bridge has no such check; it relies on the mode and accepts one cli
 
 **No child inherits them.** The listener, every accepted socket and the link's socket are set
 `FD_CLOEXEC` straight after they are made, and since Darwin has no `SOCK_CLOEXEC` the children Wietty
-spawns close everything above 2 themselves (see "Spawning the shell"). That matters because the
+spawns close everything above 2 themselves (see "Spawning the shell"), so they inherit nothing. The
+one exception is `wietty-pty`: libghostty spawns it (through `login` and the shell) and closes
+nothing on the way, so it arrives holding every descriptor of the app that is not close on exec, the
+pty masters of other terminals among them. Its first act, before it opens its socket, is to close
+every descriptor from 3 up to `getdtablesize()`. That matters because the
 server serves terminals with no token: a child holding its listener could accept a pane's connection,
 and one holding a connection could read a terminal.
 

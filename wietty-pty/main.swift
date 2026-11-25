@@ -20,6 +20,15 @@ import Darwin
 // for a socket nobody is listening on (the terminal is already gone), 70 for a
 // socket that could not be created at all.
 
+// First of all, every descriptor this process inherited above standard input,
+// output and error is closed. libghostty spawns this helper (through `login` and
+// the shell) and closes nothing on the way, so it arrives holding whatever the app
+// had open without close on exec, the pty masters of the other terminals among
+// them. Nothing here has been opened yet, so nothing of our own can be closed.
+for descriptor in 3..<max(3, getdtablesize()) {
+    close(descriptor)
+}
+
 // A write to either the socket or standard output can land on a peer that is
 // already gone: Wietty closes the socket when the terminal is torn down, and
 // whatever holds the read end of our stdout (a pipe in tests, the surface's pty
