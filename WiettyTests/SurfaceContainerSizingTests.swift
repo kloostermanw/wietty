@@ -22,6 +22,11 @@ import WiettyCore
             didSet { (superview as? SurfaceContainerView)?.surfaceSizingDidChange() }
         }
         override var acceptsFirstResponder: Bool { true }
+        /// The container's size each time it said the pane changed.
+        private(set) var paneSizes: [CGSize] = []
+        func paneSizeDidChange() {
+            paneSizes.append((superview as? SurfaceContainerView)?.bounds.size ?? .zero)
+        }
     }
 
     /// A window that reports a backing scale of the test's choosing.
@@ -85,6 +90,27 @@ import WiettyCore
             pane.layout()
             #expect(pane.surface.frame == pane.container.bounds, "\(size)")
         }
+    }
+
+    /// The surface hears of every new size of the pane (which is what the pane's own
+    /// grid is computed from), once per size, also while an imposed grid keeps its own
+    /// frame still, and when it is put in a container.
+    @Test func theSurfaceIsToldEachNewSizeOfThePaneOnce() {
+        let pane = pane()
+        defer { pane.window.close() }
+        #expect(pane.surface.paneSizes.last == NSSize(width: 800, height: 600))
+        let told = pane.surface.paneSizes.count
+        pane.layout()
+        #expect(pane.surface.paneSizes.count == told)
+        pane.surface.imposedSize = CGSize(width: 300, height: 200)
+        pane.layout()
+        for size in [NSSize(width: 1003, height: 717), NSSize(width: 640, height: 480)] {
+            pane.window.setContentSize(size)
+            pane.layout()
+            #expect(pane.surface.paneSizes.last == size, "\(size)")
+        }
+        #expect(pane.surface.paneSizes.count == told + 2)
+        #expect(pane.surface.frame.size == CGSize(width: 300, height: 200))
     }
 
     /// Top and leading pinned, width and height as their own constraints, equal to

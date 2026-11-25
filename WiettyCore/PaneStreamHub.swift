@@ -368,11 +368,12 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// The local viewers by id, so `detach` can mark one gone without taking its
     /// session's lock.
     private var localViewers: [UUID: LocalViewer] = [:]
-    /// The grid in force for a session: the last one either reported by the surface
-    /// through `noteSize` or claimed by a viewer through `claim`, whichever came
-    /// last. libghostty reports a size on events that need not have moved it (a font
-    /// metric change, a re-parent), so this is what keeps a resize to the changes
-    /// that really moved the grid.
+    /// The grid in force for a session: the last one a viewer claimed through
+    /// `claim` (or the model's, when it announced another), and absent before the
+    /// first claim, while the terminal is at the grid it was spawned with. Read and
+    /// written on `delivery` only, by `claimNow` and `resizeNow`: a claim is the one
+    /// thing that moves a terminal's grid (decision P4), so the record, the pty, the
+    /// model and what the viewers are told change in one serial order.
     private var sizeForPane: [String: TerminalSize] = [:]
     private var timer: DispatchSourceTimer?
     /// Where everything that delivers to a viewer runs: the flush timer, a quiet
@@ -945,7 +946,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
 
     /// Drops the viewers and their buffers, and stops the flush timer. The sizes
     /// survive: a session id stays valid across a stop and start, and clearing them
-    /// would make the next `noteSize` look like a change that never happened.
+    /// would make the next claim of the grid in force look like a change.
     package func stop() {
         lock.lock()
         streams = [:]
@@ -1072,26 +1073,6 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         return []
     }
 
-    /// A session's grid changed, so tell its viewers.
-    ///
-    /// Every viewer is sent the new grid. One that asked for repaints is also sent
-    /// the visible screen again, because the reflow rewrote it; one that reflows by
-    /// itself gets nothing more.
-    ///
-    /// Deduped on the last size seen, because libghostty reports a grid on events
-    /// (a font metric change, a re-parent) that need not have moved it.
-    ///
-    /// Called from the main actor. Safe: the state is lock guarded and the delivery
-    /// itself is handed to `delivery`.
-    package func noteSize(session: String, _ size: TerminalSize) {
-        lock.lock()
-        let changed = sizeForPane[session] != size
-        sizeForPane[session] = size
-        lock.unlock()
-        guard changed else { return }
-        delivery.async { [weak self] in self?.resizeNow(session: session, size) }
-    }
-
     /// The grids a viewer may claim, the same bounds the codec keeps for a `resize`.
     private static let claimable = 1...10_000
 
@@ -1128,7 +1109,7 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         guard changed else { return answerClaimant(id, of: stream, size) }
         // The pty and the model first, with no lock of the hub's held, and only then
         // the repaint: taken before, it would paint the screen as it was before the
-        // reflow. The rule `GhosttyService` keeps for a resize the surface reports.
+        // reflow.
         resizer?(session, size)
         resizeNow(session: session, size, claimant: id)
     }
@@ -1161,24 +1142,18 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// it, the repaint is taken under that same lock, and everything accepted
     /// afterwards follows it. So a repaint neither repeats a byte nor loses one.
     ///
-    /// A grid the surface reported is announced only while it is still the grid in
-    /// force: a claim handled after the report and before this ran has replaced it,
-    /// and announcing it then would tell the viewers a grid the pty is not on. The
-    /// claim has told them its own already.
-    ///
     /// The grid announced is the repaint's when there is one, which is the model's
-    /// and can differ from `size`; it then becomes the record, so a later claim or
-    /// report is judged against what the viewers were told.
+    /// and can differ from `size`; it then becomes the record, so a later claim
+    /// is judged against what the viewers were told.
     ///
     /// - Parameter claimant: the viewer whose claim moved the grid, the one told
-    ///   `own` true. Nil for a grid the surface reported.
-    private func resizeNow(session: String, _ size: TerminalSize, claimant: UUID? = nil) {
+    ///   `own` true.
+    private func resizeNow(session: String, _ size: TerminalSize, claimant: UUID) {
         lock.lock()
         let hook = onRepaint
         let stream = streams[session]
-        let overtaken = claimant == nil && sizeForPane[session] != size
         lock.unlock()
-        guard let stream, !overtaken else { return }
+        guard let stream else { return }
 
         stream.lock.lock()
         let viewers = Array(stream.viewers)
@@ -1206,8 +1181,9 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
 
         if grid != size {
             lock.lock()
-            // Only over the size this resize was for: a report noted since is newer.
-            if sizeForPane[session] == size { sizeForPane[session] = grid }
+            // On `delivery`, as every write of the record is, so nothing has
+            // replaced the claim's record since `claimNow` wrote it.
+            sizeForPane[session] = grid
             lock.unlock()
         }
         // The idle local viewers are written here; a busy one writes its own after

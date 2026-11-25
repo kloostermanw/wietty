@@ -309,6 +309,10 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
                 default: log.add(message, hold: 600)
                 }
             }
+            // Another viewer claims, and the claim resizes the model, as the
+            // service's resizer does.
+            hub.onClaim = { _, size in model.resize(to: size) }
+            let claimer = hub.attach(session: session, resize: .reflow) { _ in }
             let writer = onThread {
                 for chunk in chunks {
                     hub.write(session: session, bytes: chunk)
@@ -320,9 +324,7 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
                 var rows = 24
                 while !stopResizing.value {
                     rows = rows == 24 ? 31 : 24
-                    let size = TerminalSize(cols: 80, rows: rows)
-                    model.resize(to: size)
-                    hub.noteSize(session: session, size)
+                    hub.claim(connectionId: claimer, cols: 80, rows: rows)
                     usleep(500)
                 }
             }
@@ -351,13 +353,13 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         let hub = PaneStreamHub()
         defer { hub.stop() }
         let log = LocalLog()
-        hub.attachLocal(session: Self.session, resize: .reflow) { log.add($0) }
+        let id = hub.attachLocal(session: Self.session, resize: .reflow) { log.add($0) }
         hub.write(session: Self.session, bytes: bytes("before"))
-        hub.noteSize(session: Self.session, TerminalSize(cols: 90, rows: 20))
+        hub.claim(connectionId: id, cols: 90, rows: 20)
         hub.write(session: Self.session, bytes: bytes("after"))
         #expect(settled(hub))
         let messages = log.messages
-        let resize = messages.firstIndex(of: .resize(cols: 90, rows: 20, own: false))
+        let resize = messages.firstIndex(of: .resize(cols: 90, rows: 20, own: true))
         let before = messages.firstIndex(of: .data(bytes("before")))
         #expect(resize != nil && before != nil && before! < resize!)
         #expect(log.dataBytes == bytes("beforeafter"))
@@ -439,13 +441,13 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         let hub = PaneStreamHub()
         defer { hub.stop() }
         let log = LocalLog()
-        hub.attachLocal(session: Self.session, resize: .repaint) { log.add($0) }
+        let id = hub.attachLocal(session: Self.session, resize: .repaint) { log.add($0) }
         hub.write(session: Self.session, bytes: bytes("tail"))
         hub.endViewers(ofSession: Self.session)
         #expect(settled(hub))
         #expect(log.messages == [.data(bytes("tail")), .ended])
         hub.write(session: Self.session, bytes: bytes("late"))
-        hub.noteSize(session: Self.session, TerminalSize(cols: 10, rows: 10))
+        hub.claim(connectionId: id, cols: 10, rows: 10)
         #expect(settled(hub))
         #expect(log.messages == [.data(bytes("tail")), .ended])
     }
@@ -455,10 +457,11 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         defer { hub.stop() }
         let log = LocalLog()
         let id = hub.attachLocal(session: Self.session, resize: .repaint) { log.add($0) }
+        let claimer = hub.attach(session: Self.session, resize: .reflow) { _ in }
         hub.write(session: Self.session, bytes: bytes("seen"))
         hub.detach(connectionId: id)
         hub.write(session: Self.session, bytes: bytes("unseen"))
-        hub.noteSize(session: Self.session, TerminalSize(cols: 10, rows: 10))
+        hub.claim(connectionId: claimer, cols: 10, rows: 10)
         hub.endViewers(ofSession: Self.session)
         #expect(settled(hub))
         #expect(log.messages == [.data(bytes("seen"))])
@@ -480,7 +483,7 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         let writer = onThread { hub.write(session: Self.session, bytes: bytes("x")) }
         #expect(gate.waitUntilHeld())
         // Left with the viewer while it is busy, not waited for.
-        hub.noteSize(session: Self.session, TerminalSize(cols: 90, rows: 20))
+        hub.claim(connectionId: id, cols: 90, rows: 20)
         #expect(settled(hub), "the delivery queue waited for the blocked write")
 
         let detached = onThread { hub.detach(connectionId: id) }
@@ -643,12 +646,13 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         }
         let other = LocalLog()
         hub.attach(session: "gt:other", resize: .repaint) { other.add($0) }
+        let claimer = hub.attach(session: Self.session, resize: .reflow) { _ in }
         let writer = onThread { hub.write(session: Self.session, bytes: bytes("chunk")) }
         #expect(gate.waitUntilHeld())
 
         var sent: [UInt8] = []
         let steps: [(String, () -> Void)] = [
-            ("a resize", { hub.noteSize(session: Self.session, TerminalSize(cols: 90, rows: 20)) }),
+            ("a resize", { hub.claim(connectionId: claimer, cols: 90, rows: 20) }),
             ("a claim", { hub.claim(connectionId: id, cols: 100, rows: 30) }),
             ("a claim answer", { hub.claim(connectionId: id, cols: 100, rows: 30) }),
             ("an ending", { hub.endViewers(ofSession: Self.session) }),
@@ -667,7 +671,7 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         #expect(writer.wait(timeout: .now() + 5) == .success)
         hub.write(session: Self.session, bytes: bytes("late"))
         #expect(settled(hub))
-        // The surface's resize was replaced by the claim's, which came after it
+        // The other viewer's resize was replaced by the claim's, which came after it
         // with no output between: a viewer that reflows needs only the latest
         // grid. Each claim's own answer is kept.
         #expect(log.messages == [.data(bytes("chunk")),
@@ -692,12 +696,13 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
                 gate.hold()
             }
         }
+        let claimer = hub.attach(session: Self.session, resize: .reflow) { _ in }
         let writer = onThread {
             hub.write(session: Self.session, bytes: bytes("one"))
             hub.write(session: Self.session, bytes: bytes("two"))
         }
         #expect(gate.waitUntilHeld())
-        hub.noteSize(session: Self.session, TerminalSize(cols: 90, rows: 20))
+        hub.claim(connectionId: claimer, cols: 90, rows: 20)
         #expect(settled(hub))
         gate.open()
         #expect(writer.wait(timeout: .now() + 5) == .success)
@@ -735,7 +740,7 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         let gate = Gate()
         defer { gate.open() }
         let log = LocalLog()
-        hub.attachLocal(session: Self.session, resize: .reflow) { message in
+        let id = hub.attachLocal(session: Self.session, resize: .reflow) { message in
             log.add(message)
             if isData(message) { gate.hold() }
         }
@@ -746,7 +751,7 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         gate.open()
         #expect(writer.wait(timeout: .now() + 5) == .success)
         hub.write(session: Self.session, bytes: bytes("after"))
-        hub.noteSize(session: Self.session, TerminalSize(cols: 10, rows: 10))
+        hub.claim(connectionId: id, cols: 10, rows: 10)
         #expect(settled(hub))
         #expect(log.messages == [.data(bytes("last")), .ended])
     }
@@ -884,11 +889,10 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         let text = Array("caf\u{E9} \u{65E5}\u{672C}".utf8)
         let cut = Array("caf\u{E9} ".utf8).count + 1
         let log = LocalLog()
-        hub.attachLocal(session: Self.session, resize: .repaint) { log.add($0) }
+        hub.onClaim = { _, size in model.resize(to: size) }
+        let id = hub.attachLocal(session: Self.session, resize: .repaint) { log.add($0) }
         hub.write(session: Self.session, bytes: Array(text[..<cut]))
-        let size = TerminalSize(cols: 50, rows: 8)
-        model.resize(to: size)
-        hub.noteSize(session: Self.session, size)
+        hub.claim(connectionId: id, cols: 50, rows: 8)
         #expect(settled(hub))
         hub.write(session: Self.session, bytes: Array(text[cut...]))
         let paints = log.messages.compactMap { message -> [UInt8]? in

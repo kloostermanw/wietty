@@ -96,6 +96,8 @@ private final class BridgedHost: TerminalSurfaceHosting {
     private(set) var helpers: [String: HelperProcess] = [:]
     private(set) var sockets: [String: UnixTestSocket] = [:]
     private(set) var destroyed: [String] = []
+    /// Every grid the pane's `OwnPaneGrid` imposed, per session, in order.
+    private(set) var imposed: [String: [TerminalSize?]] = [:]
 
     init(serverPath: String, realHelpers: Bool = true) throws {
         bridges = PaneBridges(helperPath: try bundledHelperURL().path, serverPath: serverPath)
@@ -114,10 +116,12 @@ private final class BridgedHost: TerminalSurfaceHosting {
     func reloadConfig() {}
     func size(id: String) -> TerminalSize? { nil }
     func metrics(id: String) -> SurfaceMetrics? { nil }
-    func impose(grid: TerminalSize?, on id: String) {}
+    func impose(grid: TerminalSize?, on id: String) { imposed[id, default: []].append(grid) }
 
     func createSurface(id: String, directory: URL, title: String?) throws {
-        let command = try bridges.open(session: id)
+        let command = try bridges.open(session: id) { [weak self] grid in
+            self?.impose(grid: grid, on: id)
+        }
         do {
             if realHelpers {
                 helpers[id] = try HelperProcess(command: command)
@@ -445,6 +449,86 @@ private let folder = URL(fileURLWithPath: "/tmp")
             #expect(text.contains("own-\(index)-end"), "terminal \(index) did not get its output")
             #expect(text.components(separatedBy: "own-").count == 2, "terminal \(index) got another's")
         }
+    }
+
+    // MARK: The grid
+
+    /// Opening a terminal, the pane's first claim sets the pty's grid; another
+    /// viewer's claim imposes its grid on the pane, and the pty follows it; a user
+    /// action in the pane takes the grid back. `stty size` in the child is the pty's
+    /// word, read after each step.
+    @Test func thePaneClaimsTheGridLosesItToAnotherViewerAndTakesItBack() async throws {
+        let rig = try rig()
+        defer { rig.tearDown() }
+        let (session, helper) = try await rig.open(
+            "while read go; do echo size-$(stty size | tr ' ' x); done")
+        let grid = try #require(rig.host.bridges.grid(for: session))
+        #expect(await eventually { helper.output.bytes.starts(with: TerminalPaint.hardReset) })
+        let model = try #require(rig.service.screenModel(for: session))
+
+        // The pane comes on display: its first own grid is claimed.
+        grid.paneChanged(ownGrid: TerminalSize(cols: 100, rows: 30))
+        #expect(await eventually { model.size == TerminalSize(cols: 100, rows: 30) })
+        helper.type(Array("go\n".utf8))
+        #expect(await eventually { helper.output.text.contains("size-30x100") })
+        #expect(grid.isOwner)
+
+        // Another viewer claims: the pane is told, and shows that grid.
+        let other = rig.stack.hub.attach(session: session, resize: .repaint) { _ in }
+        rig.stack.hub.claim(connectionId: other, cols: 80, rows: 24)
+        #expect(await eventually { rig.host.imposed[session]?.last == TerminalSize(cols: 80, rows: 24) })
+        #expect(!grid.isOwner)
+        helper.type(Array("go\n".utf8))
+        #expect(await eventually { helper.output.text.contains("size-24x80") })
+        // The pane's own grid changing meanwhile claims nothing.
+        grid.paneChanged(ownGrid: TerminalSize(cols: 101, rows: 30))
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(model.size == TerminalSize(cols: 80, rows: 24))
+
+        // A key in the pane: it claims its own grid at once, and fills the pane again.
+        grid.userActed()
+        #expect(await eventually { model.size == TerminalSize(cols: 101, rows: 30) })
+        #expect(rig.host.imposed[session]?.last == .some(nil))
+        helper.type(Array("go\n".utf8))
+        #expect(await eventually { helper.output.text.contains("size-30x101") })
+        #expect(grid.isOwner)
+    }
+
+    /// The owner's link is dropped and made again: the pane claims its grid again on
+    /// the new link, so it still owns it, and the new link carries both ways: another
+    /// viewer's claim is imposed and a user action takes the grid back.
+    @Test func afterAReconnectTheOwnerStillOwnsTheGrid() async throws {
+        let rig = try rig()
+        defer { rig.tearDown() }
+        let (session, helper) = try await rig.open("sleep 30")
+        let grid = try #require(rig.host.bridges.grid(for: session))
+        #expect(await eventually { helper.output.bytes.starts(with: TerminalPaint.hardReset) })
+        let model = try #require(rig.service.screenModel(for: session))
+        grid.paneChanged(ownGrid: TerminalSize(cols: 100, rows: 30))
+        #expect(await eventually { model.size == TerminalSize(cols: 100, rows: 30) })
+
+        // The attach's grid may have been imposed before the pane came on display,
+        // and the claim's acceptance then returned the pane its own size.
+        try await Task.sleep(for: .milliseconds(200))
+        let imposedBefore = rig.host.imposed[session, default: []]
+        #expect(imposedBefore.last ?? nil == nil)
+
+        let server = try #require(rig.stack.localServer)
+        #expect(server.inspectConnections { shutdown($0, SHUT_RDWR) }.count == 1)
+        #expect(await eventually { rig.host.bridges.bridge(for: session)?.linkCount == 2 })
+        #expect(await eventually { occurrences(of: TerminalPaint.hardReset, in: helper.output.bytes) == 2 })
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(grid.isOwner)
+        // The new attach's `resize` (own false) came while the claim made again was
+        // unanswered: nothing imposed.
+        #expect(rig.host.imposed[session, default: []] == imposedBefore)
+
+        let other = rig.stack.hub.attach(session: session, resize: .reflow) { _ in }
+        rig.stack.hub.claim(connectionId: other, cols: 80, rows: 24)
+        #expect(await eventually { rig.host.imposed[session]?.last == TerminalSize(cols: 80, rows: 24) })
+        grid.userActed()
+        #expect(await eventually { model.size == TerminalSize(cols: 100, rows: 30) })
+        #expect(rig.host.imposed[session]?.last == .some(nil))
     }
 }
 

@@ -125,8 +125,8 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
         let timeline = Timeline()
         let hub = hub(timeline)
         let claimant = hub.attach(session: "gt:1", resize: .repaint, onMessage: timeline.sink("claimant"))
-        hub.attach(session: "gt:1", resize: .repaint, onMessage: timeline.sink("other"))
-        hub.noteSize(session: "gt:1", Self.grid)
+        let other = hub.attach(session: "gt:1", resize: .repaint, onMessage: timeline.sink("other"))
+        hub.claim(connectionId: other, cols: 100, rows: 30)
         hub.waitForPendingDeliveries()
         let before = timeline.events.count
 
@@ -164,8 +164,8 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
             let timeline = Timeline()
             let hub = PaneStreamHub()
             let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
-            hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
-            if equal { hub.noteSize(session: "gt:1", Self.grid) }
+            let other = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
+            if equal { hub.claim(connectionId: other, cols: 100, rows: 30) }
             hub.waitForPendingDeliveries()
             try writeOutstanding(hub, bytes("before"))
             hub.claim(connectionId: claimant, cols: 100, rows: 30)
@@ -183,35 +183,6 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
             #expect(dataBytes(timeline.messages(of: "other")) == bytes("pbeforeafter"),
                     "equal \(equal)")
         }
-    }
-
-    /// A grid the surface reported, overtaken by a claim before its resize was
-    /// delivered, is not announced: it is no longer the grid in force, and telling
-    /// it would leave the viewers on a grid the pty is not.
-    @Test func aReportedGridOvertakenByAClaimIsNotAnnounced() {
-        let timeline = Timeline()
-        let hub = PaneStreamHub()
-        let entered = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
-        // A claim on another session whose resizer holds the delivery queue, so
-        // the claim and the report below are both queued before either runs.
-        hub.onClaim = { session, size in
-            timeline.add(.claimed(session, size))
-            if session == "gt:block" { entered.signal(); release.wait() }
-        }
-        let blocker = hub.attach(session: "gt:block", resize: .reflow) { _ in }
-        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
-        hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
-        hub.claim(connectionId: blocker, cols: 50, rows: 10)
-        #expect(entered.wait(timeout: .now() + 3) == .success)
-
-        hub.claim(connectionId: claimant, cols: 100, rows: 30)
-        hub.noteSize(session: "gt:1", TerminalSize(cols: 80, rows: 24))
-        release.signal()
-        hub.waitForPendingDeliveries()
-
-        #expect(timeline.messages(of: "claimant") == [.resize(cols: 100, rows: 30, own: true)])
-        #expect(timeline.messages(of: "other") == [.resize(cols: 100, rows: 30, own: false)])
     }
 
     /// The record holds the grid the viewers were told, which is the model's when
@@ -284,23 +255,6 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
         hub.claim(connectionId: claimant, cols: 10_000, rows: 1)
         hub.waitForPendingDeliveries()
         #expect(timeline.events.contains(.claimed("gt:1", TerminalSize(cols: 10_000, rows: 1))))
-    }
-
-    /// One record of the grid in force, whoever set it: the surface reporting the
-    /// grid a claim already set moves nothing.
-    @Test func notingTheGridAClaimSetSendsNothing() {
-        let timeline = Timeline()
-        let hub = hub(timeline)
-        let claimant = hub.attach(session: "gt:1", resize: .repaint, onMessage: timeline.sink("claimant"))
-        hub.attach(session: "gt:1", resize: .repaint, onMessage: timeline.sink("other"))
-        hub.claim(connectionId: claimant, cols: 100, rows: 30)
-        hub.waitForPendingDeliveries()
-        let before = timeline.events.count
-
-        hub.noteSize(session: "gt:1", Self.grid)
-        hub.waitForPendingDeliveries()
-
-        #expect(timeline.events.count == before)
     }
 }
 

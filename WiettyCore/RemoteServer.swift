@@ -243,7 +243,8 @@ package final class RemoteServer {
     /// One accepted version 2 viewer, from the hello to the close.
     ///
     /// Two child tasks: the writer, the only thing that writes to the socket,
-    /// drains the viewer's queue in order; the reader hands input to the streamer.
+    /// drains the viewer's queue in order; the reader hands input and claims to the
+    /// streamer.
     /// Whichever ends first cancels the other, and then the viewer is closed
     /// (detached, queue finished). The writer ends after it has written `ended`,
     /// when a write fails, or when the queue is finished; the reader when the
@@ -275,10 +276,10 @@ package final class RemoteServer {
                         switch decoded {
                         case let .data(bytes) where !bytes.isEmpty:
                             streamer.send(session: session, bytes: bytes)
-                        case .resize:
-                            // Accepted and not acted on in this part. Part 2 answers every
-                            // claim here with exactly one `resize` carrying `own: true`.
-                            break
+                        case let .resize(cols, rows, _):
+                            // A claim: the hub resizes the terminal and answers it with
+                            // exactly one `resize` carrying `own: true`.
+                            viewer.claim(cols: cols, rows: rows)
                         default:
                             break
                         }

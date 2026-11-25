@@ -194,6 +194,10 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
             let log = ViewerLog()
             hub.attach(session: session, resize: .repaint) { log.add($0) }
             expectAnAttach(log.messages)
+            // Another viewer claims, and the claim resizes the model, as the
+            // service's resizer does.
+            hub.onClaim = { _, size in model.resize(to: size) }
+            let claimer = hub.attach(session: session, resize: .reflow) { _ in }
 
             let writer = Task.detached {
                 for chunk in chunks {
@@ -205,10 +209,7 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
                 var rows = 24
                 while !Task.isCancelled {
                     rows = rows == 24 ? 31 : 24
-                    let size = TerminalSize(cols: 80, rows: rows)
-                    // The order the service keeps: the model first, then the hub.
-                    model.resize(to: size)
-                    hub.noteSize(session: session, size)
+                    hub.claim(connectionId: claimer, cols: 80, rows: rows)
                     try? await Task.sleep(for: .milliseconds(3))
                 }
             }

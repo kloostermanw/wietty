@@ -149,15 +149,14 @@ actor. Four things are worth knowing on the client side:
   delivers the `ended` message. Both ways a terminal ends reach it: the child
   exiting, and the row being closed.
 
-A grid that moves after a viewer attached reaches it through one entry point. A
-viewer is told its size on attach and by nothing else on the socket, so
-`PaneStreamHub.noteSize` is what keeps that current: `GhosttyService`'s resize
-handler calls it with the grid it just read from the surface. Every viewer
-receives a fresh `resize`; one that attached asking for repaints also receives a
-`repaint` of the reflowed screen, and one that reflows by itself nothing more. The
-attach route asks for what the query says (`resize=repaint` or `resize=reflow`),
-and for repaints when it says neither. A report that did not move the grid is
-deduplicated rather than delivered.
+A grid that moves after a viewer attached reaches it through one entry point. The
+grid moves only by a viewer's claim (`PaneStreamHub.claim(connectionId:cols:rows:)`),
+and the Mac's own pane is one such viewer: the surface's own grid report resizes
+nothing. Every viewer receives a fresh `resize`; one that attached asking for
+repaints also receives a `repaint` of the reflowed screen, and one that reflows by
+itself nothing more. The attach route asks for what the query says
+(`resize=repaint` or `resize=reflow`), and for repaints when it says neither. A
+claim that did not move the grid is answered to its claimant alone.
 
 ### The terminal stream (protocol version 2)
 
@@ -305,13 +304,11 @@ the viewers of every other terminal. An overflow sooner than 250 ms after the la
 resync is answered when the 250 ms are over, as one resync however many overflows
 came in between. A viewer that disconnects before then gets none.
 
-**A viewer's `resize`** is accepted and not yet acted on: the server parses it
-and ignores it, and answers nothing. Claiming the grid is the next part of
-phase 3 of issue #84. The hub can already act on a claim
-(`PaneStreamHub.claim(connectionId:cols:rows:)`: it resizes the pty and the model
-when the grid is new and tells every viewer, `own` true for the claimant alone, or
-answers the claimant alone when the grid is already in force), but nothing calls it
-yet.
+**A viewer's `resize`** is a claim, and is acted on: the route hands it to
+`PaneStreamHub.claim(connectionId:cols:rows:)` with that viewer's id, which resizes
+the pty and the model when the grid is new and tells every viewer, `own` true for
+the claimant alone, or answers the claimant alone when the grid is already in
+force. Every claim is answered with exactly one `resize` whose `own` is true.
 
 **Ending.** After `ended` or `error` the server closes the socket. When the
 viewer closes, or its socket fails, the server detaches it from the hub, and so

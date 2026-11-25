@@ -53,8 +53,10 @@ struct ReconnectBackoff: Sendable {
 /// stop after the helper went are put on a queue of this type's own). So `stop()`,
 /// which the host calls on the main actor and which waits for a running callback
 /// of the bridge, waits for nothing that could wait for the main thread.
-/// `onResize` is left unset: the surface still reports its own grid, and
-/// `GhosttyService` resizes the pty from that report.
+///
+/// **The grid.** The bridge's `onResize` and `onLinkLost` here are for the pane's
+/// `OwnPaneGrid`, which `PaneBridges` wires to them: both are called on the link's
+/// thread and must hop to the main actor asynchronously.
 final class OwnPaneBridge: @unchecked Sendable {
     private static let log = Logger(subsystem: "eu.kloosterman.wietty", category: "own-pane")
 
@@ -72,6 +74,19 @@ final class OwnPaneBridge: @unchecked Sendable {
     /// When the current link was handed to the bridge.
     private var linkSince: TimeInterval
     private var linksMade = 1
+    private var linkLostHandler: (@Sendable () -> Void)?
+
+    /// The link was lost and is being made again. Called on the link's thread, before
+    /// the reconnect is asked for, so a hop to the main queue made here lands ahead of
+    /// anything the new link delivers. Must not wait on the main thread.
+    ///
+    /// Only for `.connectionLost`, the one end after which there is a next link: a
+    /// claim sent to the link that ended may never be answered, so the owner of the
+    /// grid's state starts its count over here.
+    var onLinkLost: (@Sendable () -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return linkLostHandler }
+        set { lock.lock(); linkLostHandler = newValue; lock.unlock() }
+    }
 
     /// - Parameter serverPath: the app's `LocalStreamServer` socket.
     /// - Parameter helperSocketPath: where the bridge listens for `wietty-pty`.
@@ -118,7 +133,9 @@ final class OwnPaneBridge: @unchecked Sendable {
             if now() - linkSince >= backoff.resetAfter { attempts = 0 }
             let delay = backoff.delay(forAttempt: attempts)
             attempts += 1
+            let lost = linkLostHandler
             lock.unlock()
+            lost?()
             if delay <= 0 {
                 reconnect()
             } else {
@@ -170,6 +187,7 @@ final class PaneBridges {
     let serverPath: String
     private let backoff: ReconnectBackoff
     private var bridges: [String: OwnPaneBridge] = [:]
+    private var grids: [String: OwnPaneGrid] = [:]
 
     /// - Parameter helperPath: the bundled `wietty-pty`.
     /// - Parameter serverPath: the app's `LocalStreamServer` socket.
@@ -179,31 +197,61 @@ final class PaneBridges {
         self.backoff = backoff
     }
 
-    /// Builds and starts listening for the bridge of `session`, and returns the
-    /// command the surface must run: the helper, told the bridge's socket.
-    func open(session: String) throws -> String {
+    /// Builds and starts listening for the bridge of `session`, with the `OwnPaneGrid`
+    /// that claims the grid through it, and returns the command the surface must run:
+    /// the helper, told the bridge's socket.
+    ///
+    /// - Parameter impose: shows a grid in the surface's view (nil: the pane's own
+    ///   size); `TerminalSurfaceHosting.impose(grid:on:)` for this session.
+    func open(session: String,
+              impose: @escaping @MainActor (TerminalSize?) -> Void = { _ in }) throws -> String {
         let path = try LocalSocketPaths.bridge(Self.nextSequence())
         let bridge = try OwnPaneBridge(session: session, serverPath: serverPath,
                                        helperSocketPath: path, backoff: backoff)
-        bridges[session]?.stop()
+        let grid = OwnPaneGrid(claim: { [weak bridge] size in
+            bridge?.bridge.claim(cols: size.cols, rows: size.rows) ?? false
+        }, impose: impose)
+        // From the link's thread to the main actor, asynchronously and never waiting
+        // (the bridge's threading rule). One main queue, so the hops keep the
+        // stream's order, and a lost link's lands ahead of the next link's first
+        // `resize` (`onLinkLost`).
+        bridge.bridge.onResize = { [weak grid] cols, rows, own in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    grid?.resizeReceived(TerminalSize(cols: cols, rows: rows), own: own)
+                }
+            }
+        }
+        bridge.onLinkLost = { [weak grid] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { grid?.linkLost() } }
+        }
+        close(session: session)
         bridges[session] = bridge
+        grids[session] = grid
         return Self.command(helper: helperPath, socket: path)
     }
 
-    /// Stops the bridge of `session`, which unlinks its socket. Nothing to do for a
-    /// session with none.
+    /// Stops the bridge of `session`, which unlinks its socket, and its grid. Nothing
+    /// to do for a session with none.
     func close(session: String) {
+        grids.removeValue(forKey: session)?.stop()
         bridges.removeValue(forKey: session)?.stop()
     }
 
     func closeAll() {
         let all = bridges.values
+        for grid in grids.values { grid.stop() }
+        grids = [:]
         bridges = [:]
         for bridge in all { bridge.stop() }
     }
 
     /// The bridge of `session`. For tests.
     func bridge(for session: String) -> OwnPaneBridge? { bridges[session] }
+
+    /// The grid of `session`'s pane: what the surface's container, its metrics and
+    /// the user's actions are told to.
+    func grid(for session: String) -> OwnPaneGrid? { grids[session] }
 
     /// `'<helper>' '<socket>'`: each path in single quotes, an embedded single quote
     /// written `'\''`.
@@ -226,5 +274,107 @@ final class PaneBridges {
     private static func nextSequence() -> Int {
         lastSequence += 1
         return lastSequence
+    }
+}
+
+/// One surface's `PaneGrid`, carried out: claims go to the bridge, imposed grids to
+/// the host, the debounce is a main queue timer, and the time is the system's uptime.
+///
+/// Thin on purpose: every decision is `PaneGrid`'s, tested without any of this.
+/// All of it runs on the main actor. The bridge's callbacks reach it through
+/// asynchronous hops (`PaneBridges.open`), and `claim` never blocks.
+///
+/// Told by the host: the grid that fits the pane as the pane's size or the surface's
+/// metrics change, nil when the surface leaves the window (`paneChanged`), and every
+/// key, click, paste or drop (`userActed`).
+@MainActor
+final class OwnPaneGrid {
+    private var model: PaneGrid
+    private let claim: (TerminalSize) -> Bool
+    private let impose: @MainActor (TerminalSize?) -> Void
+    private let clock: () -> UInt64
+    private var onDisplay = false
+    private var debounce: DispatchWorkItem?
+    private var stopped = false
+
+    /// - Parameter claim: sends a claim; whether the bridge accepted it.
+    /// - Parameter impose: shows a grid in the view, nil for the pane's own size.
+    init(debounce: UInt64 = 50_000_000,
+         claim: @escaping (TerminalSize) -> Bool,
+         impose: @escaping @MainActor (TerminalSize?) -> Void,
+         clock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
+        model = PaneGrid(debounce: debounce)
+        self.claim = claim
+        self.impose = impose
+        self.clock = clock
+    }
+
+    /// Whether the pane owns the grid. For tests.
+    var isOwner: Bool { model.isOwner }
+
+    /// The grid that fits the pane now, or nil when the surface is not on display.
+    func paneChanged(ownGrid: TerminalSize?) {
+        guard !stopped else { return }
+        if let ownGrid {
+            let now = clock()
+            if onDisplay {
+                apply(model.ownGridChanged(ownGrid, now: now))
+            } else {
+                onDisplay = true
+                apply(model.cameOnDisplay(ownGrid, now: now))
+            }
+        } else if onDisplay {
+            onDisplay = false
+            model.wentOffDisplay()
+        }
+    }
+
+    /// A key, a click, a paste or a drop in the surface.
+    func userActed() {
+        guard !stopped else { return }
+        apply(model.userActed(now: clock()))
+    }
+
+    /// A `resize` from the server, after the hop to the main actor.
+    func resizeReceived(_ grid: TerminalSize, own: Bool) {
+        guard !stopped else { return }
+        apply(model.resizeReceived(grid, own: own))
+    }
+
+    /// The link was lost and is being made again, after the hop to the main actor.
+    func linkLost() {
+        guard !stopped else { return }
+        apply(model.linkEnded(now: clock()))
+    }
+
+    /// Nothing more is claimed or imposed. Idempotent.
+    func stop() {
+        stopped = true
+        debounce?.cancel()
+        debounce = nil
+    }
+
+    private func apply(_ action: PaneGrid.Action) {
+        guard !stopped else { return }
+        switch action {
+        case .none:
+            break
+        case .claim(let grid):
+            apply(claim(grid) ? model.claimAccepted() : model.claimRefused())
+        case .scheduleDebounce(let after):
+            debounce?.cancel()
+            let item = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, !self.stopped else { return }
+                    self.debounce = nil
+                    self.apply(self.model.debounceFired(now: self.clock()))
+                }
+            }
+            debounce = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(min(after, UInt64(Int.max)))),
+                                          execute: item)
+        case .impose(let grid):
+            impose(grid)
+        }
     }
 }

@@ -41,8 +41,10 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// socket file. A surface that does not exist is nothing to do.
     func destroySurface(id: String)
 
-    /// The surface's grid, or nil before it has one. This is the sizing authority
-    /// for the substrate: Wietty resizes its own pty to match.
+    /// The surface's grid, or nil before it has one. What the surface lays out, not
+    /// the terminal's grid: the server is the only thing that resizes a terminal
+    /// (decision P4), and the grid in force is its screen model's. The two agree
+    /// once the surface shows the grid in force, its own claimed or one imposed.
     func size(id: String) -> TerminalSize?
 
     /// The surface's cell size, configured padding and backing scale, which is what
@@ -75,7 +77,13 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// shell also rings for tab completion, and this is a message a program chose to
     /// send. `title` is empty for `OSC 9;text`, which carries a body and nothing else.
     var onDesktopNotification: (@MainActor (_ id: String, _ title: String, _ body: String) -> Void)? { get set }
-    /// The surface's grid changed, so the pty behind it has to follow.
+    /// The surface's grid changed: its view was given another size, by the pane or
+    /// by `impose(grid:on:)`.
+    ///
+    /// A report, not a claim, and nothing in the core acts on it: the pty and the
+    /// model are resized only by a viewer's claim, which for the own pane is made by
+    /// the app from the grid that fits the pane (`PaneGrid`). At most it says the
+    /// surface has settled.
     ///
     /// Every new surface reports its grid once, and that first report is guaranteed
     /// to arrive *after* `createSurface` has returned, on a later main queue turn.

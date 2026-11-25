@@ -309,7 +309,10 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// with it.
     func createSurface(id: String, directory: URL, title: String?) throws {
         guard let bridges, app != nil, surfaces[id] == nil else { throw SurfaceHostError.surfaceFailed }
-        let command = try bridges.open(session: id)
+        // The pane's grid shows through the same `impose` any caller has.
+        let command = try bridges.open(session: id) { [weak self] grid in
+            self?.impose(grid: grid, on: id)
+        }
         do {
             try createSurface(id: id, command: command, directory: directory, title: title)
         } catch {
@@ -629,16 +632,35 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         }
     }
 
-    /// Called by a view whose grid changed, so the pty behind it can follow.
+    /// Called by a view whose grid changed. Passed on as `onResized`, which resizes
+    /// nothing.
     fileprivate func report(grid: TerminalSize, for id: String) {
         guard surfaces[id] != nil else { return }
         onResized?(id, grid)
     }
 
-    /// Called by a view whose metrics changed.
+    /// Called by a view whose metrics changed. The grid that fits the pane may have
+    /// moved with them (a font size, a padding, another scale).
     fileprivate func reportMetrics(for id: String) {
         guard surfaces[id] != nil else { return }
         onMetricsChanged?(id)
+        paneChanged(for: id)
+    }
+
+    // MARK: - The pane's grid
+
+    /// The pane around a surface changed size, or the surface came on or left
+    /// display: its pane's grid is told the grid that fits the pane now, nil when the
+    /// surface is not on display. A surface with no bridge (a measurement's) has none.
+    fileprivate func paneChanged(for id: String) {
+        guard let view = surfaces[id]?.view, let grid = bridges?.grid(for: id) else { return }
+        grid.paneChanged(ownGrid: view.ownGrid)
+    }
+
+    /// The user typed, clicked, pasted or dropped something in the surface: a pane
+    /// that does not own the grid claims it.
+    fileprivate func userActed(in id: String) {
+        bridges?.grid(for: id)?.userActed()
     }
 
     // MARK: - Close requests
@@ -877,14 +899,11 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         // lands after `createSurface` has returned to its caller.
         //
         // The caller is not finished creating the terminal while it is still inside
-        // `createSurface`: `GhosttyService.open` registers the session in its
-        // dictionary only afterwards, and its `onResized` handler resolves the
-        // session through that dictionary. A report from inside `adopt` would find
-        // nothing and be dropped, and because reporting latches on `lastGrid` no
-        // later event would correct it, so the pty would stay at its spawn size for
-        // the life of the terminal and a full screen program would lay itself out
-        // for a grid that does not exist. The seam is made safe here rather than by
-        // asking every caller to remember to pull `size(id:)`.
+        // `createSurface`, and a handler that resolves the session through its own
+        // registry would find nothing yet. Neither report resizes anything any more
+        // (decision P4), but the first metrics report is what lets the pane's grid
+        // compute the grid that fits the pane, and a report from inside `adopt`
+        // latched on `lastGrid` and `lastMetrics` would never come again.
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated { self?.reportInitialGrid() }
         }
@@ -923,6 +942,20 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         }
         return SurfaceMetrics(cellWidth: Int(size.cell_width_px), cellHeight: Int(size.cell_height_px),
                               paddingX: paddingX, paddingY: paddingY, scale: renderScale)
+    }
+
+    /// The grid that fits the pane this surface is shown in, at its metrics: what the
+    /// pane claims. Nil while the surface is not on display (not in a pane in a
+    /// window, or in one with no size yet) or its metrics are not known.
+    var ownGrid: TerminalSize? {
+        guard window != nil, let pane = superview as? SurfaceContainerView,
+              pane.bounds.width > 0, pane.bounds.height > 0, let metrics else { return nil }
+        return metrics.grid(fitting: Double(pane.bounds.width), Double(pane.bounds.height))
+    }
+
+    /// The pane around this surface changed size.
+    func paneSizeDidChange() {
+        host?.paneChanged(for: id)
     }
 
     /// Recomputes the imposed size from the metrics as they stand and, when it
@@ -1002,9 +1035,9 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         // The layer libghostty attached, never a cached one of our own.
         layer?.contentsScale = scale
 
-        // Every grid change is reported, not only the ones a font size change
-        // causes. A window resize is the common case and the pty has to follow it,
-        // or a full screen program keeps drawing for the old size.
+        // Every grid change is reported. A report, not a claim: nothing resizes the
+        // pty from it (decision P4). The pane claims from the grid that fits it,
+        // through `OwnPaneGrid`.
         if reportGrid, let grid = currentGrid(), grid != lastGrid {
             lastGrid = grid
             host?.report(grid: grid, for: id)
@@ -1043,6 +1076,8 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
             synchronizeMetrics()
             requestRedraw()
         }
+        // On or off display: the pane's grid claims nothing while off it.
+        host?.paneChanged(for: id)
     }
 
     // MARK: Focus and input
@@ -1081,6 +1116,8 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         // encoded, and unconditionally: the store drops the flag once and no-ops
         // after, so gating on which key it was would buy nothing.
         host?.onInput?(id)
+        // And takes the grid back if another viewer had it.
+        host?.userActed(in: id)
         let action: ghostty_input_action_e =
             event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         let composingBefore = marked.isComposing
@@ -1293,6 +1330,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     /// drag. Sent straight to the surface, which is the only path it has.
     fileprivate func sendText(_ text: String) {
         guard let surface, !text.isEmpty else { return }
+        host?.userActed(in: id)
         text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
     }
 
@@ -1407,6 +1445,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         // Clicking a terminal is how a user says "type here", and the pane cannot
         // know which of several surfaces that is.
         window?.makeFirstResponder(self)
+        host?.userActed(in: id)
         sendMouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT)
     }
 
@@ -1415,6 +1454,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        host?.userActed(in: id)
         sendMouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT)
     }
 
@@ -1423,6 +1463,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     }
 
     override func otherMouseDown(with event: NSEvent) {
+        host?.userActed(in: id)
         sendMouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE)
     }
 
@@ -1485,7 +1526,10 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     /// The binding is what wraps the text in bracketed paste when the program
     /// asked for it, and what runs the unsafe paste check. It reaches the host's
     /// `read_clipboard_cb`, which is why that callback has to be real.
-    @objc func paste(_ sender: Any?) { perform(binding: "paste_from_clipboard") }
+    @objc func paste(_ sender: Any?) {
+        host?.userActed(in: id)
+        perform(binding: "paste_from_clipboard")
+    }
 
     @objc override func selectAll(_ sender: Any?) { perform(binding: "select_all") }
 
