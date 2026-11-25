@@ -102,9 +102,10 @@ import WiettyCore
                 try? FileManager.default.removeItem(at: overlay)
             }
             // A host of its own per configuration, built after the overlay is
-            // written, rather than `reloadConfig` on one host: a surface created
-            // after a `reloadConfig` failed here with libghostty logging
-            // "error initializing surface err=error.OutOfMemory".
+            // written. A surface once failed here after a `reloadConfig` with
+            // libghostty logging "error initializing surface err=error.OutOfMemory";
+            // the cause was a display asleep, not the reload (see
+            // `ReloadThenCreateSurfaceTests`).
             let host = try GhosttySurfaceHost()
             try await measure(configuration, number: index, host: host)
         }
