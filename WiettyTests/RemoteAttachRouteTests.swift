@@ -373,14 +373,36 @@ private final class Client: @unchecked Sendable {
         #expect(task.closeCode == .invalid)
         try await client.send(.data([0x78]))
         try await client.send(.resize(cols: 90, rows: 30, own: false))
-        try await Task.sleep(nanoseconds: 200_000_000)
-        #expect(running.streamer.sent.isEmpty)
-        #expect(running.streamer.claims.isEmpty)
         let id = try #require(running.streamer.attaches.first?.id)
-        #expect(running.streamer.detached.isEmpty)
+        // The server reads inbound frames in order and detaches the viewer only after
+        // its reader has exited, so once the close has detached it, both frames were
+        // handled (and dropped).
         client.close()
         #expect(await pending.value == false)
         #expect(try await eventually { running.streamer.detached == [id] })
+        #expect(running.streamer.sent.isEmpty)
+        #expect(running.streamer.claims.isEmpty)
+    }
+
+    /// A frame over the server's inbound limit after `ended` is not left to the
+    /// grace: the reader refuses it, and the server closes and detaches the viewer
+    /// at once, well before a grace of a minute.
+    @Test func anOversizedFrameAfterEndedClosesAtOnce() async throws {
+        let streamer = RouteStreamer()
+        streamer.onAttach = [.ended]
+        let running = try await start(streamer, closeGrace: .seconds(60))
+        defer { running.stop() }
+        let client = Client(url: running.url("&session=gt:1&protocol=2"))
+        defer { client.close() }
+
+        #expect(try await client.message() == .hello(protocolVersion: 2, session: nil, resize: nil))
+        #expect(try await client.message() == .ended)
+        let id = try #require(running.streamer.attaches.first?.id)
+        // The server may close while the frame is still being written, so the send can fail.
+        try? await client.task.send(.data(Data(count: RemoteServer.maxInboundMessage + 1)))
+        #expect(try await eventually { running.streamer.detached == [id] })
+        #expect(running.streamer.sent.isEmpty)
+        #expect(running.streamer.claims.isEmpty)
     }
 
     /// The grace costs nothing with the real client: the package's
