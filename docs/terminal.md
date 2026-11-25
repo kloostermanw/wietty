@@ -259,7 +259,9 @@ is lost, since a claim sent on a link that ended may never be answered.
 at that size as `forkpty` creates it and the model is built at it: a full screen program lays itself
 out from the size it finds at startup, so a terminal is spawned with a size rather than resized into
 one, and the pane's first claim corrects it moments later. A surface that is never shown claims
-nothing, so its terminal stays 120 by 34 until some viewer claims. The hub keeps no record of a grid
+nothing, so its terminal stays 120 by 34 until some viewer claims, and its pane imposes that grid on
+the surface while it is hidden (see below), so the surface lays the child's output out for the same
+grid as the pty and the model. The hub keeps no record of a grid
 until the first claim, so the first claim is handled as a new grid even when it is 120 by 34.
 
 **What the pane shows** follows one rule in `PaneGrid`:
@@ -297,9 +299,18 @@ reports arrive one main queue turn after `createSurface` has returned, so a hand
 the session through its own registry finds it. The first metrics report is what lets the pane work
 out its first own grid.
 
-A surface that is not in the view hierarchy is not laid out and claims nothing. It keeps its last
-size, and a grid imposed on it meanwhile is kept and applied, so it comes back showing the grid in
-force.
+A surface that is not in the view hierarchy is not laid out and claims nothing, but **it is kept at
+the grid in force**. The pty and the model are at that grid, and the surface answers the terminal's
+queries and keeps its history, so it has to lay the child's output out for the same grid even while
+nobody sees it. A grid imposed on a view that no container holds is applied to the view directly
+(`GhosttySurfaceView.applyImposedSizeOffDisplay`, which sets its frame), at the scale the surface last
+rendered at, the one `synchronizeMetrics` uses for a view with no window. That covers a terminal
+created and never shown (the attach imposes 120 by 34 on the 800 by 480 point view `createSurface`
+makes) and a hidden terminal whose grid another viewer claims. With nothing imposed (the pane owned
+the grid when it was hidden) the view keeps the size its pane last gave it, which is the grid the
+pane claimed and so the grid in force; when another viewer claims, the pane is no longer the owner,
+the grid is imposed, and the view follows it. Shown again, the view is already at the size the
+container's constraints ask for, so showing it changes nothing about its grid.
 
 ### Metrics and an imposed size
 
@@ -1242,7 +1253,8 @@ a socket that then stays silent forever.
   theirs. The model keeps that width until a claim for another grid resizes it, since a claim for the
   grid already in force resizes nothing, and a viewer attaching meanwhile is told the model's grid.
 - **A terminal that is never shown stays 120 by 34** until some viewer claims a grid, because its pane
-  claims only once its surface is on display.
+  claims only once its surface is on display. Its surface is kept at that grid meanwhile, so the
+  surface, the pty and the model agree.
 - **A click claims the grid.** A press of any mouse button in the pane counts as using it, so a click
   that only starts a selection, or opens the context menu, takes the grid from another viewer.
 - **The imposed size is measured at scale 1 and at a simulated scale 2 only.** No real scale 2

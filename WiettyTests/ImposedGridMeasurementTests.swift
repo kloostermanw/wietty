@@ -31,7 +31,8 @@ import WiettyCore
 /// `impose(grid:on:)` and sized from `metrics(id:)`, whose padding comes from the
 /// configuration files rather than from the sweep. Then, through the same API, the
 /// paths that need a real surface (`IMPOSED-EXTRA` lines, not counted): a grid
-/// imposed while the view is off screen and applied when it is shown, a move to the
+/// imposed while the view is off screen, read while it still is and again once it is
+/// shown, a move to the
 /// other scale and back with a grid imposed, a reload that changes the padding (last
 /// configuration), and a program setting and resetting the background (first
 /// configuration), which the margin follows.
@@ -286,10 +287,14 @@ import WiettyCore
                     "\(configuration.label) \(name): frame \(view.frame.size), expected \(expected)")
         }
 
-        // Imposed while off screen, applied when shown.
+        // Imposed while off screen: the surface takes the grid at once, read while
+        // it is still off screen (the pty and the model are at the grid in force, so
+        // the surface must be too). Then shown, with the grid unchanged.
         let offscreen = TerminalSize(cols: 97, rows: 31)
         view.removeFromSuperview()
         host.impose(grid: offscreen, on: id)
+        try await check("offscreen-while-hidden", offscreen)
+        #expect(view.superview == nil && view.window == nil)
         SurfaceContainer.attach(view, to: container)
         try await check("offscreen-then-shown", offscreen)
 
