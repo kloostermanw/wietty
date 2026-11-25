@@ -180,13 +180,14 @@ private final class Client: @unchecked Sendable {
         }
     }
 
-    private func start(_ streamer: RouteStreamer = RouteStreamer()) async throws -> Running {
+    private func start(_ streamer: RouteStreamer = RouteStreamer(),
+                       oldClientGrace: Duration = RemoteServer.defaultOldClientGrace) async throws -> Running {
         let suite = "test.remote.attach.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         let token = RemoteAccessToken(defaults: defaults)
         let store = ProjectStore(defaults: defaults, service: FakeTerminalService())
         let server = RemoteServer(store: store, streamer: streamer, token: token,
-                                  host: "127.0.0.1", port: 0)
+                                  host: "127.0.0.1", port: 0, oldClientGrace: oldClientGrace)
         await server.start()
         let deadline = Date().addingTimeInterval(10)
         while server.boundPort == nil && Date() < deadline {
@@ -211,9 +212,10 @@ private final class Client: @unchecked Sendable {
 
     /// A client with no `protocol` parameter is an old one. It is sent exactly the
     /// two version 1 messages its decoder reads, `type` and `vt`, telling the user
-    /// to update, and the server closes. Nothing is attached.
+    /// to update, and the server closes once the grace has passed without the
+    /// client closing. Nothing is attached.
     @Test func anOldClientIsToldToUpdateAndClosed() async throws {
-        let running = try await start()
+        let running = try await start(oldClientGrace: .milliseconds(200))
         defer { running.stop() }
         let client = Client(url: running.url("&session=gt:1"))
         defer { client.close() }
@@ -249,6 +251,29 @@ private final class Client: @unchecked Sendable {
         try await Task.sleep(nanoseconds: 300_000_000)
         let second = try #require(jsonObject(try await client.text()))
         #expect(second["type"] as? String == "ended")
+    }
+
+    /// After the notice the server waits for the old client to close, which it does
+    /// on `ended`. Had the server closed first, a client that read the close ahead
+    /// of `ended` would answer it and the server would drop the connection; the
+    /// client's next input then fails its socket, and the `ended` it had not yet
+    /// read is lost. A close from the server is a receive that fails at once, so a
+    /// receive still waiting after half a second means the server has not closed.
+    @Test func theServerLeavesTheCloseToAnOldClient() async throws {
+        let running = try await start()
+        defer { running.stop() }
+        let client = Client(url: running.url("&session=gt:1"))
+        defer { client.close() }
+
+        #expect(jsonObject(try await client.text())?["type"] as? String == "data")
+        #expect(jsonObject(try await client.text())?["type"] as? String == "ended")
+        let task = client.task
+        let pending = Task { (try? await task.receive()) != nil }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        #expect(task.closeCode == .invalid)
+        try await task.send(.string(#"{"data":"x"}"#))
+        client.close()
+        #expect(await pending.value == false)
     }
 
     /// The two frames themselves, byte for byte as the route builds them.

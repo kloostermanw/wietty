@@ -182,14 +182,22 @@ WS /attach?session=<id>&token=<t>&protocol=2&resize=repaint
   not upgraded (Hummingbird answers 405, see "Live state" below).
 - `protocol` missing: the client is an old one, recognised at the upgrade with no
   timer. The upgrade succeeds, and the server sends exactly two version 1 text
-  frames and closes: `{"type":"data","vt":"<text>"}`, then `{"type":"ended"}`,
-  each with its keys sorted. The text is exactly these bytes: CR LF, `ESC [31m`,
+  frames: `{"type":"data","vt":"<text>"}`, then `{"type":"ended"}`, each with its
+  keys sorted. The text is exactly these bytes: CR LF, `ESC [31m`,
   `This app is too old for this Mac. Update Wietty on this device.`, `ESC [0m`,
   CR LF, where ESC is `0x1B`. As a Swift literal it is
   `"\r\n\u{1B}[31mThis app is too old for this Mac. Update Wietty on this device.\u{1B}[0m\r\n"`,
   and in the JSON the ESC appears as `\u001b`. A version 1 client shows the line
   in red and the session as ended. These two frames, built by hand in the
   route, are the only version 1 code left. Nothing is attached.
+  The server then leaves the close to the client, which closes when it reads
+  `ended`, and drops whatever the client sends meanwhile. Only a client that has
+  not closed after 10 seconds is closed by the server. A close sent with the two
+  frames could be read by the client's `URLSessionWebSocketTask` ahead of them
+  (it is, when all three arrive with the answer to the upgrade). The task answers
+  it, the server drops the connection, and the next input the terminal view
+  sends fails the task, which then loses the unread `ended` and reports a lost
+  connection instead of an ended session.
 - `protocol` present and not `2`: one `error` with code `protocol`, then the
   server closes. Nothing is attached.
 - `session` missing (with `protocol=2`): one `error` with code `session`, then the
