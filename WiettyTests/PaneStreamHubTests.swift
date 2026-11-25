@@ -283,7 +283,8 @@ private func bytes(_ text: String) -> [UInt8] { Array(text.utf8) }
     /// No repaint source, or one that could not build a frame: every viewer still
     /// learns the grid, and a size that really moved is told again.
     @Test func aClaimWithNothingToPaintStillTellsTheGrid() {
-        let hub = PaneStreamHub()
+        // Paced, so the claims sent back to back are each handled at once.
+        let hub = PaneStreamHub(claimClock: ClaimTimers.paced())
         let sink = Sink()
         hub.onRepaint = { _ in nil }
         hub.attach(session: "gt:1", resize: .repaint) { sink.receive($0) }

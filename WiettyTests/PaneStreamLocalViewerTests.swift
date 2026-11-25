@@ -635,7 +635,8 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
     /// chunk, then those messages in order, then nothing. `flush()` is the proof:
     /// it waits for the delivery queue, so it cannot return while that is parked.
     @Test func aBusyLocalViewerNeverHoldsTheDeliveryQueue() {
-        let hub = PaneStreamHub()
+        // Paced, so the claims sent back to back are each handled at once.
+        let hub = PaneStreamHub(claimClock: ClaimTimers.paced())
         defer { hub.stop() }
         let gate = Gate()
         defer { gate.open() }
@@ -678,6 +679,43 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
                                  .resize(cols: 100, rows: 30, own: true),
                                  .resize(cols: 100, rows: 30, own: true),
                                  .ended])
+    }
+
+    /// A held claim released while its local claimant is busy with a chunk: the
+    /// answers to the claims it replaced and its own answer are left with the
+    /// viewer, the delivery queue moves on, and the viewer gets them after the
+    /// chunk, every one and in order.
+    @Test func aHeldClaimReleasedWhileTheViewerIsBusyKeepsItsOrder() {
+        let timers = ClaimTimers()
+        let hub = timers.hub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        let log = LocalLog()
+        let id = hub.attachLocal(session: Self.session, resize: .reflow) { message in
+            log.add(message)
+            if isData(message) { gate.hold() }
+        }
+        hub.claim(connectionId: id, cols: 100, rows: 30)
+        hub.claim(connectionId: id, cols: 90, rows: 20)
+        hub.claim(connectionId: id, cols: 80, rows: 24)
+        #expect(settled(hub))
+        #expect(timers.count == 1)
+        let writer = onThread { hub.write(session: Self.session, bytes: bytes("chunk")) }
+        #expect(gate.waitUntilHeld())
+
+        timers.advance(milliseconds: 50)
+        #expect(timers.fire(0))
+        let flushed = onThread { hub.flush() }
+        #expect(flushed.wait(timeout: .now() + 5) == .success, "the held claim held the delivery queue")
+
+        gate.open()
+        #expect(writer.wait(timeout: .now() + 5) == .success)
+        #expect(settled(hub))
+        #expect(log.messages == [.resize(cols: 100, rows: 30, own: true),
+                                 .data(bytes("chunk")),
+                                 .resize(cols: 100, rows: 30, own: true),
+                                 .resize(cols: 80, rows: 24, own: true)])
     }
 
     /// A resize left with a busy viewer goes out after the chunk in progress and
@@ -760,7 +798,8 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
     /// writer and a stream of claims race for a few thousand rounds, and every
     /// claim is answered.
     @Test func noMessageLeftWithAViewerIsStranded() {
-        let hub = PaneStreamHub()
+        // Paced, so every claim is handled at once and races the writer.
+        let hub = PaneStreamHub(claimClock: ClaimTimers.paced())
         defer { hub.stop() }
         let answers = Box(0)
         let id = hub.attachLocal(session: Self.session, resize: .reflow) { message in
@@ -811,7 +850,8 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
     /// own write, `own` true, and a queued viewer of the same session is told the
     /// grid with `own` false. The grid in force is answered to the claimant alone.
     @Test func aLocalViewerCanClaimTheGrid() {
-        let hub = PaneStreamHub()
+        // Paced, so the claims sent back to back are each handled at once.
+        let hub = PaneStreamHub(claimClock: ClaimTimers.paced())
         defer { hub.stop() }
         let claimed = Box<[TerminalSize]>([])
         hub.onClaim = { _, size in claimed.value.append(size) }

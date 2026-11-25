@@ -70,9 +70,11 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
         try #require(hub.quietFlushes(session: "gt:1") == quiet, "the write was quiet")
     }
 
-    /// A hub whose repaint and claim hooks are recorded on `timeline`.
+    /// A hub whose repaint and claim hooks are recorded on `timeline`. Its clock
+    /// paces every claim, so claims sent back to back are each handled at once: the
+    /// hold on claims has its own suite, `PaneStreamClaimPaceTests`.
     private func hub(_ timeline: Timeline) -> PaneStreamHub {
-        let hub = PaneStreamHub()
+        let hub = PaneStreamHub(claimClock: ClaimTimers.paced())
         hub.onRepaint = { _ in
             timeline.add(.repaintTaken)
             return (size: Self.grid, frame: bytes("SCREEN"))
@@ -190,7 +192,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
     /// force and moves nothing.
     @Test func theRecordHoldsTheGridTheViewersWereTold() {
         let timeline = Timeline()
-        let hub = PaneStreamHub()
+        let hub = PaneStreamHub(claimClock: ClaimTimers.paced())
         hub.onRepaint = { _ in (size: TerminalSize(cols: 90, rows: 20), frame: bytes("SCREEN")) }
         hub.onClaim = { session, size in timeline.add(.claimed(session, size)) }
         let claimant = hub.attach(session: "gt:1", resize: .repaint, onMessage: timeline.sink("claimant"))
@@ -353,4 +355,422 @@ private final class Answers: @unchecked Sendable {
     private var storage: [StreamMessage] = []
     func add(_ message: StreamMessage) { lock.lock(); storage.append(message); lock.unlock() }
     var messages: [StreamMessage] { lock.lock(); defer { lock.unlock() }; return storage }
+}
+
+/// A clock and timers the test drives, for the hub's hold on claims: no claim waits
+/// on real time, and a timer fires only when the test fires it.
+final class ClaimTimers: @unchecked Sendable {
+    private struct Scheduled {
+        let delay: UInt64
+        let queue: DispatchQueue
+        let work: @Sendable () -> Void
+        var cancelled = false
+    }
+
+    private let lock = NSLock()
+    private var time: UInt64 = 1_000_000_000
+    private var scheduled: [Scheduled] = []
+
+    var now: UInt64 { lock.withLock { time } }
+    func advance(milliseconds: UInt64) { lock.withLock { time += milliseconds * 1_000_000 } }
+
+    var clock: PaneStreamHub.ClaimClock { { [self] in now } }
+    var scheduler: PaneStreamHub.ClaimScheduler {
+        { [self] delay, queue, work in
+            let index = lock.withLock {
+                scheduled.append(Scheduled(delay: delay, queue: queue, work: work))
+                return scheduled.count - 1
+            }
+            return { [self] in lock.withLock { scheduled[index].cancelled = true } }
+        }
+    }
+
+    /// How many timers the hub has asked for.
+    var count: Int { lock.withLock { scheduled.count } }
+    func delay(_ index: Int) -> UInt64 { lock.withLock { scheduled[index].delay } }
+    func isCancelled(_ index: Int) -> Bool { lock.withLock { scheduled[index].cancelled } }
+
+    /// Fires timer `index` the way its dispatch source would: on its queue, and not
+    /// at all once cancelled. Whether it fired. The work runs asynchronously, so the
+    /// caller waits for the hub's deliveries afterwards.
+    @discardableResult
+    func fire(_ index: Int) -> Bool {
+        let timer = lock.withLock { scheduled[index] }
+        guard !timer.cancelled else { return false }
+        timer.queue.async(execute: timer.work)
+        return true
+    }
+
+    /// Runs timer `index`'s work on its queue even if it was cancelled: what a timer
+    /// that fired at the instant it was cancelled would do.
+    func runAnyway(_ index: Int) {
+        let timer = lock.withLock { scheduled[index] }
+        timer.queue.async(execute: timer.work)
+    }
+
+    func hub(startTimer: Bool = false) -> PaneStreamHub {
+        PaneStreamHub(startTimer: startTimer, claimClock: clock, claimScheduler: scheduler)
+    }
+
+    /// A clock that moves on by the hub's whole interval every time it is read, so
+    /// every claim is paced and none is ever held: for tests about something other
+    /// than the hold that send claims back to back.
+    static func paced() -> PaneStreamHub.ClaimClock {
+        let timers = ClaimTimers()
+        return {
+            timers.advance(milliseconds: PaneStreamHub.claimInterval / 1_000_000)
+            return timers.now
+        }
+    }
+}
+
+/// The hub holds each viewer's claims to one per 50 ms: a sooner claim is held, a
+/// later one replaces it, and every claim is still answered once, in order.
+@Suite struct PaneStreamClaimPaceTests {
+    private static let small = TerminalSize(cols: 90, rows: 20)
+    private static let large = TerminalSize(cols: 100, rows: 30)
+
+    private func own(_ size: TerminalSize) -> StreamMessage {
+        .resize(cols: size.cols, rows: size.rows, own: true)
+    }
+
+    private func other(_ size: TerminalSize) -> StreamMessage {
+        .resize(cols: size.cols, rows: size.rows, own: false)
+    }
+
+    /// A hub on `timers` whose claim hook is recorded on `timeline`. No repaint
+    /// hook, so each answer names the grid claimed.
+    private func hub(_ timeline: Timeline, _ timers: ClaimTimers) -> PaneStreamHub {
+        let hub = timers.hub()
+        hub.onClaim = { session, size in timeline.add(.claimed(session, size)) }
+        return hub
+    }
+
+    private func claims(_ timeline: Timeline) -> [TerminalSize] {
+        timeline.events.compactMap { event in
+            if case let .claimed(_, size) = event { return size }
+            return nil
+        }
+    }
+
+    private func claim(_ hub: PaneStreamHub, _ id: UUID, _ size: TerminalSize) {
+        hub.claim(connectionId: id, cols: size.cols, rows: size.rows)
+    }
+
+    /// Claims 50 ms apart, the pace the pane keeps, are each handled at once,
+    /// exactly as before: no timer, one reflow and one round of `resize` each.
+    @Test func pacedClaimsAreHandledAtOnce() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
+
+        for size in [Self.large, Self.small, Self.large] {
+            claim(hub, claimant, size)
+            hub.waitForPendingDeliveries()
+            timers.advance(milliseconds: 50)
+        }
+
+        #expect(timers.count == 0)
+        #expect(claims(timeline) == [Self.large, Self.small, Self.large])
+        #expect(timeline.messages(of: "claimant") == [own(Self.large), own(Self.small), own(Self.large)])
+        #expect(timeline.messages(of: "other") == [other(Self.large), other(Self.small), other(Self.large)])
+    }
+
+    /// A claim 49 ms after the last one handled is held, for the 1 ms that is left.
+    @Test func aClaimInsideTheIntervalIsHeldForWhatIsLeftOfIt() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        claim(hub, claimant, Self.large)
+        hub.waitForPendingDeliveries()
+        timers.advance(milliseconds: 49)
+
+        claim(hub, claimant, Self.small)
+        hub.waitForPendingDeliveries()
+
+        #expect(timeline.messages(of: "claimant") == [own(Self.large)])
+        #expect(timers.count == 1)
+        #expect(timers.delay(0) == 1_000_000)
+        timers.advance(milliseconds: 1)
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+        #expect(timeline.messages(of: "claimant") == [own(Self.large), own(Self.small)])
+        #expect(claims(timeline) == [Self.large, Self.small])
+    }
+
+    /// A burst of claims: the first is handled at once, the rest wait for one timer,
+    /// and then every one of them is answered with `own` true, in order. Those that
+    /// were replaced carry the grid in force and move nothing; the last is handled
+    /// as any claim. So at most two reflows, and the other viewers hear of two grids.
+    @Test func aBurstIsAnsweredInFullWithAtMostTwoReflows() {
+        for count in [2, 3, 20] {
+            let timeline = Timeline()
+            let timers = ClaimTimers()
+            let hub = hub(timeline, timers)
+            let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+            hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
+            // Large first, alternating between, ending on small: the last claim
+            // is for a grid other than the one in force.
+            let sizes = [Self.large] + (1..<count - 1).map { $0 % 2 == 1 ? Self.small : Self.large }
+                + [Self.small]
+            let last = Self.small
+
+            for size in sizes { claim(hub, claimant, size) }
+            hub.waitForPendingDeliveries()
+            #expect(timeline.messages(of: "claimant") == [own(sizes[0])], "\(count)")
+            #expect(timers.count == 1, "\(count)")
+            #expect(timers.delay(0) == PaneStreamHub.claimInterval, "\(count)")
+
+            timers.advance(milliseconds: 50)
+            #expect(timers.fire(0))
+            hub.waitForPendingDeliveries()
+
+            let expected = [own(sizes[0])] + Array(repeating: own(sizes[0]), count: count - 2) + [own(last)]
+            #expect(timeline.messages(of: "claimant") == expected, "\(count)")
+            #expect(claims(timeline) == [sizes[0], last], "\(count)")
+            #expect(timeline.messages(of: "other") == [other(sizes[0]), other(last)], "\(count)")
+            #expect(timers.count == 1, "\(count)")
+        }
+    }
+
+    /// A burst ending on the grid in force: the held claim is answered to the
+    /// claimant alone, like any claim for the grid in force, so one reflow in all.
+    @Test func aBurstEndingOnTheGridInForceReflowsOnce() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
+
+        for size in [Self.large, Self.small, Self.large, Self.small, Self.large] { claim(hub, claimant, size) }
+        hub.waitForPendingDeliveries()
+        timers.advance(milliseconds: 50)
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+
+        #expect(timeline.messages(of: "claimant") == Array(repeating: own(Self.large), count: 5))
+        #expect(claims(timeline) == [Self.large])
+        #expect(timeline.messages(of: "other") == [other(Self.large)])
+    }
+
+    /// The bytes accepted before the held claim is handled reach the claimant ahead
+    /// of that claim's answer, as for any claim.
+    @Test func aHeldClaimKeepsOutputInItsPlace() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        claim(hub, claimant, Self.large)
+        claim(hub, claimant, Self.small)
+        hub.waitForPendingDeliveries()
+        hub.write(session: "gt:1", bytes: Array("before".utf8))
+        timers.advance(milliseconds: 50)
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+        hub.write(session: "gt:1", bytes: Array("after".utf8))
+        hub.flush()
+
+        let messages = timeline.messages(of: "claimant")
+        let answer = messages.firstIndex(of: own(Self.small))
+        #expect(answer != nil)
+        guard let answer else { return }
+        #expect(dataBytes(Array(messages[..<answer])) == Array("before".utf8))
+        #expect(dataBytes(Array(messages[(answer + 1)...])) == Array("after".utf8))
+    }
+
+    /// The timer fires once: handling the held claim schedules nothing, and its work
+    /// run a second time finds nothing held. The next claim inside the interval
+    /// after that is held again, on a timer of its own.
+    @Test func theTimerFiresOnce() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        for size in [Self.large, Self.small, Self.large, Self.small] { claim(hub, claimant, size) }
+        hub.waitForPendingDeliveries()
+        timers.advance(milliseconds: 50)
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+        let answered = timeline.messages(of: "claimant")
+        #expect(answered.count == 4)
+
+        timers.runAnyway(0)
+        hub.waitForPendingDeliveries()
+        #expect(timeline.messages(of: "claimant") == answered)
+        #expect(timers.count == 1)
+
+        // Handled when the timer fired, so a claim now is inside the interval again.
+        claim(hub, claimant, Self.large)
+        hub.waitForPendingDeliveries()
+        #expect(timers.count == 2)
+        #expect(timeline.messages(of: "claimant") == answered)
+    }
+
+    /// Two viewers bursting at once are held each on its own: each one's first
+    /// claim is handled at once, each gets a timer, and each is answered in full.
+    @Test func twoViewersAreHeldIndependently() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let first = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("first"))
+        let second = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("second"))
+        claim(hub, first, Self.large)
+        claim(hub, second, Self.small)
+        claim(hub, first, Self.small)
+        claim(hub, second, Self.large)
+        claim(hub, first, Self.large)
+        hub.waitForPendingDeliveries()
+
+        #expect(claims(timeline) == [Self.large, Self.small])
+        #expect(timers.count == 2)
+        #expect(timeline.messages(of: "first") == [own(Self.large), other(Self.small)])
+        #expect(timeline.messages(of: "second") == [other(Self.large), own(Self.small)])
+
+        timers.advance(milliseconds: 50)
+        #expect(timers.fire(1))
+        hub.waitForPendingDeliveries()
+        // The second's held claim moves the grid back to large.
+        #expect(timeline.messages(of: "second") == [other(Self.large), own(Self.small), own(Self.large)])
+        #expect(timeline.messages(of: "first") == [own(Self.large), other(Self.small), other(Self.large)])
+
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+        // The first's replaced claim is answered with the grid in force (large), and
+        // its held claim (large) is the grid in force too.
+        #expect(timeline.messages(of: "first")
+                == [own(Self.large), other(Self.small), other(Self.large), own(Self.large), own(Self.large)])
+        #expect(claims(timeline) == [Self.large, Self.small, Self.large])
+    }
+
+    /// A local viewer's claims are held by the same rule.
+    @Test func aLocalViewersClaimsAreHeldToo() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        defer { hub.stop() }
+        let claimant = hub.attachLocal(session: "gt:1", resize: .reflow, write: timeline.sink("claimant"))
+        hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
+        for size in [Self.large, Self.small, Self.large, Self.small] { claim(hub, claimant, size) }
+        hub.waitForPendingDeliveries()
+        #expect(timeline.messages(of: "claimant") == [own(Self.large)])
+        #expect(timers.count == 1)
+
+        timers.advance(milliseconds: 50)
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+        #expect(timeline.messages(of: "claimant")
+                == [own(Self.large), own(Self.large), own(Self.large), own(Self.small)])
+        #expect(claims(timeline) == [Self.large, Self.small])
+        #expect(timeline.messages(of: "other") == [other(Self.large), other(Self.small)])
+    }
+
+    /// A grid out of bounds is no claim, so it neither starts a hold nor replaces
+    /// a held claim, and is not counted among those answered.
+    @Test func theBoundsApplyBeforeTheHold() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let claimant = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+        claim(hub, claimant, Self.large)
+        hub.claim(connectionId: claimant, cols: 0, rows: 20)
+        hub.waitForPendingDeliveries()
+        #expect(timers.count == 0)
+
+        claim(hub, claimant, Self.small)
+        hub.claim(connectionId: claimant, cols: 10_001, rows: 20)
+        hub.waitForPendingDeliveries()
+        timers.advance(milliseconds: 50)
+        #expect(timers.fire(0))
+        hub.waitForPendingDeliveries()
+        #expect(timeline.messages(of: "claimant") == [own(Self.large), own(Self.small)])
+    }
+
+    /// Detach drops the held claim and cancels its timer: nothing reaches the
+    /// viewer that is gone or anyone else, even from a timer that fired regardless.
+    @Test func detachDropsTheHeldClaim() {
+        for local in [false, true] {
+            let timeline = Timeline()
+            let timers = ClaimTimers()
+            let hub = hub(timeline, timers)
+            defer { hub.stop() }
+            let claimant = local
+                ? hub.attachLocal(session: "gt:1", resize: .reflow, write: timeline.sink("claimant"))
+                : hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+            hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("other"))
+            for size in [Self.large, Self.small, Self.large, Self.small] { claim(hub, claimant, size) }
+            hub.waitForPendingDeliveries()
+            let before = timeline.events
+
+            hub.detach(connectionId: claimant)
+            #expect(timers.isCancelled(0), "local \(local)")
+            timers.runAnyway(0)
+            hub.waitForPendingDeliveries()
+            #expect(timeline.events == before, "local \(local)")
+        }
+    }
+
+    /// The end of the session drops the held claim and its timer: the claimant's
+    /// `ended` is the last it hears.
+    @Test func theSessionsEndDropsTheHeldClaim() {
+        for local in [false, true] {
+            let timeline = Timeline()
+            let timers = ClaimTimers()
+            let hub = hub(timeline, timers)
+            defer { hub.stop() }
+            let claimant = local
+                ? hub.attachLocal(session: "gt:1", resize: .reflow, write: timeline.sink("claimant"))
+                : hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("claimant"))
+            for size in [Self.large, Self.small, Self.large] { claim(hub, claimant, size) }
+            hub.waitForPendingDeliveries()
+
+            hub.endViewers(ofSession: "gt:1")
+            hub.waitForPendingDeliveries()
+            #expect(timers.isCancelled(0), "local \(local)")
+            timers.runAnyway(0)
+            hub.waitForPendingDeliveries()
+            #expect(timeline.messages(of: "claimant") == [own(Self.large), .ended], "local \(local)")
+            #expect(claims(timeline) == [Self.large], "local \(local)")
+        }
+    }
+
+    /// `stop()` drops every held claim and cancels every timer.
+    @Test func stopDropsEveryHeldClaim() {
+        let timeline = Timeline()
+        let timers = ClaimTimers()
+        let hub = hub(timeline, timers)
+        let first = hub.attach(session: "gt:1", resize: .reflow, onMessage: timeline.sink("first"))
+        let second = hub.attachLocal(session: "gt:2", resize: .reflow, write: timeline.sink("second"))
+        for size in [Self.large, Self.small] {
+            claim(hub, first, size)
+            claim(hub, second, size)
+        }
+        hub.waitForPendingDeliveries()
+        #expect(timers.count == 2)
+        let before = timeline.events
+
+        hub.stop()
+        #expect(timers.isCancelled(0))
+        #expect(timers.isCancelled(1))
+        timers.runAnyway(0)
+        timers.runAnyway(1)
+        hub.waitForPendingDeliveries()
+        #expect(timeline.events == before)
+    }
+
+    /// A hub that goes away cancels the timer of a claim it still held.
+    @Test func noTimerOutlivesTheHub() {
+        let timers = ClaimTimers()
+        do {
+            let hub = timers.hub()
+            let claimant = hub.attach(session: "gt:1", resize: .reflow) { _ in }
+            hub.claim(connectionId: claimant, cols: 100, rows: 30)
+            hub.claim(connectionId: claimant, cols: 90, rows: 20)
+            hub.waitForPendingDeliveries()
+        }
+        #expect(timers.count == 1)
+        #expect(timers.isCancelled(0))
+    }
 }

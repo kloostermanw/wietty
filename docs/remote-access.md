@@ -327,7 +327,8 @@ is my grid"; the `own` a viewer sends means nothing and is sent as `false`. Both
 servers hand it to `PaneStreamHub.claim(connectionId:cols:rows:)` with that
 viewer's id: the attach route for a WebSocket viewer, `LocalStreamServer` for the
 serving Mac's pane. The hub handles claims one at a time, in the order they
-arrive, on its delivery queue:
+arrive, on its delivery queue, and at most one per 50 ms per viewer (see "Held
+to one per 50 ms" below):
 
 - A claim for a grid other than the one the hub last announced resizes the pty
   (`TIOCSWINSZ`) and then the terminal's screen model, and only then tells every
@@ -350,13 +351,21 @@ no message to the codec and is never answered, so a client must not count it
 among the claims it waits for; nor is a claim from a viewer whose session has
 already ended.
 
-Claims are not coalesced by the server. Each claim for a new grid costs a pty
-resize, a reflow of the terminal's whole history in the model, a repaint for the
-viewers that asked for one and a message to every viewer, all on the hub's one
-delivery queue, which every viewer of every terminal shares. A client is expected
-to limit itself (the serving Mac's pane sends at most one claim per 50 ms while a
-window is dragged); a client that floods claims slows every viewer, and nothing on
-the server stops it. This is a known limit.
+**Held to one per 50 ms.** Each claim for a new grid costs a pty resize, a
+reflow of the terminal's whole history in the model, a repaint for the viewers
+that asked for one and a message to every viewer, all on the hub's one delivery
+queue, which every viewer of every terminal shares. So the hub holds each viewer
+to one claim per 50 ms, the pace the serving Mac's pane keeps while a window is
+dragged. A claim that arrives sooner than 50 ms after the same viewer's last
+handled claim is held; a later one replaces it. When the 50 ms are over, every
+claim that was replaced is answered, in order, with one `resize` whose `own` is
+true and which carries the grid in force at that moment; such a claim is not
+applied (no resize, nothing to the other viewers). Then the last claim is handled
+as above. A burst of claims therefore costs at most two reflows, and the claimant
+still gets exactly one answer per claim, in order. A viewer that disconnects
+meanwhile gets nothing for its held claims. A client should still limit itself:
+a claim that is held is answered up to 50 ms later, and an answer to a replaced
+claim names a grid other than the one claimed.
 
 **Ending.** After `error` the server closes the socket. After `ended` it leaves
 the close to the viewer, which closes when it reads `ended` (the package's
