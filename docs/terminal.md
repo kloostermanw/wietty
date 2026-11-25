@@ -233,6 +233,21 @@ gets exactly one `resize` with `own` true per claim, and it carries the grid in 
 model's and can differ from the grid claimed (issue 92, under "Limitations"). A grid outside 1 to
 10,000 per side is ignored and not answered. The wire side is in `docs/remote-access.md`.
 
+**The hub holds each viewer to one claim per 50 ms** (`PaneStreamHub.claimInterval`, issue 93), the
+pace the pane already keeps. A claim that reaches the delivery queue sooner than 50 ms after the same
+viewer's last handled claim is held, and a later one replaces it, counted. A held claim always
+replaces: a claim arriving after the 50 ms while one is still held does not overtake it. One timer per
+held claim fires on the delivery queue when the 50 ms are over. Then each claim it replaced is
+answered with one `resize`, `own` true, carrying the grid in force, and nothing else happens for it
+(no reflow, no signal to the child, nothing to the other viewers). Then the held claim is handled as
+any claim, which may make it a claim for the grid in force. So a burst of claims costs at most two
+reflows, the first's and the last's, and the claimant still gets one answer per claim, in order. A
+local viewer's claims are held the same way, and its answers reach it in order behind whatever it was
+left (see "Serving the stream"). Detaching the viewer, the end of the session and `stop()` drop a held
+claim unanswered and cancel its timer. The bounds above are checked before a claim is held, so a grid
+out of bounds neither starts a hold nor replaces one. The clock and the timer are injected for the
+tests, as `ResyncThrottle`'s are.
+
 **Who claims, and when.** For this Mac's pane, `PaneGrid` decides and `OwnPaneGrid` carries it out
 on the main actor, through the pane's bridge, its link and the local socket. What the pane claims is
 its own grid: the largest grid that fits the pane at the surface's metrics
@@ -626,8 +641,9 @@ paint or a claim's resize, and the main actor for a text read. What is called of
 runs at hundreds of megabytes a second, a paint frame formats one viewport). One call is not: **a
 change of column count reflows the whole scrollback under that lock**, and on a full scrollback that
 is slow enough to hold the terminal's own output behind each claim of a window drag (at most one per
-50 ms from the pane). The resize runs on the hub's delivery queue, so while it reflows no queued
-viewer of any terminal is delivered to either. It is a known cost and not yet solved.
+50 ms per viewer, which the hub enforces, see "Sizing"). The resize runs on the hub's delivery queue,
+so while it reflows no queued viewer of any terminal is delivered to either. It is a known cost and
+not yet solved.
 
 **History is a setting**, `scrollback-lines` in `~/.config/wietty/config`
 (`ProjectStore.scrollbackLines`, `TerminalScrollback`). It has no control in the settings panel yet:
@@ -871,10 +887,11 @@ queued claimant is first sent the bytes accepted before it, as a flush would sen
 force" is judged against the grid the hub last announced, and it has announced none before the first
 claim. The grid announced is the repaint's when there is one, which is the model's and can differ
 from the grid claimed; it then becomes the record. Claims are handled one by one in the order they
-arrive and are never coalesced: each claim for a new grid resizes the pty, reflows the model under its
-lock, takes a repaint for the viewers that asked for repaints and sends every viewer a message, all on
-the delivery queue. The pane sends at most one per 50 ms; a viewer that floods claims costs every
-viewer of every terminal that much work on the one queue, and nothing on the server limits it.
+arrive: each claim for a new grid resizes the pty, reflows the model under its lock, takes a repaint
+for the viewers that asked for repaints and sends every viewer a message, all on the delivery queue.
+That is why the hub holds each viewer to one claim per 50 ms, the pane's own pace: a claim sooner
+than that is held and the claims it replaces are answered with the grid in force and not applied
+(see "Sizing").
 
 A claim's resize runs on the hub's delivery queue and reaches the pty and the model through
 `SharedTerminalState`, never through the service. The census, the model feed, the frames and the input
@@ -1235,10 +1252,11 @@ a socket that then stays silent forever.
   terminal being resized waits behind it, on each claim of a window drag once its scrollback is full.
   The resize runs on the hub's delivery queue, so the queued viewers of every terminal wait for it
   too. The cost grows with the `scrollback-lines` setting. See "The server's own terminal".
-- **Claims are not coalesced by the server.** Each one is handled on the hub's delivery queue, and
-  each claim for a new grid resizes the pty, reflows the model and sends every viewer a message. The
-  pane claims at most once per 50 ms; a viewer that floods claims costs every viewer of every
-  terminal, and nothing on the server limits it.
+- **A viewer that claims as fast as it may still costs every terminal one reflow per 50 ms.** The
+  hub holds each viewer to one claim per 50 ms (issue 93, solved, see "Sizing"), so a burst costs at
+  most two reflows, but every viewer has its own 50 ms: several viewers claiming at once, or one
+  claiming steadily at that pace on a full scrollback, still hold the delivery queue for a reflow each
+  time.
 - **A pane that stops reading holds back its terminal** (decision P1). Output is written to the
   pane on the pty's read queue with a blocking write, so a surface that does not read stops the
   child at a full pty, and the terminal's other local viewers with it. A control message written

@@ -379,6 +379,13 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// viewer), but serialized with every write. The join uses it only for a viewer
     /// that gets no snapshot.
     private var sizeForPane: [String: TerminalSize] = [:]
+    /// Per viewer, when its last claim was handled and the claim it has held, if
+    /// any. Under `lock`, so `detach` and `stop` can drop a held claim and cancel
+    /// its timer from any thread; read and written on `delivery` otherwise. See
+    /// `claim`.
+    private var claimPaces: [UUID: ClaimPace] = [:]
+    private let claimClock: ClaimClock
+    private let claimScheduler: ClaimScheduler
     private var timer: DispatchSourceTimer?
     /// Where everything that delivers to a viewer runs: the flush timer, a quiet
     /// flush, an attach, a resync, a resize and an ending. The one exception is
@@ -491,11 +498,23 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         }
     }
 
-    package init(startTimer: Bool = false) {
+    /// - Parameters:
+    ///   - claimClock: the monotonic clock the hold on claims reads. Injected by the
+    ///     tests, as `ResyncThrottle`'s is.
+    ///   - claimScheduler: what starts the timer of a held claim. Injected by the
+    ///     tests, which fire it themselves.
+    package init(startTimer: Bool = false,
+                 claimClock: @escaping ClaimClock = PaneStreamHub.systemClaimClock,
+                 claimScheduler: @escaping ClaimScheduler = PaneStreamHub.systemClaimScheduler) {
+        self.claimClock = claimClock
+        self.claimScheduler = claimScheduler
         if startTimer { startFlushTimer() }
     }
 
-    deinit { timer?.cancel() }
+    deinit {
+        timer?.cancel()
+        for pace in claimPaces.values { pace.held?.cancel() }
+    }
 
     private func startFlushTimer() {
         let source = DispatchSource.makeTimerSource(queue: delivery)
@@ -540,11 +559,15 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     private func endViewersNow(_ panes: Set<String>) {
         lock.lock()
         let ending = panes.compactMap { streams.removeValue(forKey: $0) }
+        // Their held claims go with them, unanswered: nobody is left to answer.
+        let held = sessionForViewer.filter { panes.contains($0.value) }.keys
+            .compactMap { claimPaces.removeValue(forKey: $0)?.held }
         // A local viewer stays in `localViewers` until its `ended` has been written
         // (`forgetLocal`), so a `detach` meanwhile finds it and waits for that write.
         sessionForViewer = sessionForViewer.filter { !panes.contains($0.value) }
         for pane in panes { sizeForPane[pane] = nil }
         lock.unlock()
+        for claim in held { claim.cancel() }
         for stream in ending {
             // Everything already accepted, taken in the same step that empties
             // the viewers and delivered ahead of the `ended`, on this queue, so
@@ -904,7 +927,9 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         let session = sessionForViewer.removeValue(forKey: connectionId)
         let local = localViewers.removeValue(forKey: connectionId)
         let stream = session.flatMap { streams[$0] }
+        let held = claimPaces.removeValue(forKey: connectionId)?.held
         lock.unlock()
+        held?.cancel()
         if let local {
             local.detach()
             // Dropped from the session now if its lock is free, so nothing the
@@ -938,7 +963,9 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         lock.lock()
         localViewers[id] = nil
         sessionForViewer[id] = nil
+        let held = claimPaces.removeValue(forKey: id)?.held
         lock.unlock()
+        held?.cancel()
     }
 
     package func send(session: String, bytes: [UInt8]) {
@@ -960,10 +987,13 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
         let locals = Array(localViewers.values)
         let source = timer
         timer = nil
+        let held = claimPaces.values.compactMap(\.held)
+        claimPaces = [:]
         lock.unlock()
         // As a detach: no further call to their `write` starts.
         for local in locals { local.markGone() }
         source?.cancel()
+        for claim in held { claim.cancel() }
     }
 
     /// Takes one terminal's raw output.
@@ -1080,6 +1110,48 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// The grids a viewer may claim, the same bounds the codec keeps for a `resize`.
     private static let claimable = 1...10_000
 
+    /// Nanoseconds on a monotonic clock.
+    package typealias ClaimClock = @Sendable () -> UInt64
+    /// Runs `work` once on `queue`, `delay` nanoseconds from now, and returns what
+    /// cancels it: after the cancel returns, `work` does not start.
+    package typealias ClaimScheduler = @Sendable (_ delay: UInt64, _ queue: DispatchQueue,
+                                                  _ work: @escaping @Sendable () -> Void)
+        -> @Sendable () -> Void
+
+    /// The least time between two claims of one viewer that the hub handles: 50 ms,
+    /// the pace the pane already keeps during a window drag.
+    package static let claimInterval: UInt64 = 50_000_000
+
+    package static let systemClaimClock: ClaimClock = { DispatchTime.now().uptimeNanoseconds }
+    /// A one shot dispatch timer on `queue`.
+    package static let systemClaimScheduler: ClaimScheduler = { delay, queue, work in
+        let timer = ClaimTimer(DispatchSource.makeTimerSource(queue: queue))
+        timer.source.schedule(deadline: .now() + .nanoseconds(Int(clamping: delay)))
+        timer.source.setEventHandler(handler: work)
+        timer.source.resume()
+        return { timer.source.cancel() }
+    }
+
+    /// Holds a dispatch timer for the closure that cancels it. `@unchecked
+    /// Sendable`: a dispatch source is safe to cancel from any thread.
+    private final class ClaimTimer: @unchecked Sendable {
+        let source: DispatchSourceTimer
+        init(_ source: DispatchSourceTimer) { self.source = source }
+    }
+
+    /// A claim that came too soon after the viewer's last one handled, and waits for
+    /// its timer, with how many claims it replaced meanwhile.
+    private struct HeldClaim {
+        var size: TerminalSize
+        var replaced: Int
+        let cancel: @Sendable () -> Void
+    }
+
+    private struct ClaimPace {
+        var lastHandled: UInt64
+        var held: HeldClaim?
+    }
+
     /// A viewer says "I am active, this is my grid".
     ///
     /// A grid other than the one in force becomes it: `onClaim` resizes the pty and
@@ -1089,13 +1161,110 @@ package final class PaneStreamHub: ScreenStreaming, @unchecked Sendable {
     /// viewer that is not attached, or a grid outside `claimable`, claims nothing
     /// and is not answered.
     ///
+    /// **Held to one per `claimInterval` per viewer** (#93). Each claim for a new
+    /// grid costs a reflow of the model's whole history on `delivery`, which every
+    /// viewer of every terminal shares, so a viewer that claims faster than the pane
+    /// does would hold all of them back. A claim that arrives on `delivery` sooner
+    /// than `claimInterval` after the same viewer's last handled claim is held, and
+    /// a later one replaces it, counted. One timer per held claim fires on
+    /// `delivery` when the interval is over. Then each replaced claim is answered
+    /// with a `resize`, `own` true, carrying the grid in force, and nothing else
+    /// happens for it; then the held claim is handled as any claim. So a burst
+    /// costs at most two reflows, the first claim's and the last's, and every claim
+    /// is still answered once and in order. Detach, the end of the session and
+    /// `stop()` drop a held claim unanswered and cancel its timer.
+    ///
     /// Safe from any thread, and asynchronous like a resize: handled on `delivery`,
     /// so the bytes accepted before it is handled reach the claimant before its
     /// answer, and the main actor plays no part.
     package func claim(connectionId: UUID, cols: Int, rows: Int) {
         guard Self.claimable.contains(cols), Self.claimable.contains(rows) else { return }
         let size = TerminalSize(cols: cols, rows: rows)
-        delivery.async { [weak self] in self?.claimNow(connectionId, size) }
+        delivery.async { [weak self] in self?.claimArrived(connectionId, size) }
+    }
+
+    /// Call on `delivery`. Handles the claim now, or holds it. A claim arriving
+    /// while one is held always replaces it, also once the interval is over and its
+    /// timer is due: handled at once, it would overtake the held claim.
+    private func claimArrived(_ id: UUID, _ size: TerminalSize) {
+        let time = claimClock()
+        lock.lock()
+        guard let session = sessionForViewer[id], streams[session] != nil else {
+            lock.unlock()
+            return
+        }
+        if var pace = claimPaces[id] {
+            if var held = pace.held {
+                held.size = size
+                held.replaced += 1
+                pace.held = held
+                claimPaces[id] = pace
+                lock.unlock()
+                return
+            }
+            let since = time &- pace.lastHandled
+            if since < Self.claimInterval {
+                // Started under `lock`, so a `detach` cannot slip between the
+                // start and the record it cancels from. The scheduler takes no lock
+                // of the hub's and runs nothing before it returns.
+                let cancel = claimScheduler(Self.claimInterval - since, delivery) { [weak self] in
+                    self?.releaseHeldClaim(id)
+                }
+                pace.held = HeldClaim(size: size, replaced: 0, cancel: cancel)
+                claimPaces[id] = pace
+                lock.unlock()
+                return
+            }
+        }
+        claimPaces[id] = ClaimPace(lastHandled: time, held: nil)
+        lock.unlock()
+        claimNow(id, size)
+    }
+
+    /// The timer of a held claim. Call on `delivery`. Answers what the held claim
+    /// replaced, then handles it. Nothing when there is no held claim: the viewer
+    /// went, or this is a timer that fired as it was cancelled.
+    private func releaseHeldClaim(_ id: UUID) {
+        let time = claimClock()
+        lock.lock()
+        guard var pace = claimPaces[id], let held = pace.held else {
+            lock.unlock()
+            return
+        }
+        pace.held = nil
+        pace.lastHandled = time
+        claimPaces[id] = pace
+        let session = sessionForViewer[id]
+        let stream = session.flatMap { streams[$0] }
+        // Present for an attached viewer: the claim handled before the held one set
+        // it, and only the end of the session clears it, which drops the held claim.
+        let inForce = session.flatMap { sizeForPane[$0] } ?? held.size
+        lock.unlock()
+        held.cancel()
+        if held.replaced > 0, let stream {
+            answerReplaced(id, of: stream, inForce, count: held.replaced)
+        }
+        claimNow(id, held.size)
+    }
+
+    /// The answers to `count` claims that a later one replaced: one `resize` each,
+    /// `own` true, with the grid in force, to the claimant alone. No bytes go ahead
+    /// of them, since the grid has not moved; the held claim handled right after
+    /// takes them as usual. A local claimant gets them through its write lock, in
+    /// order behind whatever it was left.
+    private func answerReplaced(_ id: UUID, of stream: Stream, _ grid: TerminalSize, count: Int) {
+        let answers = Array(repeating: StreamMessage.resize(cols: grid.cols, rows: grid.rows, own: true),
+                            count: count)
+        stream.lock.lock()
+        if let local = stream.locals[id] {
+            let batch = local.offer(answers, waitIfBusy: false)
+            stream.lock.unlock()
+            if let batch { _ = local.run(batch, drainingAll: true) }
+            return
+        }
+        guard let claimant = stream.viewers[id] else { stream.lock.unlock(); return }
+        stream.lock.unlock()
+        for answer in answers { claimant.sink(answer) }
     }
 
     /// Call on `delivery`. The record is read and written here rather than when the
