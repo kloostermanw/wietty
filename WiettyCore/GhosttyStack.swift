@@ -103,16 +103,6 @@ package final class GhosttyStack {
             // remote viewer, and the terminal's screen model, which the hub feeds
             // through `onIngest` below.
             onOutput: { session, bytes in hub.write(session: session, bytes: bytes) },
-            // The grid, to the same hub. A viewer learns its size on attach and
-            // from nothing else, so without this a window resize
-            // leaves every already attached viewer rendering reflowed bytes against
-            // the old grid until it reattaches. `noteSize` dedupes and does the
-            // delivery on its own queue, so this costs nothing when a report does not
-            // move the grid. Into the hub rather than back into the service, for the
-            // same reason the census and the frames go through `shared`: this closure
-            // runs on the main actor and the hub is lock guarded, so the direction is
-            // the safe one.
-            onResized: { session, size in hub.noteSize(session: session, size) },
             // A terminal that has stopped for good, to the same hub, so an already
             // attached viewer is told rather than left on a socket that never
             // speaks again. The census only answers an attach that has not happened
@@ -186,8 +176,9 @@ package final class GhosttyStack {
         // it arrives in the order it was sent and never waits for the main actor.
         hub.onInput = { session, bytes in Self.input(bytes, for: session, in: shared) }
         // A viewer's claim of a grid, to the pty and then the model of the terminal,
-        // on the hub's delivery queue and before the hub takes its repaint. Nothing
-        // claims yet: the attach route still ignores an inbound `resize`.
+        // on the hub's delivery queue and before the hub takes its repaint. The one
+        // path that resizes a terminal: the own pane claims through its bridge and
+        // `LocalStreamServer`, a browser or an iPad through the attach route.
         hub.onClaim = { session, size in shared.resizer(for: session)?(size) }
         // A terminal's pty is read once its pane's viewer has attached, so the
         // pane's first snapshot is the empty screen and the pane is handed every

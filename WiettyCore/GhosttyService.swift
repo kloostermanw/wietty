@@ -161,13 +161,6 @@ package final class GhosttyService: TerminalService {
     /// test listens.
     private let reportUnattachedRead: @Sendable (String) -> Void
     private let onOutput: @Sendable (String, [UInt8]) -> Void
-    /// A terminal's grid changed. Mirrors `onOutput`: the substrate reports, and
-    /// `GhosttyStack` decides that the hub is what hears it.
-    ///
-    /// Defaulted to nothing, because a grid report is not part of running a
-    /// terminal: the pty is resized either way, and a service built without a
-    /// remote path simply has nobody to tell.
-    private let onResized: @Sendable (String, TerminalSize) -> Void
     /// A terminal's byte stream is over: no further output will ever be reported
     /// for this session id, whether because the child exited or because the row was
     /// closed.
@@ -178,15 +171,15 @@ package final class GhosttyService: TerminalService {
     /// attached browser or iPad has nothing else to learn it from and would sit on
     /// a socket that never speaks again. The service is the only thing that knows.
     ///
-    /// Defaulted to nothing, for the same reason `onResized` is: a service built
-    /// with no remote path has nobody to tell.
+    /// Defaulted to nothing: a service built with no remote path has nobody to
+    /// tell.
     private let onStreamEnded: @Sendable (String) -> Void
     /// A program status report (`OSC 7501`), a new shell prompt or a full reset,
     /// read off a terminal's output. Called on that terminal's read queue, in stream
     /// order, so whoever forwards it has to keep that order. The support query is
     /// answered on the pty here and never reaches this.
     ///
-    /// Defaulted to nothing, like `onResized`: answering the query is part of
+    /// Defaulted to nothing, like `onStreamEnded`: answering the query is part of
     /// running a terminal, hearing the reports is not.
     private let onProgramStatus: @Sendable (String, ProgramStatusScanner.Event) -> Void
     private let onTerminated: @MainActor (String) -> Void
@@ -250,9 +243,10 @@ package final class GhosttyService: TerminalService {
     /// needs no isolation to be read.
     package nonisolated static let sessionPrefix = "gt:"
 
-    /// The size a terminal starts at, before any surface has been laid out. A
-    /// terminal has to be spawned with some grid, and a full screen program lays
-    /// itself out from what it finds; the first `onResized` corrects it.
+    /// The size a terminal starts at, and keeps until a viewer claims a grid (decision
+    /// P4). A terminal has to be spawned with some grid, and a full screen program
+    /// lays itself out from what it finds; the pane's first claim, made as soon as it
+    /// knows the grid that fits it, corrects it.
     package static let initialSize = TerminalSize(cols: 120, rows: 34)
 
     /// The terminals whose child is still running. A reaped one is deliberately
@@ -273,7 +267,6 @@ package final class GhosttyService: TerminalService {
              GhosttyLog.stack.error("\(message, privacy: .public)")
          },
          onOutput: @escaping @Sendable (String, [UInt8]) -> Void,
-         onResized: @escaping @Sendable (String, TerminalSize) -> Void = { _, _ in },
          onStreamEnded: @escaping @Sendable (String) -> Void = { _ in },
          onProgramStatus: @escaping @Sendable (String, ProgramStatusScanner.Event) -> Void = { _, _ in },
          onDisplayRequest: @escaping @MainActor (String?) -> Void = { _ in },
@@ -287,28 +280,16 @@ package final class GhosttyService: TerminalService {
         self.readDelay = readDelay
         self.reportUnattachedRead = reportUnattachedRead
         self.onOutput = onOutput
-        self.onResized = onResized
         self.onStreamEnded = onStreamEnded
         self.onProgramStatus = onProgramStatus
         self.onDisplayRequest = onDisplayRequest
         self.makeScreenModel = makeScreenModel
         self.onTerminated = onTerminated
-        host.onResized = { [weak self] session, size in
-            guard let self else { return }
-            // Only for a terminal this service holds. A report for anything else
-            // names no pty to resize and no screen worth telling a viewer about.
-            guard let terminal = self.terminals[session] else { return }
-            terminal.pty.resize(to: size)
-            // The model follows the same report, so its grid is the surface's. The
-            // surface stays the authority: the model is told, never asked.
-            //
-            // BEFORE the report below, because that report is what makes an already
-            // attached viewer repaint, and the repaint is taken from the model: told
-            // first, it would paint the screen as it was before the reflow and then
-            // be contradicted by the bytes the reflow produced.
-            self.shared.model(for: session)?.resize(to: size)
-            self.onResized(session, size)
-        }
+        // No handler for `host.onResized`, on purpose (decision P4). A surface's own
+        // grid report is not a claim and resizes nothing: the server is the only
+        // thing that resizes a terminal, through the resizer `open` registers, which
+        // the hub calls for a viewer's claim. The own pane is one such viewer; its
+        // claims come through its bridge like any other's.
         // libghostty asking for a surface to be closed means the terminal has
         // ended, so it is retired exactly as an exit noticed on the pty is. After
         // the user's `exit` the pty's EOF arrives first and reaps; the stream then
@@ -344,7 +325,7 @@ package final class GhosttyService: TerminalService {
         let session = Self.sessionPrefix + UUID().uuidString.lowercased()
         // Before the pty, so a model that cannot be built leaves nothing to clean
         // up. At the grid the pty is about to be spawned with, which is the only
-        // grid there is until the surface reports its own.
+        // grid there is until a viewer claims one.
         //
         // Grapheme clustering is asked of the host here, once, because this is the
         // moment the surface is created from the same configuration. A terminal
@@ -387,9 +368,9 @@ package final class GhosttyService: TerminalService {
         // Weakly, like the status tap's reply: the registry must not keep a pty
         // alive, and one that has been released has nobody left to read input.
         shared.register(writer: { [weak pty] bytes in pty?.write(bytes) }, for: session)
-        // What a viewer's claim of a grid resizes, off the main actor: the pty, and
-        // then the model, in the order `host.onResized` keeps. Weakly, for the same
-        // reason as the writer.
+        // What a viewer's claim of a grid resizes, off the main actor, and the only
+        // thing that resizes this terminal: the pty, and then the model, both before
+        // the hub takes a repaint. Weakly, for the same reason as the writer.
         shared.register(resizer: { [weak pty, weak model] size in
             pty?.resize(to: size)
             model?.resize(to: size)

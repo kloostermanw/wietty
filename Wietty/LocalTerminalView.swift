@@ -150,6 +150,9 @@ protocol GridSizedSurface: AnyObject {
     /// The terminal's background colour, which the pane draws around a grid
     /// smaller than itself.
     var marginColor: NSColor { get }
+    /// The pane changed size, or the surface was just put in it: the grid that fits
+    /// the pane, which is what the pane claims, may have moved.
+    func paneSizeDidChange()
     // A conformer calls `SurfaceContainerView.surfaceSizingDidChange()` on its
     // superview whenever either of these changes.
 }
@@ -237,6 +240,8 @@ final class SurfaceContainerView: NSView {
     /// The size the current width and height constraints were built for: nil when
     /// they follow the container.
     private var appliedSize: CGSize?
+    /// The pane size the surface was last told about.
+    private var notifiedSize: CGSize?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -267,6 +272,8 @@ final class SurfaceContainerView: NSView {
         ])
         applySize(force: true)
         refreshMargin()
+        notifiedSize = nil
+        notifyPaneSize()
     }
 
     override func willRemoveSubview(_ subview: NSView) {
@@ -280,6 +287,24 @@ final class SurfaceContainerView: NSView {
         width = nil
         height = nil
         appliedSize = nil
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        notifyPaneSize()
+    }
+
+    override func layout() {
+        super.layout()
+        notifyPaneSize()
+    }
+
+    /// Tells the surface the pane's size changed: a window resize, the sidebar, full
+    /// screen. Once per size, however many passes report it.
+    private func notifyPaneSize() {
+        guard let sized = surface as? GridSizedSurface, bounds.size != notifiedSize else { return }
+        notifiedSize = bounds.size
+        sized.paneSizeDidChange()
     }
 
     /// The surface's imposed size or margin colour changed. Applied at once rather

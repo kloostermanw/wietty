@@ -237,15 +237,19 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
         #expect(real.screenModel(for: session)?.size == GhosttyService.initialSize)
     }
 
-    /// The surface decides the grid and the model follows, on the same report that
-    /// resizes the pty.
-    @Test func aSurfaceResizeReachesTheModel() async throws {
+    /// A surface's own grid report leaves the model where it is (decision P4). The
+    /// resizer the service registered for a claim moves it, that terminal's only.
+    @Test func aSurfaceReportAloneLeavesTheModelAndAClaimsResizerMovesIt() async throws {
         let host = FakeSurfaceHost()
         let service = try service(host)
         defer { service.closeAll() }
         let session = try await open(service, "sleep 5")
         let other = try await open(service, "sleep 5")
         host.emitResize(session, TerminalSize(cols: 111, rows: 41))
+        #expect(service.screenModel(for: session)?.size == GhosttyService.initialSize)
+
+        let resizer = try #require(service.shared.resizer(for: session))
+        resizer(TerminalSize(cols: 111, rows: 41))
         #expect(service.screenModel(for: session)?.size == TerminalSize(cols: 111, rows: 41))
         // Its own terminal only.
         #expect(service.screenModel(for: other)?.size == GhosttyService.initialSize)

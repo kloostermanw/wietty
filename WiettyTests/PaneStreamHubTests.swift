@@ -258,9 +258,10 @@ private func bytes(_ text: String) -> [UInt8] { Array(text.utf8) }
 
     // MARK: - A grid that moves
 
-    /// Every viewer is told the new grid. A viewer that asked for repaints is sent
-    /// the visible screen again behind the soft reset; one that reflows by itself
-    /// gets nothing more. A report that did not move the grid is not delivered.
+    /// Every viewer is told the new grid another viewer claimed. A viewer that asked
+    /// for repaints is sent the visible screen again behind the soft reset; one that
+    /// reflows by itself gets nothing more. A claim that did not move the grid is
+    /// answered to its claimant alone.
     @Test func aGridChangeTellsEveryViewerAndRepaintsOnlyThoseThatAskedForIt() {
         let hub = PaneStreamHub()
         hub.onRepaint = { _ in (size: TerminalSize(cols: 100, rows: 30), frame: bytes("SCREEN")) }
@@ -268,9 +269,10 @@ private func bytes(_ text: String) -> [UInt8] { Array(text.utf8) }
         let reflowing = Sink()
         hub.attach(session: "gt:1", resize: .repaint) { repainted.receive($0) }
         hub.attach(session: "gt:1", resize: .reflow) { reflowing.receive($0) }
+        let claimer = hub.attach(session: "gt:1", resize: .reflow) { _ in }
 
-        hub.noteSize(session: "gt:1", TerminalSize(cols: 100, rows: 30))
-        hub.noteSize(session: "gt:1", TerminalSize(cols: 100, rows: 30))
+        hub.claim(connectionId: claimer, cols: 100, rows: 30)
+        hub.claim(connectionId: claimer, cols: 100, rows: 30)
         hub.waitForPendingDeliveries()
 
         #expect(repainted.messages == [.resize(cols: 100, rows: 30, own: false),
@@ -279,20 +281,21 @@ private func bytes(_ text: String) -> [UInt8] { Array(text.utf8) }
     }
 
     /// No repaint source, or one that could not build a frame: every viewer still
-    /// learns the grid, and a size that really moved is reported again.
-    @Test func notingASizeWithNothingToPaintStillTellsTheGrid() {
+    /// learns the grid, and a size that really moved is told again.
+    @Test func aClaimWithNothingToPaintStillTellsTheGrid() {
         let hub = PaneStreamHub()
         let sink = Sink()
         hub.onRepaint = { _ in nil }
         hub.attach(session: "gt:1", resize: .repaint) { sink.receive($0) }
+        let claimer = hub.attach(session: "gt:1", resize: .reflow) { _ in }
 
-        hub.noteSize(session: "gt:1", TerminalSize(cols: 100, rows: 30))
-        hub.noteSize(session: "gt:1", TerminalSize(cols: 100, rows: 30))
+        hub.claim(connectionId: claimer, cols: 100, rows: 30)
+        hub.claim(connectionId: claimer, cols: 100, rows: 30)
         hub.waitForPendingDeliveries()
 
         #expect(sink.messages == [.resize(cols: 100, rows: 30, own: false)])
 
-        hub.noteSize(session: "gt:1", TerminalSize(cols: 80, rows: 24))
+        hub.claim(connectionId: claimer, cols: 80, rows: 24)
         hub.waitForPendingDeliveries()
         #expect(sink.messages == [.resize(cols: 100, rows: 30, own: false),
                                   .resize(cols: 80, rows: 24, own: false)])
@@ -305,13 +308,14 @@ private func bytes(_ text: String) -> [UInt8] { Array(text.utf8) }
         hub.onRepaint = { _ in (size: TerminalSize(cols: 100, rows: 30), frame: bytes("SCREEN")) }
         let sink = Sink()
         hub.attach(session: "gt:1", resize: .repaint) { sink.receive($0) }
+        let claimer = hub.attach(session: "gt:1", resize: .reflow) { _ in }
         hub.waitForPendingDeliveries()
         // Past the quiet interval, and then two writes, so at least the second is
-        // still in the buffer when the size is noted.
+        // still in the buffer when the grid is claimed.
         usleep(20_000)
         hub.write(session: "gt:1", bytes: bytes("a"))
         hub.write(session: "gt:1", bytes: bytes("b"))
-        hub.noteSize(session: "gt:1", TerminalSize(cols: 100, rows: 30))
+        hub.claim(connectionId: claimer, cols: 100, rows: 30)
         hub.waitForPendingDeliveries()
         let messages = sink.messages
         let resize = messages.firstIndex(of: .resize(cols: 100, rows: 30, own: false))

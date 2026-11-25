@@ -148,11 +148,16 @@ framing and the helper needs no signal handling and no `SIGWINCH` story. See "Si
 
 ## Sizing
 
-libghostty is the sizing authority. `GhosttySurfaceView` sends the surface its content scale and then
-its pixel size (in that order, because libghostty derives the grid from size divided by scale), reads
-the grid back, and reports it through `TerminalSurfaceHosting.onResized`; `GhosttyService` applies it
-to the pty with `TIOCSWINSZ`. Nothing else can change the grid: a remote viewer letterboxes, scrolls
-or scales.
+The server is the only thing that resizes a terminal (decision P4 of the phase 3 design). A viewer
+claims a grid, and the hub resizes the pty (`TIOCSWINSZ`) and the model and tells every viewer, `own`
+true for the claimant. The own pane is one such viewer: `OwnPaneGrid` works out the grid that fits the
+pane from the surface's metrics, claims it through the pane's bridge (`PaneGrid` decides when: on
+opening, on a change while the pane owns the grid, at most one claim per 50 ms, and on a key, click,
+paste or drop while another viewer owns it), and shows whatever grid is in force: its own, with the view
+filling the pane, or another viewer's, through `impose(grid:on:)`. `GhosttySurfaceView` still sends the
+surface its content scale and then its pixel size (in that order, because libghostty derives the grid
+from size divided by scale) and reports the grid it reads back through
+`TerminalSurfaceHosting.onResized`, but that report is not a claim and nothing resizes the pty from it.
 
 Two details are load bearing:
 
@@ -160,12 +165,9 @@ Two details are load bearing:
   34 and is applied to the pty as `forkpty` creates it. A full screen program lays itself out from the
   size it finds at startup, so a terminal opened at 80 by 24 and corrected a moment later draws for a
   grid that does not exist until something forces a redraw.
-- **The first grid report is guaranteed to arrive after `createSurface` has returned**, one main queue
-  turn later. `GhosttyService.open` registers the session in its dictionary only after that call, and
-  its `onResized` handler resolves the session through that dictionary, so a report from inside
-  `createSurface` would be dropped. Because reporting latches on the last grid, no later event would
-  correct it, and the pty would stay at its spawn size for the terminal's whole life. The failure is
-  silent, which is why the guarantee is part of the protocol rather than a caller's responsibility.
+- **The first grid and metrics reports are guaranteed to arrive after `createSurface` has returned**,
+  one main queue turn later, so a handler that resolves the session through its own registry finds it.
+  The first metrics report is what lets the pane work out its first grid to claim.
 
 A surface that is not in the view hierarchy is not laid out, so it keeps the grid it had until it is
 selected again. Two terminals in one window can therefore have different sizes, and the one on screen
@@ -356,8 +358,7 @@ Two things read it: the frames a remote viewer is sent, and `readOutput`.
 
 `GhosttyService.open` builds one model per terminal, at the grid the pty is spawned with and with
 grapheme clustering as the surface has it, and registers it in `SharedTerminalState` before the relay
-starts reading. It is resized on the same report that resizes the pty, so its grid is the surface's:
-the surface stays the sizing authority and the model is told, never asked. It is released when the row
+starts reading. It is resized by the same claim that resizes the pty, so its grid is the grid in force. It is released when the row
 is closed or reopened, together with the surface. An exited terminal keeps both.
 
 **The model never answers the program.** A terminal replies to queries (device attributes, a cursor
@@ -672,27 +673,17 @@ viewer was sent into a terminal of its own, and asserts every numbered line is t
 `PaneStreamResyncTests` covers the resync, the alternate screen rule, the quiet flush and input.
 `ViewerResyncTests` covers the rate limit, and `RemoteAttachRouteTests` the route on a real socket.
 
-**A viewer is also told when the grid moves**, which takes wiring here rather than coming for free. A
-viewer learns its size on attach and from nothing else on the socket, so a window resize would
-otherwise leave every already attached viewer rendering reflowed bytes against the old grid until it
-reattached. The report comes from the surface, so `GhosttyService`'s resize handler carries it into
-`PaneStreamHub.noteSize`. Two details are load bearing. The hub deduplicates on the last size it saw,
-because libghostty reports a grid on events that need not have moved it (a font metric change, a
-re-parent). And the service resizes the model *before* it reports the size, because the report is what
-makes the hub repaint and the repaint is taken from the model: reported first, it would paint the screen
-as it was before the reflow and then be contradicted by the bytes the reflow produced.
+**A viewer is also told when the grid moves.** The grid moves only by a viewer's claim, through
+`PaneStreamHub.claim(connectionId:cols:rows:)`: the own pane's through its bridge and the local socket,
+a browser's or an iPad's through the attach route. A claim for a new grid is handled on the hub's
+delivery queue: the hub calls `onClaim` (wired to the resizer `GhosttyService` registers in
+`SharedTerminalState`, which resizes the pty and then the model) and only then takes the repaint, which
+comes from the model and would otherwise paint the screen as it was before the reflow. Every viewer is
+told the grid, with `own` true in the claimant's `resize` only. A claim for the grid already in force
+resizes nothing and is answered to the claimant alone, with one `resize` whose `own` is true.
 
-The hub can also take the grid from a viewer, through `PaneStreamHub.claim(connectionId:cols:rows:)`,
-which nothing calls yet. A claim and `noteSize` share the one record of the grid in force. A claim for a
-new grid is handled on the hub's delivery queue: the hub calls `onClaim` (wired to the resizer
-`GhosttyService` registers in `SharedTerminalState`, which resizes the pty and then the model) and then
-repaints as above, with `own` true in the claimant's `resize` only. A claim for the grid already in force
-resizes nothing and is answered to the claimant alone, with one `resize` whose `own` is true. A grid the
-surface reported that a claim has overtaken before its repaint ran is not announced.
-
-The direction of these hooks matters as much as their order. The resize report runs on the main actor
-and hands the size to a lock guarded hub. A claim's resize runs on the hub's delivery queue instead,
-and reaches the pty and the model through `SharedTerminalState`, never through the service. The census, the model feed, the frames and the input writer
+A claim's resize runs on the hub's delivery queue and reaches the pty and the model through
+`SharedTerminalState`, never through the service. The census, the model feed, the frames and the input writer
 are asked by the hub from the relay's queue, from its own, and from the thread a viewer's input
 arrived on, and answer from `SharedTerminalState` and the model, both lock guarded. Nothing on a hub
 queue reaches back into the main actor isolated service.

@@ -77,6 +77,17 @@ package final class AttachedViewer: @unchecked Sendable {
         queue.finish()
     }
 
+    /// The viewer's claim of a grid, from its inbound `resize`: handed to the streamer
+    /// with this viewer's id, which answers it with exactly one `resize` carrying
+    /// `own: true`, through the queue. Nothing after `close()`.
+    package func claim(cols: Int, rows: Int) {
+        lock.lock()
+        let id = closed ? nil : connectionId
+        lock.unlock()
+        guard let id else { return }
+        streamer.claim(connectionId: id, cols: cols, rows: rows)
+    }
+
     private func resyncNow() {
         lock.lock()
         guard !closed else {

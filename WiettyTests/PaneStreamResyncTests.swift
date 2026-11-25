@@ -106,7 +106,8 @@ private func frame(_ text: String, alternate: Bool = false) -> TerminalSnapshotF
     @Test func aViewerWithoutASnapshotIsSentTheKnownGrid() {
         let hub = PaneStreamHub()
         hub.onSnapshot = { _ in nil }
-        hub.noteSize(session: "gt:1", TerminalSize(cols: 100, rows: 30))
+        let claimer = hub.attach(session: "gt:1", resize: .reflow) { _ in }
+        hub.claim(connectionId: claimer, cols: 100, rows: 30)
         hub.waitForPendingDeliveries()
         let log = DeliveryLog()
         hub.attach(session: "gt:1", resize: .reflow) { log.add("known", $0) }

@@ -325,7 +325,8 @@ private final class Flag: @unchecked Sendable {
             command: #"printf '\033[31malpha\033[0m\r\nbeta-%s' $((3+4)); sleep 5"#, badge: nil)
         let model = try #require(stack.ghosttyService?.screenModel(for: handle.sessionId))
         try await waitUntil { model.text(maxLines: 10).contains("beta-7") }
-        host.emitResize(handle.sessionId, TerminalSize(cols: 80, rows: 10))
+        let claimer = stack.hub.attach(session: handle.sessionId, resize: .reflow) { _ in }
+        stack.hub.claim(connectionId: claimer, cols: 80, rows: 10)
         stack.hub.waitForPendingDeliveries()
 
         let log = MessageLog()
@@ -343,13 +344,11 @@ private final class Flag: @unchecked Sendable {
         #expect(viewer.cursor == (x: 6, y: 1))
     }
 
-    /// An already attached viewer is told when the grid moves.
+    /// An already attached viewer is told when another viewer's claim moves the grid.
     ///
-    /// A viewer learns its size in the paint it receives on attach and from nothing
-    /// else, so this hook is the only thing standing between a window resize and
-    /// every remote viewer rendering reflowed bytes against the old grid until it
-    /// reattaches. The report comes from the surface, so the stack has to carry it
-    /// into the hub itself.
+    /// A viewer learns its size in the paint it receives on attach and from
+    /// `resize` messages, so this is what stands between another viewer's claim and
+    /// this one rendering reflowed bytes against the old grid until it reattaches.
     @Test func resizingATerminalTellsItsViewersTheNewGrid() async throws {
         let host = FakeSurfaceHost()
         let stack = GhosttyStack.testing(host: host)
@@ -360,10 +359,11 @@ private final class Flag: @unchecked Sendable {
             command: #"printf '%090d' $((40+2)); sleep 5"#, badge: nil)
         let line = String(repeating: "0", count: 88) + "42"
         let model = try #require(stack.ghosttyService?.screenModel(for: handle.sessionId))
-        host.emitResize(handle.sessionId, TerminalSize(cols: 80, rows: 5))
+        let claimer = stack.hub.attach(session: handle.sessionId, resize: .reflow) { _ in }
+        stack.hub.claim(connectionId: claimer, cols: 80, rows: 5)
         try await waitUntil { model.text(maxLines: 10).contains("042") }
         // Drained before the viewer exists, or this test races itself: that first
-        // report queues a repaint on the hub's delivery queue, and if it lands after
+        // claim queues a resize on the hub's delivery queue, and if it lands after
         // the attach below it delivers this screen to the new viewer and everything
         // counted from `afterAttach` is shifted by two messages.
         stack.hub.waitForPendingDeliveries()
@@ -372,14 +372,14 @@ private final class Flag: @unchecked Sendable {
         stack.hub.attach(session: handle.sessionId, resize: .repaint) { log.add($0) }
         let afterAttach = log.messages.count
 
-        host.emitResize(handle.sessionId, TerminalSize(cols: 100, rows: 30))
+        stack.hub.claim(connectionId: claimer, cols: 100, rows: 30)
         stack.hub.waitForPendingDeliveries()
 
         let sent = Array(log.messages.dropFirst(afterAttach))
         #expect(sent.first == .resize(cols: 100, rows: 30, own: false))
-        // The repaint carries the screen as it is AFTER the reflow: the service
-        // resizes the model and only then reports, and a hook wired the other way
-        // round would paint the wrapped line over a terminal that has unwrapped it.
+        // The repaint carries the screen as it is AFTER the reflow: the claim resizes
+        // the model before the hub takes its repaint, and the other way round would
+        // paint the wrapped line over a terminal that has unwrapped it.
         guard case let .repaint(vt) = try #require(sent.dropFirst().first) else {
             Issue.record("expected the reflowed screen")
             return
@@ -387,6 +387,45 @@ private final class Flag: @unchecked Sendable {
         let viewer = try GhosttyVtTerminal(size: TerminalSize(cols: 100, rows: 30), scrollbackLines: 0)
         viewer.write(vt)
         #expect(viewer.viewportLines() == [line])
+    }
+
+    /// Two viewers of one terminal, the pane's kind (a local viewer through the stack's
+    /// own socket server, as a bridge's link attaches) and a remote one (queued, as the
+    /// attach route's), claim in turn. Each claim resizes the model, and each viewer
+    /// is told every grid with `own` true exactly for its own claim.
+    @Test func aLocalAndARemoteViewerClaimInTurnAndEachSeesWhoseItIs() async throws {
+        let stack = GhosttyStack.testing(host: FakeSurfaceHost())
+        defer { stack.shutDown() }
+        let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
+                                                  existingWindowId: nil, command: "sleep 30", badge: nil)
+        let model = try #require(stack.ghosttyService?.screenModel(for: handle.sessionId))
+        let local = MessageLog()
+        let link = LocalSocketLink(path: stack.localSocketPath, session: handle.sessionId)
+        defer { link.stop() }
+        link.onMessage = { local.add($0) }
+        link.start()
+        try await waitUntil { local.messages.contains { if case .snapshot = $0 { true } else { false } } }
+        let remote = MessageLog()
+        let viewer = stack.hub.attach(session: handle.sessionId, resize: .repaint) { remote.add($0) }
+        let localBefore = local.messages.count
+        let remoteBefore = remote.messages.count
+
+        func resizes(_ log: MessageLog, after count: Int) -> [StreamMessage] {
+            log.messages.dropFirst(count).filter { if case .resize = $0 { true } else { false } }
+        }
+
+        link.claim(cols: 90, rows: 25)
+        try await waitUntil { resizes(remote, after: remoteBefore).count == 1 }
+        #expect(model.size == TerminalSize(cols: 90, rows: 25))
+        stack.hub.claim(connectionId: viewer, cols: 70, rows: 20)
+        try await waitUntil { resizes(local, after: localBefore).count == 2 }
+        stack.hub.waitForPendingDeliveries()
+        #expect(model.size == TerminalSize(cols: 70, rows: 20))
+
+        #expect(resizes(local, after: localBefore) == [.resize(cols: 90, rows: 25, own: true),
+                                                       .resize(cols: 70, rows: 20, own: false)])
+        #expect(resizes(remote, after: remoteBefore) == [.resize(cols: 90, rows: 25, own: false),
+                                                         .resize(cols: 70, rows: 20, own: true)])
     }
 
     /// A keystroke into the pane's surface reaches whatever the app wired `onInput`

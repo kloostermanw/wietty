@@ -596,15 +596,17 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         #expect(text.components(separatedBy: "\n") == (101...300).map { "row-\($0)" })
     }
 
-    /// The surface's grid is the sizing authority: a resize reported by
-    /// libghostty has to reach the pty, or a full screen program keeps drawing
-    /// for the old size.
+    /// A surface's own grid report is not a claim and resizes nothing (decision P4):
+    /// the child is not signalled. What does reach it is the resizer the service
+    /// registered for the hub's claims, which is the check that the probe works
+    /// (`PaneStreamClaimWiringTests` makes the same claim through the hub, and
+    /// `OwnPaneStreamTests` through a real bridge).
     ///
     /// The child loops over a short sleep rather than sitting in a long one. A
     /// shell defers a trap until the foreground command it is waiting on returns,
     /// measured at 4.2 s for `sleep 5`, which is most of this test's budget spent
     /// proving nothing about the resize.
-    @Test func aSurfaceResizeReachesThePty() async throws {
+    @Test func aSurfaceReportAloneDoesNotReachThePty() async throws {
         let host = FakeSurfaceHost()
         let service = service(host)
         defer { service.closeAll() }
@@ -619,8 +621,14 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         // the assertion below could pass on a stale reading.
         #expect(FileManager.default.fileExists(atPath: probe) == false)
         host.emitResize(handle.sessionId, TerminalSize(cols: 111, rows: 41))
+        // Several turns of the child's loop: a signal would have been written by now.
+        try await Task.sleep(for: .milliseconds(800))
+        #expect(FileManager.default.fileExists(atPath: probe) == false)
+
+        let resizer = try #require(service.shared.resizer(for: handle.sessionId))
+        resizer(TerminalSize(cols: 99, rows: 33))
         try await waitUntil {
-            (try? String(contentsOfFile: probe, encoding: .utf8))?.contains("41 111") ?? false
+            (try? String(contentsOfFile: probe, encoding: .utf8))?.contains("33 99") ?? false
         }
     }
 

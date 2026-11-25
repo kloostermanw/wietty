@@ -70,8 +70,14 @@ private final class RouteStreamer: ScreenStreaming, @unchecked Sendable {
     var answered: Int { lock.lock(); defer { lock.unlock() }; return answeredCount }
     func stop() {}
     private var claimList: [Claim] = []
+    /// Recorded, and answered as the hub answers a claim: one `resize` with `own`
+    /// true, to the claimant alone, later and elsewhere.
     func claim(connectionId: UUID, cols: Int, rows: Int) {
-        lock.lock(); claimList.append(Claim(id: connectionId, cols: cols, rows: rows)); lock.unlock()
+        lock.lock()
+        claimList.append(Claim(id: connectionId, cols: cols, rows: rows))
+        let sink = sinks[connectionId]
+        lock.unlock()
+        DispatchQueue.global().async { sink?(.resize(cols: cols, rows: rows, own: true)) }
     }
     /// Every claim the route made, in order.
     var claims: [Claim] { lock.lock(); defer { lock.unlock() }; return claimList }
@@ -386,9 +392,9 @@ private final class Client: @unchecked Sendable {
 
     // MARK: - Inbound
 
-    /// Binary `data` goes to the streamer byte exact; a `resize` is accepted and
-    /// ignored; a text frame that is no known message (the version 1 input shape
-    /// among them) is ignored. The socket stays open through all of it.
+    /// Binary `data` goes to the streamer byte exact; a text frame that is no known
+    /// message (the version 1 input shape among them) is ignored. The socket stays
+    /// open through all of it.
     @Test func inputIsForwardedAndEverythingElseIgnored() async throws {
         let running = try await start()
         defer { running.stop() }
@@ -397,14 +403,32 @@ private final class Client: @unchecked Sendable {
         for _ in 0..<3 { _ = try await client.message() }
 
         try await client.send(.data([0x6C, 0x73, 0x0D, 0xFF]))
-        try await client.send(.resize(cols: 100, rows: 30, own: false))
         try await client.task.send(.string("{\"data\":\"old input\"}"))
         try await client.task.send(.string("not json"))
         try await client.send(.data([0x0A]))
 
         #expect(try await eventually { running.streamer.sent.count == 2 })
         #expect(running.streamer.sent == [[0x6C, 0x73, 0x0D, 0xFF], [0x0A]])
-        // Nothing was answered to the resize in this part.
+        #expect(running.streamer.claims.isEmpty)
+        running.streamer.deliver(.data([0x31]))
+        #expect(try await client.message() == .data([0x31]))
+    }
+
+    /// An inbound `resize` is a claim: it reaches the streamer with this viewer's id
+    /// and grid (whatever `own` the client set), and exactly one `resize` with `own`
+    /// true comes back.
+    @Test func anInboundResizeIsAClaimAnsweredWithOwn() async throws {
+        let running = try await start()
+        defer { running.stop() }
+        let client = Client(url: running.url("&session=gt:1&protocol=2"))
+        defer { client.close() }
+        for _ in 0..<3 { _ = try await client.message() }
+        let id = try #require(running.streamer.attaches.first?.id)
+
+        try await client.send(.resize(cols: 100, rows: 30, own: false))
+        #expect(try await client.message() == .resize(cols: 100, rows: 30, own: true))
+        #expect(running.streamer.claims == [RouteStreamer.Claim(id: id, cols: 100, rows: 30)])
+        // One answer, not more: the next message is whatever the stream sends next.
         running.streamer.deliver(.data([0x31]))
         #expect(try await client.message() == .data([0x31]))
     }
