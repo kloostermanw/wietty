@@ -12,9 +12,11 @@ import Darwin
 // pty Wietty owns is the only line discipline, so anything this program did to
 // the stream would be wrong twice.
 //
-// Window size is deliberately not reported from here. Wietty reads the surface
-// geometry from libghostty and resizes its own pty directly, which keeps this
-// socket a plain byte pipe and this program free of signal handling.
+// Window size is deliberately not reported from here. The grid of the pty Wietty
+// owns is set by the server alone, from a viewer's claim (`PaneStreamHub`), and
+// the own pane claims through its stream connection, not through this socket.
+// That keeps this socket a plain byte pipe and this program free of signal
+// handling.
 //
 // Exit statuses are meaningful, because the surface shows them: 64 for usage, 69
 // for a socket nobody is listening on (the terminal is already gone), 70 for a

@@ -42,9 +42,12 @@ import WiettyShared
 ///
 /// `data` is written with no deadline, blocking for as long as the client does not
 /// read: that wait is the backpressure that lets a slow pane hold back the child,
-/// and it runs on the pty's thread. The rule is by message kind, not by thread; the
-/// hub rarely writes `data` from its delivery queue or a control message from the
-/// pty's thread, and those follow their kind.
+/// and it runs on the pty's thread. The rule is by message kind, not by thread. The
+/// hub never writes `data` to a local viewer from its delivery queue: that `data`
+/// is made only in `PaneStreamHub.write(session:bytes:)` on the pty's thread, and
+/// what the queue leaves pending for a busy viewer is control messages only. The
+/// pty's thread does write control messages, though: what was left pending for the
+/// viewer, ahead of its chunk, and those keep the deadline of their kind.
 ///
 /// ## Ending a connection
 ///

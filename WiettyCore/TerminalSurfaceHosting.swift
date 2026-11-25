@@ -45,6 +45,8 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// the terminal's grid: the server is the only thing that resizes a terminal
     /// (decision P4), and the grid in force is its screen model's. The two agree
     /// once the surface shows the grid in force, its own claimed or one imposed.
+    /// Nothing in the app or the core reads it any more; only the gated
+    /// coexistence check (`GhosttyVtCoexistenceTests`) does.
     func size(id: String) -> TerminalSize?
 
     /// The surface's cell size, configured padding and backing scale, which is what
@@ -57,8 +59,9 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// Gives the surface's view the size that shows `grid`. Nil returns it to the
     /// pane's size.
     ///
-    /// Kept for the surface whether or not it is on display, and applied when it is
-    /// shown. The view stays pinned to the top left of the pane: a smaller grid
+    /// Applied whether or not the surface is on display: a view no pane holds is
+    /// given the size itself, so a hidden surface stays at the grid in force, and a
+    /// pane that shows it finds it at that size. The view stays pinned to the top left of the pane: a smaller grid
     /// leaves a margin in the terminal's background colour, a larger one is clipped.
     /// The size follows the surface's metrics, so it is recomputed when they change
     /// (another display's scale, a font or padding change) without being imposed
@@ -97,6 +100,8 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// finished registering. Getting this wrong is silent: a first report delivered
     /// during `createSurface` would be dropped by a handler whose registry is not
     /// populated yet, and nothing would ever correct the size.
+    ///
+    /// Nothing in the app or the core sets a handler for it any more.
     var onResized: (@MainActor (_ id: String, _ size: TerminalSize) -> Void)? { get set }
     /// The surface's `metrics(id:)` changed: its window moved to a display with
     /// another scale, its font changed, or a reloaded configuration changed its
@@ -107,6 +112,10 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// leaves the grid as it was, so no grid is reported, yet the grid a pane of a
     /// given size holds can change. Like the grid, the first report arrives after
     /// `createSurface` has returned.
+    ///
+    /// Nothing in the app or the core sets a handler for it any more: the pane's
+    /// grid hears of a metrics change from the host directly
+    /// (`GhosttySurfaceHost.reportMetrics`, which tells it the pane's new own grid).
     var onMetricsChanged: (@MainActor (_ id: String) -> Void)? { get set }
     /// libghostty asked for a surface to be closed: the command it was running
     /// exited, or a `close_surface` keybinding fired.
