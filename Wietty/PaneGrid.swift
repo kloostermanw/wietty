@@ -11,7 +11,8 @@ import WiettyShared
 /// grid claimed). This decides when the own pane claims and what grid its view shows;
 /// `OwnPaneGrid` carries the actions out.
 ///
-/// **When it claims** (spec section 6): the first own grid of a new surface; a change
+/// **When it claims** (spec section 6): the first own grid of a new surface, unless it
+/// is a viewer's (`init(debounce:viewer:)`); a change
 /// of the own grid while the pane is the owner, at most one claim per `debounce` and
 /// always the last value (the first after a quiet period goes out at once); a user
 /// action while the pane is not the owner; coming back on display with an own grid
@@ -62,8 +63,9 @@ package struct PaneGrid {
     private var inForce: TerminalSize?
     /// Whether the surface is on display. A new surface is not until it is shown.
     private var onDisplay = false
-    /// No claim has been accepted for this surface yet.
-    private var opening = true
+    /// No claim has been accepted for this surface yet, and its first own grid is to
+    /// be claimed. False from the start for a viewer's grid.
+    private var opening: Bool
     /// The grid last claimed, and when. Cleared by a refusal, so a later change may
     /// claim the same grid again.
     private var lastClaim: TerminalSize?
@@ -90,8 +92,14 @@ package struct PaneGrid {
         var lastClaim: TerminalSize?
     }
 
-    package init(debounce: UInt64 = 50_000_000) {
+    /// - Parameter viewer: the grid of a viewer of a terminal on another Mac, which
+    ///   showing the terminal does not claim: no claim for the first own grid, so the
+    ///   view keeps the pane's own size until the server names the grid in force, and
+    ///   shows that grid from then on. From the first user action on it is as the own
+    ///   pane's. False, the default, is the own pane's grid.
+    package init(debounce: UInt64 = 50_000_000, viewer: Bool = false) {
         self.debounce = debounce
+        opening = !viewer
     }
 
     /// Whether the pane is the owner of the grid, as far as it can know.

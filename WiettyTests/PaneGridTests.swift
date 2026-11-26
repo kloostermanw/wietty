@@ -933,3 +933,143 @@ private final class GridCalls {
                                 .impose(TerminalSize(cols: 80, rows: 24))])
     }
 }
+
+/// `PaneGrid` as the grid of a viewer of a terminal on another Mac: showing the
+/// terminal claims nothing, the grid in force is shown once the server names it, and
+/// from a user action on everything is as for the own pane.
+@Suite struct ViewerPaneGridTests {
+    private func viewer() -> Pane {
+        var pane = Pane()
+        pane.model = PaneGrid(viewer: true)
+        return pane
+    }
+
+    /// Shown, with its own grid known and changing: no claim, not the owner, and the
+    /// view keeps the pane's own size while the server has named no grid.
+    @Test func aViewerClaimsNothingForItsFirstOwnGrid() {
+        var pane = viewer()
+        pane.show(grid(100, 30))
+        pane.own(grid(110, 32))
+        #expect(pane.claims.isEmpty)
+        #expect(!pane.model.isOwner)
+        #expect(pane.imposed.isEmpty)
+        #expect(pane.debounces.isEmpty)
+    }
+
+    /// The first `resize` (the attach's) imposes the grid in force, and claims nothing.
+    @Test func aViewerShowsTheGridInForceOnceTheFirstResizeArrives() {
+        var pane = viewer()
+        pane.show(grid(100, 30))
+        pane.server(grid(80, 24), own: false)
+        #expect(pane.imposed == [grid(80, 24)])
+        #expect(pane.claims.isEmpty)
+        // Another viewer's later grid follows, still without a claim.
+        pane.own(grid(101, 30))
+        pane.server(grid(90, 25), own: false)
+        #expect(pane.imposed == [grid(80, 24), grid(90, 25)])
+        #expect(pane.claims.isEmpty)
+    }
+
+    /// Off display when the attach speaks: the grid in force is imposed all the same.
+    @Test func aViewerNotYetShownShowsTheGridInForce() {
+        var pane = viewer()
+        pane.server(grid(80, 24), own: false)
+        #expect(pane.imposed == [grid(80, 24)])
+        pane.show(grid(100, 30))
+        #expect(pane.claims.isEmpty)
+        #expect(pane.imposed == [grid(80, 24)])
+    }
+
+    /// A key, a paste, a drop or a click claims the own grid at once; the view fills
+    /// the pane while the claim is out, and the pane is the owner after its answer.
+    @Test func aUserActionClaimsAndTheAnswerMakesTheViewerTheOwner() {
+        var pane = viewer()
+        pane.show(grid(100, 30))
+        pane.server(grid(80, 24), own: false)
+        pane.act()
+        #expect(pane.claims == [grid(100, 30)])
+        #expect(pane.model.isOwner)
+        #expect(pane.imposed == [grid(80, 24), nil])
+        pane.server(grid(100, 30), own: true)
+        #expect(pane.model.isOwner)
+        #expect(pane.model.awaitingAnswers == 0)
+        #expect(pane.imposed == [grid(80, 24), nil])
+        // As an owner it follows its window, as the own pane does.
+        pane.advance(200 * ms)
+        pane.own(grid(110, 30))
+        #expect(pane.claims == [grid(100, 30), grid(110, 30)])
+    }
+
+    /// Another viewer's claim takes the grid back: the viewer shows it, and a second
+    /// user action claims again.
+    @Test func anotherViewersClaimTakesTheGridBackFromAViewer() {
+        var pane = viewer()
+        pane.show(grid(100, 30))
+        pane.server(grid(80, 24), own: false)
+        pane.act()
+        pane.server(grid(100, 30), own: true)
+        pane.server(grid(90, 25), own: false)
+        #expect(!pane.model.isOwner)
+        #expect(pane.imposed.last == grid(90, 25))
+        pane.advance(200 * ms)
+        pane.act()
+        #expect(pane.claims == [grid(100, 30), grid(100, 30)])
+    }
+
+    /// Q3: a viewer that owned the grid when the link was lost claims again on the next
+    /// link's first `resize` when that names the grid it claimed last.
+    @Test func aViewerThatOwnedTheGridClaimsAgainAfterALostLink() {
+        var pane = viewer()
+        pane.show(grid(100, 30))
+        pane.server(grid(80, 24), own: false)
+        pane.act()
+        pane.server(grid(100, 30), own: true)
+        pane.ended()
+        #expect(pane.claims == [grid(100, 30)])
+        pane.server(grid(100, 30), own: false)
+        #expect(pane.claims == [grid(100, 30), grid(100, 30)])
+        #expect(pane.model.isOwner)
+    }
+
+    /// Q3: a viewer that never claimed claims nothing after a lost link and shows the
+    /// grid the next link names.
+    @Test func aViewerThatNeverClaimedClaimsNothingAfterALostLink() {
+        var pane = viewer()
+        pane.show(grid(100, 30))
+        pane.server(grid(80, 24), own: false)
+        pane.ended()
+        pane.server(grid(90, 25), own: false)
+        #expect(pane.claims.isEmpty)
+        #expect(pane.imposed == [grid(80, 24), grid(90, 25)])
+    }
+}
+
+/// `OwnPaneGrid` passes the viewer's choice to its `PaneGrid`, and keeps the own
+/// pane's by default.
+@MainActor
+@Suite struct ViewerOwnPaneGridTests {
+    @Test func aViewersOwnPaneGridClaimsOnlyOnAUserAction() {
+        let calls = GridCalls()
+        let pane = OwnPaneGrid(viewer: true,
+                               claim: { size in calls.add(.claim(size)); return true },
+                               impose: { size in calls.add(.impose(size)) })
+        defer { pane.stop() }
+        pane.paneChanged(ownGrid: TerminalSize(cols: 100, rows: 30))
+        #expect(calls.calls.isEmpty)
+        pane.resizeReceived(TerminalSize(cols: 80, rows: 24), own: false)
+        #expect(calls.calls == [.impose(TerminalSize(cols: 80, rows: 24))])
+        pane.userActed()
+        #expect(calls.calls == [.impose(TerminalSize(cols: 80, rows: 24)),
+                                .claim(TerminalSize(cols: 100, rows: 30)), .impose(nil)])
+        #expect(pane.isOwner)
+    }
+
+    @Test func anOwnPaneGridByDefaultClaimsItsFirstGrid() {
+        let calls = GridCalls()
+        let pane = OwnPaneGrid(claim: { size in calls.add(.claim(size)); return true },
+                               impose: { size in calls.add(.impose(size)) })
+        defer { pane.stop() }
+        pane.paneChanged(ownGrid: TerminalSize(cols: 100, rows: 30))
+        #expect(calls.claims == [TerminalSize(cols: 100, rows: 30)])
+    }
+}
