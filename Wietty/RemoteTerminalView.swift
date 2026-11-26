@@ -37,7 +37,7 @@ struct RemoteTerminalView: NSViewRepresentable {
             case .sessionEnded: "[session ended]"
             case .connectionLost: "[connection lost]"
             case .serverTooOld: "[The other Mac runs an older Wietty. Update Wietty on that Mac.]"
-            case let .refused(_, message): Self.printable(message)
+            case let .refused(_, message): RemoteReconnectPolicy.printable(message)
             }
             terminalView?.feed(text: "\r\n\u{1B}[31m\(message)\u{1B}[0m\r\n")
         }
@@ -46,16 +46,6 @@ struct RemoteTerminalView: NSViewRepresentable {
         connection.start()
 
         return terminalView
-    }
-
-    /// A refusal's text as plain text for the terminal: it comes from the network,
-    /// so its control characters (C0, DEL and C1) are dropped rather than letting the
-    /// server drive this terminal with them. What is left of an escape sequence is
-    /// shown as the characters it was made of.
-    nonisolated static func printable(_ message: String) -> String {
-        String(String.UnicodeScalarView(message.unicodeScalars.filter { scalar in
-            !(scalar.value < 0x20 || (0x7F...0x9F).contains(scalar.value))
-        }))
     }
 
     func updateNSView(_ nsView: TerminalView, context: Context) {
