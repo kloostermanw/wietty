@@ -266,13 +266,39 @@ view's own frame, which an imposed grid changes. The pane claims:
   (a dropped file's path, dictation, a Services item), while another viewer owns the grid;
 - its own grid when the surface comes back on display, if it owns the grid and its own grid is not
   the grid in force;
-- its own grid once after its link was lost and made again, if it owned the grid before.
+- once after its link was lost and made again, on the new link's first `resize`, if it owned the
+  grid when the link was lost and that `resize` names the grid the pane itself claimed last (see
+  "After a lost link" below).
 
-It never claims because of what it received: not on output, a snapshot, a repaint or a `resize`. A
-pane that does not own the grid does not claim when its window changes either; it shows the grid in
-force. Ownership is the package's `GridOwnership`: the pane owns the grid while a claim it made is
-unanswered, or when the last `resize` it received was its own answer. It starts over when the link
-is lost, since a claim sent on a link that ended may never be answered.
+It never claims because of what it received otherwise: not on output, a snapshot, a repaint or any
+other `resize`. A pane that does not own the grid does not claim when its window changes either; it
+shows the grid in force. Ownership is the package's `GridOwnership`: the pane owns the grid while a
+claim it made is unanswered, or when the last `resize` it received was its own answer. It starts over
+when the link is lost, since a claim sent on a link that ended may never be answered.
+
+**After a lost link** (decision Q3) the pane claims nothing at first. Another viewer may have claimed
+while the link was down, and only the new link can say so: its attach sends a `resize` with `own`
+false, carrying the grid in force, before the snapshot. `PaneGrid.linkEnded` remembers whether the
+pane owned the grid and which grid it claimed last, and `PaneGrid.resizeReceived` decides on that
+first `resize`:
+
+- The pane owned the grid and the `resize` names the grid it claimed last: nobody took it, so it
+  claims its own grid, the grid that fits the pane now, which may differ when the window changed
+  while the link was down. A surface that is not on display claims the grid in force instead, which
+  keeps the grid without a reflow; shown again, it claims its own grid as an owner does.
+- Otherwise (it did not own the grid, or the `resize` names another grid) it claims nothing, is not
+  the owner, and shows that grid until the user acts, as any pane that does not own the grid.
+
+A claim unanswered when the link was lost counts as the grid claimed last: if the server took it the
+attach names it and the pane claims again; if the claim was lost with the link, the attach names the
+grid before it, which the pane cannot tell apart from another viewer claiming that grid, so it claims
+nothing. While the link is down the pane claims only on a user action, which goes to the new link and
+is outstanding when its first `resize` arrives, so that `resize` decides nothing and the claim stands
+for itself. Claims the bridge held from the end until the pane heard of it, and a claim waiting for
+the debounce, are dropped and never sent. A second loss before the new link's first `resize` keeps
+what the pane remembered at the first, unless it has claimed since. Meanwhile a pane that owned the
+grid keeps filling the pane and follows its window, as an owner with a claim outstanding does, and
+any other shows the grid in force.
 
 **Before the first claim the grid is 120 by 34** (`GhosttyService.initialSize`). The pty is spawned
 at that size as `forkpty` creates it and the model is built at it: a full screen program lays itself
@@ -293,6 +319,8 @@ until the first claim, so the first claim is handled as a new grid even when it 
   margin of a few pixels at most.
 - An owner whose last claim was answered with a grid other than its own, with no claim waiting,
   shows the grid in force too: the server's word stands until the own grid changes again.
+- A surface that is not on display shows the grid in force whenever the pane decides its view
+  again while it is hidden (a `resize`, a lost link, a claim's answer), whoever owns the grid.
 
 An imposed grid sits at the top left of the pane. A smaller one has a margin around it in the
 terminal's background colour, and a larger one is cut off at the right and bottom edges. The view
@@ -325,10 +353,11 @@ nobody sees it. A grid imposed on a view that no container holds is applied to t
 (`GhosttySurfaceView.applyImposedSizeOffDisplay`, which sets its frame), at the scale the surface last
 rendered at, the one `synchronizeMetrics` uses for a view with no window. That covers a terminal
 created and never shown (the attach imposes 120 by 34 on the 800 by 480 point view `createSurface`
-makes) and a hidden terminal whose grid another viewer claims. With nothing imposed (the pane owned
-the grid when it was hidden) the view keeps the size its pane last gave it, which is the grid the
-pane claimed and so the grid in force; when another viewer claims, the pane is no longer the owner,
-the grid is imposed, and the view follows it. Shown again with a grid imposed,
+makes), a hidden terminal whose grid another viewer claims, and a hidden terminal whose link is lost
+and made again: the grid in force is imposed when the link is lost, and the grid the new attach names
+when it differs. With nothing imposed (the pane owned the grid when it was hidden) the view keeps the
+size its pane last gave it, which is the grid the pane claimed and so the grid in force; when another
+viewer claims, the pane is no longer the owner, the grid is imposed, and the view follows it. Shown again with a grid imposed,
 the view is already at the size the container's constraints ask for, so showing it changes nothing
 about its grid. A pane that owns the grid is different when its window was resized while the terminal
 was hidden: shown again, its view fills the new pane and the pane claims that grid.
@@ -363,7 +392,10 @@ bounds across reports (`PaddingWindow`), and a configured value outside them is 
 replaced by the upper bound, which is never below the true padding, so the pane never claims a column
 or row more than it can show. The bounds start over when the cell size, the scale or the configuration
 changes. With a grid imposed, a surface that shows another grid at its imposed size is logged and
-sized again from the narrowed bounds, at most twice per grid.
+sized again from the narrowed bounds, at most twice per grid and per metrics key
+(`ImposedSizeCorrections`: the cell size, the scale and the configuration, the same key the bounds
+start over on), so a surface that used its two corrections at one scale has two again at the next.
+The padding the bounds narrow is not part of that key, since every correction moves it.
 
 A reload reads the padding again and every surface takes its metrics again; a surface without a
 window keeps the scale it last rendered at. Measured with the imposed grid check: libghostty does not
@@ -953,8 +985,8 @@ socket the surface's `wietty-pty` connects to, with a `LocalSocketLink` to the a
 it is destroyed. `OwnPaneBridge` makes a fresh link when one ends as `.connectionLost` while the
 terminal lives (at once, then after 250 ms, doubling up to 5 s, the count reset once a link stayed
 up 10 s). Before it asks for the new link it tells the pane's grid, which drops the claims the bridge
-held since the end, starts its count of unanswered claims over, and claims its own grid again if it
-owned the grid. On `.sessionEnded` it stops the bridge instead, so the helper exits with the child
+held since the end and starts its count of unanswered claims over; whether it claims again is decided
+by the new link's first `resize` (see "After a lost link" under "Sizing"). On `.sessionEnded` it stops the bridge instead, so the helper exits with the child
 and its socket goes, while the surface keeps its last screen until the row is closed or restarted. A
 `.refused` link (the server is at its cap and answered `busy`) is logged and not made again; the
 terminal is then read without its pane after 5 seconds. The helper going away means the surface

@@ -110,6 +110,27 @@ import WiettyCore
         #expect(view.frame.size == NSSize(width: 200, height: 100))
     }
 
+    /// The pane's grid carried out on a hidden view, as `PaneBridges` wires it: the
+    /// pane owned the grid and was hidden with nothing imposed, so the view kept its
+    /// last frame. Its link is lost: the view takes the grid in force at once, and the
+    /// grid the next attach names, so the surface stays at the pty's grid.
+    @Test func aHiddenSurfaceTakesTheGridInForceWhenItsLinkIsLost() {
+        let loose = GhosttySurfaceView(frame: NSRect(x: 0, y: 0, width: 640, height: 400), host: nil, id: "gt:lost")
+        loose.useMetricsForTesting(metrics)
+        let pane = OwnPaneGrid(claim: { _ in true }, impose: { loose.imposedGrid = $0 })
+        defer { pane.stop() }
+        pane.paneChanged(ownGrid: TerminalSize(cols: 80, rows: 30))
+        pane.resizeReceived(TerminalSize(cols: 80, rows: 30), own: true)
+        pane.paneChanged(ownGrid: nil)
+        #expect(loose.frame.size == NSSize(width: 640, height: 400))
+
+        pane.linkLost()
+        #expect(loose.frame.size == NSSize(width: 800, height: 600))
+        pane.resizeReceived(TerminalSize(cols: 50, rows: 10), own: false)
+        #expect(loose.frame.size == NSSize(width: 500, height: 200))
+        #expect(!pane.isOwner)
+    }
+
     /// A click with any button and a paste are user actions; a release, a move and a
     /// drag are not.
     @Test func clicksAndAPasteAreUserActions() throws {

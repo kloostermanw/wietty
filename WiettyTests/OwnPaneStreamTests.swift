@@ -496,9 +496,10 @@ private let folder = URL(fileURLWithPath: "/tmp")
         #expect(grid.isOwner)
     }
 
-    /// The owner's link is dropped and made again: the pane claims its grid again on
-    /// the new link, so it still owns it, and the new link carries both ways: another
-    /// viewer's claim is imposed and a user action takes the grid back.
+    /// The owner's link is dropped and made again: the new attach names the grid the
+    /// pane claimed last, so the pane claims its grid again on the new link and still
+    /// owns it, and the new link carries both ways: another viewer's claim is imposed
+    /// and a user action takes the grid back.
     @Test func afterAReconnectTheOwnerStillOwnsTheGrid() async throws {
         let rig = try rig()
         defer { rig.tearDown() }
@@ -522,12 +523,11 @@ private let folder = URL(fileURLWithPath: "/tmp")
         #expect(server.inspectConnections { shutdown($0, SHUT_RDWR) }.count == 1)
         #expect(await eventually { rig.host.bridges.bridge(for: session)?.linkCount == 2 })
         #expect(await eventually { occurrences(of: TerminalPaint.hardReset, in: helper.output.bytes) == 2 })
-        // The claim made again after the reset, and its answer, which follows the new
-        // attach's `resize` on the new link.
+        // The claim made again on the new attach's `resize`, and its answer.
         #expect(await eventually { grid.claimsAccepted == acceptedBefore + 1 && grid.awaitingAnswers == 0 })
         #expect(grid.isOwner)
-        // The new attach's `resize` (own false) came while the claim made again was
-        // unanswered: nothing imposed.
+        // The pane owned the grid, so its view kept filling the pane while the link
+        // was down and through the claim: nothing imposed.
         #expect(rig.host.imposed[session, default: []] == imposedBefore)
 
         let other = rig.stack.hub.attach(session: session, resize: .reflow) { _ in }

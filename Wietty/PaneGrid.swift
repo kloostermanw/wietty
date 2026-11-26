@@ -16,9 +16,10 @@ import WiettyShared
 /// always the last value (the first after a quiet period goes out at once); a user
 /// action while the pane is not the owner; coming back on display with an own grid
 /// other than the grid in force, if the owner; and once after the link was lost and
-/// made again, if the pane was the owner before. Never on bytes, a snapshot, a
-/// repaint or a `resize`: none of those reaches this type at all, and
-/// `resizeReceived` never returns a claim.
+/// made again, on the next link's first `resize`, if the pane owned the grid when the
+/// link was lost and that `resize` names the grid the pane claimed last (see
+/// `linkEnded`). Never on bytes, a snapshot or a repaint, none of which reaches this
+/// type, and never on any other `resize`.
 ///
 /// **What the view shows.** One rule: while the pane is the owner the view fills the
 /// pane, and otherwise it shows the grid in force. A claim the bridge accepted makes
@@ -27,7 +28,9 @@ import WiettyShared
 /// pty catches up when the answer arrives. The one exception is an owner whose last
 /// claim has been answered with a grid other than its own grid and that has no claim
 /// waiting: the server's word stands, and the view shows that grid until the own grid
-/// changes again.
+/// changes again. A surface that is not on display shows the grid in force whenever
+/// the view is decided, so the hidden surface lays the child's output out for the
+/// grid the pty and the model are at; shown again, the rule above applies.
 ///
 /// **Ownership** is the package's `GridOwnership`: owner while a claim is unanswered
 /// or when the last `resize` was its own. It is replaced when the link ends, since a
@@ -68,6 +71,18 @@ package struct PaneGrid {
     private var debounceScheduled = false
     /// What the view was last told to show: `.some(nil)` the pane's own size.
     private var shown: TerminalSize?? = .some(nil)
+    /// What the pane knew when its link was lost, kept until the next link's first
+    /// `resize` decides whether it claims again. Nil while no link was lost since the
+    /// last such decision.
+    private var lostLink: LostLink?
+
+    private struct LostLink {
+        /// Whether the pane owned the grid when the link was lost.
+        var owned: Bool
+        /// The grid it claimed last, nil when it never claimed or the last claim was
+        /// refused.
+        var lastClaim: TerminalSize?
+    }
 
     package init(debounce: UInt64 = 50_000_000) {
         self.debounce = debounce
@@ -96,13 +111,28 @@ package struct PaneGrid {
     }
 
     /// The server said which grid is in force.
-    package mutating func resizeReceived(_ grid: TerminalSize, own: Bool) -> Action {
+    ///
+    /// The first `resize` after a lost link (the attach's, `own` false) decides what
+    /// `linkEnded` left open: a pane that owned the grid and finds the grid it
+    /// claimed last still in force claims again, its own grid on display and the grid
+    /// in force off it (which keeps the grid without reflowing anything; shown again,
+    /// it claims its own grid as an owner does). Any other pane claims nothing and
+    /// shows the grid in force. A claim made since the loss (the user acted) is
+    /// outstanding on the new link, so the pane is the owner here and that claim
+    /// stands for itself: nothing more is claimed.
+    package mutating func resizeReceived(_ grid: TerminalSize, own: Bool, now: UInt64) -> Action {
         ownership.resizeReceived(own: own)
         if own { awaiting = max(0, awaiting - 1) }
         inForce = grid
         // A claim waiting only because the window moved is for an owner; one that is
         // no longer the owner drops it (the iPad's rule too).
         if !ownership.isOwner { pending = nil }
+        if let lost = lostLink {
+            lostLink = nil
+            if !ownership.isOwner, lost.owned, grid == lost.lastClaim {
+                return claim(onDisplay ? ownGrid ?? grid : grid, now: now)
+            }
+        }
         return show(wanted())
     }
 
@@ -132,16 +162,24 @@ package struct PaneGrid {
     }
 
     /// The link ended and is being made again. A claim sent before may never be
-    /// answered, so the count starts over. An owner claims its own grid again, so it
-    /// does not silently lose the grid to nobody; a pane that was not the owner shows
-    /// what the next link's attach says.
-    package mutating func linkEnded(now: UInt64) -> Action {
-        let wasOwner = ownership.isOwner
+    /// answered, so the count starts over, and a debounced claim waiting is dropped.
+    /// Nothing is claimed here: another viewer may have claimed meanwhile, and only
+    /// the next link's first `resize` can say so (`resizeReceived`). Until then the
+    /// pane remembers whether it owned the grid and the grid it claimed last. A second
+    /// loss before that `resize` keeps what the first remembered, unless the pane has
+    /// claimed since (the user acted), in which case that claim is what it remembers.
+    ///
+    /// The view meanwhile: a pane that owned the grid keeps filling the pane and
+    /// follows its window, as an owner with a claim outstanding does; any other shows
+    /// the grid in force; a surface off display is given the grid in force.
+    package mutating func linkEnded() -> Action {
+        if ownership.isOwner || lostLink == nil {
+            lostLink = LostLink(owned: ownership.isOwner, lastClaim: lastClaim)
+        }
         ownership = GridOwnership()
         awaiting = 0
         pending = nil
-        guard wasOwner, let grid = ownGrid else { return .none }
-        return claim(grid, now: now)
+        return show(wanted())
     }
 
     /// The surface left the window: it keeps its last size and claims nothing.
@@ -184,11 +222,15 @@ package struct PaneGrid {
 
     /// What the view should show now, by the rule in the type's doc.
     private func wanted() -> TerminalSize?? {
+        if !onDisplay, let inForce { return .some(inForce) }
         if ownership.isOwner {
             if awaiting > 0 || pending != nil { return viewWhileClaimsOutstanding() }
             guard let inForce, let ownGrid, inForce != ownGrid else { return .some(nil) }
             return .some(inForce)
         }
+        // Owned the grid when the link was lost, and the next link has not said yet
+        // whether it still does: as an owner whose claim is outstanding.
+        if lostLink?.owned == true { return viewWhileClaimsOutstanding() }
         // Not the owner: the grid in force, imposed even when it equals the own grid,
         // so a drag or a font change cannot let the surface reflow on its own for a
         // layout pass before an impose lands. Costs a margin of a few pixels at most.

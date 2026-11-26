@@ -424,6 +424,39 @@ import WiettyCore
         #expect(window.padding(configured: 26) == 26)
     }
 
+    /// The closed loop may correct an imposed size twice, and has its two again for
+    /// every new grid imposed and for every new metrics key (cell size, scale,
+    /// configuration), since the padding it corrected for may have moved with them.
+    /// Taking the same metrics again, as each correction does, gives nothing back.
+    @Test func theCorrectionBudgetIsWholeAgainForANewGridOrNewMetrics() {
+        var budget = ImposedSizeCorrections()
+        func take() -> Bool { budget.take() }
+        budget.metricsTaken(key: [8, 17, 1, 0])
+        #expect(take())
+        #expect(take())
+        #expect(!take())
+        budget.metricsTaken(key: [8, 17, 1, 0])
+        #expect(!take())
+
+        // Another scale: a display of another backing scale.
+        budget.metricsTaken(key: [8, 17, 2, 0])
+        #expect(take())
+        #expect(take())
+        #expect(!take())
+        // Another cell size, another configuration.
+        budget.metricsTaken(key: [9, 18, 2, 0])
+        #expect(take())
+        budget.metricsTaken(key: [9, 18, 2, 1])
+        #expect(take())
+        #expect(take())
+        #expect(!take())
+        // Another grid.
+        budget.gridImposed()
+        #expect(take())
+        #expect(take())
+        #expect(!take())
+    }
+
     /// The grid a view is sized for is held to 1 by 1, to the protocol's 10,000,
     /// and to Metal's 16384 pixel texture side at the surface's metrics.
     @Test func anImposedGridIsHeldToWhatCanBeShown() {

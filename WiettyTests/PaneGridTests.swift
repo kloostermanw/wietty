@@ -38,9 +38,10 @@ private struct Pane {
     mutating func show(_ own: TerminalSize) { apply(model.cameOnDisplay(own, now: now)) }
     mutating func own(_ own: TerminalSize) { apply(model.ownGridChanged(own, now: now)) }
     mutating func act() { apply(model.userActed(now: now)) }
-    mutating func server(_ grid: TerminalSize, own: Bool) { apply(model.resizeReceived(grid, own: own)) }
+    mutating func server(_ grid: TerminalSize, own: Bool) { apply(model.resizeReceived(grid, own: own, now: now)) }
     mutating func fire() { apply(model.debounceFired(now: now)) }
-    mutating func ended() { apply(model.linkEnded(now: now)) }
+    mutating func ended() { apply(model.linkEnded()) }
+    mutating func hide() { model.wentOffDisplay() }
 
     /// A pane that has opened at `own`, claimed it and been answered.
     static func owning(_ own: TerminalSize) -> Pane {
@@ -308,7 +309,8 @@ private struct Pane {
 
     /// Receiving a `resize` never claims, whatever it says and however often: bytes,
     /// a snapshot and a repaint do not reach `PaneGrid` at all, and a `resize` is the
-    /// one message that does.
+    /// one message that does. The one exception is the first `resize` after a lost
+    /// link, below.
     @Test func receivingAResizeNeverClaims() {
         for start in [Pane.owning(grid(100, 30)), Pane.notOwning(grid(100, 30), imposed: grid(80, 24)), Pane()] {
             var pane = start
@@ -351,36 +353,6 @@ private struct Pane {
         #expect(pane.model.isOwner)
     }
 
-    /// The link ending with claims unanswered: the count starts over, and a pane
-    /// that was the owner claims its own grid again at once.
-    @Test func theLinkEndingWithClaimsUnansweredReclaimsForAnOwner() {
-        var pane = Pane.owning(grid(100, 30))
-        pane.advance(200 * ms)
-        pane.own(grid(110, 30))
-        pane.ended()
-        #expect(pane.claims == [grid(100, 30), grid(110, 30), grid(110, 30)])
-        // One claim on the new link, answered once: settled as the owner. Had the
-        // count not started over, the unanswered claim of the old link would keep it
-        // waiting for an answer forever.
-        pane.server(grid(110, 30), own: false)
-        pane.server(grid(110, 30), own: true)
-        #expect(pane.model.isOwner)
-        pane.server(grid(80, 24), own: false)
-        #expect(!pane.model.isOwner)
-        #expect(pane.imposed == [grid(80, 24)])
-    }
-
-    /// A pane that was not the owner claims nothing after the link ended, and shows
-    /// what the next attach says.
-    @Test func theLinkEndingClaimsNothingForAPaneThatWasNotTheOwner() {
-        var pane = Pane.notOwning(grid(100, 30), imposed: grid(80, 24))
-        let claims = pane.claims
-        pane.ended()
-        #expect(pane.claims == claims)
-        pane.server(grid(90, 24), own: false)
-        #expect(pane.imposed == [grid(80, 24), grid(90, 24)])
-    }
-
     /// Without a reset on the end, a claim the old link never answered would leave
     /// the pane the owner forever, following its window while another viewer's grid
     /// is in force.
@@ -388,12 +360,371 @@ private struct Pane {
         var pane = Pane.owning(grid(100, 30))
         pane.advance(200 * ms)
         pane.own(grid(110, 30))
-        // The answer to that claim is lost with the link.
+        // The answer to that claim is lost with the link, and the new attach says
+        // another viewer's grid is in force.
         pane.ended()
-        pane.server(grid(110, 30), own: true)
         pane.server(grid(80, 24), own: false)
         #expect(!pane.model.isOwner)
+        #expect(pane.model.awaitingAnswers == 0)
         #expect(pane.imposed == [grid(80, 24)])
+    }
+
+    // MARK: After a lost link
+
+    /// The link ending claims nothing by itself, whoever owned the grid: what the pane
+    /// does is decided by the first `resize` of the next link.
+    @Test func theLinkEndingClaimsNothingByItself() {
+        for start in [Pane.owning(grid(100, 30)), Pane.notOwning(grid(100, 30), imposed: grid(80, 24))] {
+            var pane = start
+            let claims = pane.claims
+            pane.ended()
+            #expect(pane.claims == claims)
+            #expect(!pane.model.isOwner)
+            #expect(pane.model.awaitingAnswers == 0)
+        }
+    }
+
+    /// The owner, and the attach says the grid it claimed last is still in force:
+    /// nobody took it meanwhile, so it claims its own grid again and stays the owner.
+    /// Its view fills the pane throughout.
+    @Test func anOwnerFindingItsGridClaimsAgain() {
+        var pane = Pane.owning(grid(100, 30))
+        pane.advance(200 * ms)
+        pane.ended()
+        pane.server(grid(100, 30), own: false)
+        #expect(pane.claims == [grid(100, 30), grid(100, 30)])
+        #expect(pane.model.isOwner)
+        pane.server(grid(100, 30), own: true)
+        #expect(pane.model.isOwner)
+        #expect(pane.imposed.isEmpty)
+        // Only the first `resize` decides: later ones claim nothing.
+        pane.server(grid(80, 24), own: false)
+        #expect(pane.claims.count == 2)
+        #expect(pane.imposed == [grid(80, 24)])
+    }
+
+    /// The owner, and the attach says another grid is in force: another viewer took it
+    /// meanwhile. The pane claims nothing, is not the owner, and shows that grid, also
+    /// when its own window changes.
+    @Test func anOwnerFindingAnotherGridClaimsNothing() {
+        var pane = Pane.owning(grid(100, 30))
+        pane.advance(200 * ms)
+        pane.ended()
+        pane.server(grid(80, 24), own: false)
+        #expect(pane.claims == [grid(100, 30)])
+        #expect(!pane.model.isOwner)
+        #expect(pane.imposed == [grid(80, 24)])
+        pane.own(grid(110, 30))
+        #expect(pane.claims == [grid(100, 30)])
+        #expect(pane.imposed == [grid(80, 24)])
+    }
+
+    /// A pane that was not the owner claims nothing after the link ended, even when
+    /// the attach names the grid it once claimed, and shows what the attach says.
+    @Test func aPaneThatWasNotTheOwnerClaimsNothing() {
+        var pane = Pane.notOwning(grid(100, 30), imposed: grid(80, 24))
+        let claims = pane.claims
+        pane.ended()
+        pane.server(grid(100, 30), own: false)
+        #expect(pane.claims == claims)
+        #expect(!pane.model.isOwner)
+        #expect(pane.imposed == [grid(80, 24), grid(100, 30)])
+    }
+
+    /// A claim unanswered when the link was lost is the grid the pane claimed last.
+    /// The attach names it when the server took the claim: the pane claims again. It
+    /// names the grid before it when the claim was lost with the link: by the rule the
+    /// pane cannot tell that from another viewer claiming that grid, and claims nothing.
+    @Test func aClaimOutstandingAtTheLossIsTheGridClaimedLast() {
+        var taken = Pane.owning(grid(100, 30))
+        taken.advance(200 * ms)
+        taken.own(grid(110, 30))
+        taken.ended()
+        taken.server(grid(110, 30), own: false)
+        #expect(taken.claims == [grid(100, 30), grid(110, 30), grid(110, 30)])
+        #expect(taken.model.isOwner)
+        #expect(taken.imposed.isEmpty)
+
+        var lost = Pane.owning(grid(100, 30))
+        lost.advance(200 * ms)
+        lost.own(grid(110, 30))
+        lost.ended()
+        lost.server(grid(100, 30), own: false)
+        #expect(lost.claims == [grid(100, 30), grid(110, 30)])
+        #expect(!lost.model.isOwner)
+        #expect(lost.imposed == [grid(100, 30)])
+    }
+
+    /// A debounced claim waiting when the link was lost is dropped with the count and
+    /// never goes out when the timer fires. An owner that finds its grid claims the
+    /// grid that fits the pane at that moment instead, once; one that finds another
+    /// grid claims nothing.
+    @Test func aDebouncedClaimWaitingAtTheLossIsNeverSent() {
+        var same = Pane.owning(grid(100, 30))
+        same.advance(200 * ms)
+        same.own(grid(110, 30))
+        same.advance(10 * ms)
+        same.own(grid(120, 30))
+        #expect(same.debounces.count == 1)
+        same.ended()
+        same.server(grid(110, 30), own: false)
+        same.advance(40 * ms)
+        same.fire()
+        #expect(same.claims == [grid(100, 30), grid(110, 30), grid(120, 30)])
+
+        var other = Pane.owning(grid(100, 30))
+        other.advance(200 * ms)
+        other.own(grid(110, 30))
+        other.advance(10 * ms)
+        other.own(grid(120, 30))
+        other.ended()
+        other.server(grid(80, 24), own: false)
+        other.advance(40 * ms)
+        other.fire()
+        #expect(other.claims == [grid(100, 30), grid(110, 30)])
+        #expect(other.imposed == [grid(80, 24)])
+    }
+
+    /// The pane resized while the link was down. It claims nothing meanwhile, and an
+    /// owner's view keeps following the window. On the attach the owner that finds its
+    /// grid claims the grid that fits the pane now; one that finds another grid claims
+    /// nothing and shows it.
+    @Test func resizedWhileTheLinkWasDownAnOwner() {
+        var same = Pane.owning(grid(100, 30))
+        same.advance(200 * ms)
+        same.ended()
+        same.own(grid(120, 30))
+        same.own(grid(125, 32))
+        #expect(same.claims == [grid(100, 30)])
+        #expect(same.debounces.isEmpty)
+        #expect(same.imposed.isEmpty)
+        same.server(grid(100, 30), own: false)
+        #expect(same.claims == [grid(100, 30), grid(125, 32)])
+        #expect(same.imposed.isEmpty)
+
+        var other = Pane.owning(grid(100, 30))
+        other.advance(200 * ms)
+        other.ended()
+        other.own(grid(120, 30))
+        other.server(grid(80, 24), own: false)
+        #expect(other.claims == [grid(100, 30)])
+        #expect(other.imposed == [grid(80, 24)])
+    }
+
+    /// The same for a claim outstanding at the loss: the claim made again is the grid
+    /// that fits the pane now.
+    @Test func resizedWhileTheLinkWasDownWithAClaimOutstanding() {
+        var pane = Pane.owning(grid(100, 30))
+        pane.advance(200 * ms)
+        pane.own(grid(110, 30))
+        pane.ended()
+        pane.own(grid(120, 30))
+        pane.server(grid(110, 30), own: false)
+        #expect(pane.claims == [grid(100, 30), grid(110, 30), grid(120, 30)])
+        #expect(pane.imposed.isEmpty)
+    }
+
+    /// A pane that was not the owner and resized while the link was down: nothing is
+    /// claimed, and the grid in force stays imposed, then the attach's.
+    @Test func resizedWhileTheLinkWasDownNotTheOwner() {
+        var pane = Pane.notOwning(grid(100, 30), imposed: grid(80, 24))
+        pane.ended()
+        pane.own(grid(120, 30))
+        #expect(pane.imposed == [grid(80, 24)])
+        pane.server(grid(90, 24), own: false)
+        #expect(pane.claims == [grid(100, 30)])
+        #expect(pane.imposed == [grid(80, 24), grid(90, 24)])
+    }
+
+    /// The user acting right after the reconnect, having lost the grid by the rule:
+    /// a key claims the own grid at once, as for any pane that is not the owner.
+    @Test func theUserActingAfterTheReconnectTakesTheGrid() {
+        var pane = Pane.owning(grid(100, 30))
+        pane.advance(200 * ms)
+        pane.ended()
+        pane.server(grid(80, 24), own: false)
+        pane.act()
+        #expect(pane.claims == [grid(100, 30), grid(100, 30)])
+        #expect(pane.model.isOwner)
+        #expect(pane.imposed == [grid(80, 24), nil])
+
+        // Having kept the grid, acting claims nothing more.
+        var kept = Pane.owning(grid(100, 30))
+        kept.advance(200 * ms)
+        kept.ended()
+        kept.server(grid(100, 30), own: false)
+        kept.act()
+        #expect(kept.claims == [grid(100, 30), grid(100, 30)])
+    }
+
+    /// The user acting while the link is down claims at once; the claim goes to the
+    /// next link, and with it outstanding the attach's `resize` is not the last word:
+    /// nothing more is claimed and nothing imposed, whatever grid it names.
+    @Test func theUserActingWhileTheLinkIsDownClaimsOnceForTheNextLink() {
+        for attach in [grid(100, 30), grid(80, 24)] {
+            var pane = Pane.notOwning(grid(100, 30), imposed: grid(80, 24))
+            pane.ended()
+            pane.advance(200 * ms)
+            pane.act()
+            #expect(pane.claims == [grid(100, 30), grid(100, 30)])
+            pane.server(attach, own: false)
+            #expect(pane.claims.count == 2)
+            #expect(pane.model.isOwner)
+            pane.server(grid(100, 30), own: true)
+            #expect(pane.model.isOwner)
+            #expect(pane.imposed == [grid(80, 24), nil])
+        }
+    }
+
+    /// A second loss before the first reconnect's `resize` arrived keeps what the
+    /// pane knew at the first: an owner is still judged an owner on the attach that
+    /// finally speaks, and a pane that was not stays not.
+    @Test func aSecondLossBeforeTheAttachSpokeKeepsTheFirst() {
+        var same = Pane.owning(grid(100, 30))
+        same.advance(200 * ms)
+        same.ended()
+        same.ended()
+        same.server(grid(100, 30), own: false)
+        #expect(same.claims == [grid(100, 30), grid(100, 30)])
+        #expect(same.model.isOwner)
+
+        var other = Pane.owning(grid(100, 30))
+        other.advance(200 * ms)
+        other.ended()
+        other.ended()
+        other.server(grid(80, 24), own: false)
+        #expect(other.claims == [grid(100, 30)])
+        #expect(!other.model.isOwner)
+
+        var never = Pane.notOwning(grid(100, 30), imposed: grid(80, 24))
+        never.ended()
+        never.ended()
+        never.server(grid(100, 30), own: false)
+        #expect(never.claims == [grid(100, 30)])
+        #expect(!never.model.isOwner)
+    }
+
+    /// A claim the user made between two losses is what the pane claimed last: the
+    /// attach that names it finds the pane the owner.
+    @Test func aClaimBetweenTwoLossesIsTheGridClaimedLast() {
+        var pane = Pane.notOwning(grid(100, 30), imposed: grid(80, 24))
+        pane.ended()
+        pane.advance(200 * ms)
+        pane.own(grid(110, 30))
+        pane.act()
+        pane.ended()
+        pane.server(grid(110, 30), own: false)
+        #expect(pane.claims == [grid(100, 30), grid(110, 30), grid(110, 30)])
+        #expect(pane.model.isOwner)
+    }
+
+    // MARK: After a lost link, off display
+
+    /// Off display the surface is given the grid in force as soon as the link is
+    /// lost. An owner that finds its grid on the attach keeps the grid by claiming the
+    /// grid in force, which reflows nothing, rather than an own grid it last knew on
+    /// display; shown again, it claims the grid that fits the pane, as an owner does.
+    @Test func offDisplayAnOwnerFindingItsGridClaimsTheGridInForce() {
+        var pane = Pane.owning(grid(100, 30))
+        pane.advance(200 * ms)
+        pane.ended()
+        // Resized on display while the link was down, then hidden.
+        pane.own(grid(120, 30))
+        pane.hide()
+        #expect(pane.imposed.isEmpty)
+        pane.server(grid(100, 30), own: false)
+        #expect(pane.claims == [grid(100, 30), grid(100, 30)])
+        #expect(pane.model.isOwner)
+        #expect(pane.imposed == [grid(100, 30)])
+        pane.server(grid(100, 30), own: true)
+        #expect(pane.imposed == [grid(100, 30)])
+
+        pane.advance(200 * ms)
+        pane.show(grid(120, 30))
+        #expect(pane.claims == [grid(100, 30), grid(100, 30), grid(120, 30)])
+        #expect(pane.imposed == [grid(100, 30), nil])
+    }
+
+    /// Hidden before the loss: the grid in force is imposed at the loss itself.
+    @Test func offDisplayTheGridInForceIsImposedAtTheLoss() {
+        var pane = Pane.owning(grid(100, 30))
+        pane.hide()
+        pane.ended()
+        #expect(pane.imposed == [grid(100, 30)])
+        pane.server(grid(100, 30), own: false)
+        #expect(pane.claims == [grid(100, 30), grid(100, 30)])
+        #expect(pane.imposed == [grid(100, 30)])
+    }
+
+    /// Off display, an owner finding another grid claims nothing and that grid is
+    /// imposed, so the hidden surface follows it.
+    @Test func offDisplayAnOwnerFindingAnotherGridClaimsNothing() {
+        var pane = Pane.owning(grid(100, 30))
+        pane.hide()
+        pane.ended()
+        pane.server(grid(80, 24), own: false)
+        #expect(pane.claims == [grid(100, 30)])
+        #expect(!pane.model.isOwner)
+        #expect(pane.imposed == [grid(100, 30), grid(80, 24)])
+    }
+
+    /// Off display, a pane that was not the owner claims nothing and the attach's
+    /// grid is imposed.
+    @Test func offDisplayAPaneThatWasNotTheOwnerClaimsNothing() {
+        var pane = Pane.notOwning(grid(100, 30), imposed: grid(80, 24))
+        pane.hide()
+        pane.ended()
+        pane.server(grid(100, 30), own: false)
+        #expect(pane.claims == [grid(100, 30)])
+        #expect(pane.imposed == [grid(80, 24), grid(100, 30)])
+    }
+
+    /// Off display with a claim outstanding at the loss: the grid in force before it
+    /// is imposed at the loss; an attach naming the claimed grid keeps the pane the
+    /// owner at that grid, one naming the old grid leaves it not the owner.
+    @Test func offDisplayWithAClaimOutstanding() {
+        var taken = Pane.owning(grid(100, 30))
+        taken.advance(200 * ms)
+        taken.own(grid(110, 30))
+        taken.hide()
+        taken.ended()
+        #expect(taken.imposed == [grid(100, 30)])
+        taken.server(grid(110, 30), own: false)
+        #expect(taken.claims == [grid(100, 30), grid(110, 30), grid(110, 30)])
+        #expect(taken.model.isOwner)
+        #expect(taken.imposed == [grid(100, 30), grid(110, 30)])
+
+        var lost = Pane.owning(grid(100, 30))
+        lost.advance(200 * ms)
+        lost.own(grid(110, 30))
+        lost.hide()
+        lost.ended()
+        lost.server(grid(100, 30), own: false)
+        #expect(lost.claims == [grid(100, 30), grid(110, 30)])
+        #expect(!lost.model.isOwner)
+        #expect(lost.imposed == [grid(100, 30)])
+    }
+
+    /// Off display a user action claims nothing, after the reconnect as before it,
+    /// and a second loss keeps what the first knew.
+    @Test func offDisplayActingAndASecondLoss() {
+        var pane = Pane.owning(grid(100, 30))
+        pane.hide()
+        pane.ended()
+        pane.act()
+        pane.ended()
+        pane.server(grid(80, 24), own: false)
+        pane.act()
+        #expect(pane.claims == [grid(100, 30)])
+        #expect(!pane.model.isOwner)
+
+        var kept = Pane.owning(grid(100, 30))
+        kept.hide()
+        kept.ended()
+        kept.ended()
+        kept.server(grid(100, 30), own: false)
+        #expect(kept.claims == [grid(100, 30), grid(100, 30)])
+        #expect(kept.model.isOwner)
     }
 
     // MARK: Off display
@@ -512,17 +843,54 @@ private final class GridCalls {
         #expect(calls.claims == [TerminalSize(cols: 100, rows: 30)])
     }
 
-    /// When the link was lost the bridge drops what it held before the owner claims
-    /// again, so the next link answers exactly the claims the fresh count holds.
-    @Test func aLostLinkResetsTheBridgeBeforeClaimingAgain() {
+    /// When the link was lost the bridge drops what it held, and nothing is claimed
+    /// until the next link's first `resize`: an owner that finds the grid it claimed
+    /// last claims it again then.
+    @Test func aLostLinkResetsTheBridgeAndClaimsOnlyOnTheAttach() {
         let calls = GridCalls()
         let pane = grid(calls)
         defer { pane.stop() }
         pane.paneChanged(ownGrid: TerminalSize(cols: 100, rows: 30))
         pane.resizeReceived(TerminalSize(cols: 100, rows: 30), own: true)
         pane.linkLost()
+        #expect(calls.calls == [.claim(TerminalSize(cols: 100, rows: 30)), .reset])
+        #expect(pane.awaitingAnswers == 0)
+        pane.resizeReceived(TerminalSize(cols: 100, rows: 30), own: false)
         #expect(calls.calls == [.claim(TerminalSize(cols: 100, rows: 30)), .reset,
                                 .claim(TerminalSize(cols: 100, rows: 30))])
         #expect(pane.awaitingAnswers == 1)
+        #expect(pane.isOwner)
+    }
+
+    /// Another viewer's grid on the attach: nothing is claimed, the bridge keeps
+    /// nothing for the new link, and that grid is shown.
+    @Test func aLostLinkFindingAnotherGridClaimsNothing() {
+        let calls = GridCalls()
+        let pane = grid(calls)
+        defer { pane.stop() }
+        pane.paneChanged(ownGrid: TerminalSize(cols: 100, rows: 30))
+        pane.resizeReceived(TerminalSize(cols: 100, rows: 30), own: true)
+        pane.linkLost()
+        pane.resizeReceived(TerminalSize(cols: 80, rows: 24), own: false)
+        #expect(calls.calls == [.claim(TerminalSize(cols: 100, rows: 30)), .reset,
+                                .impose(TerminalSize(cols: 80, rows: 24))])
+        #expect(!pane.isOwner)
+    }
+
+    /// Off display: the grid in force is imposed at the loss, and the attach's grid
+    /// when it differs, so the hidden surface is at the grid the pty and the model
+    /// are at.
+    @Test func offDisplayALostLinkImposesTheGridInForce() {
+        let calls = GridCalls()
+        let pane = grid(calls)
+        defer { pane.stop() }
+        pane.paneChanged(ownGrid: TerminalSize(cols: 100, rows: 30))
+        pane.resizeReceived(TerminalSize(cols: 100, rows: 30), own: true)
+        pane.paneChanged(ownGrid: nil)
+        pane.linkLost()
+        pane.resizeReceived(TerminalSize(cols: 80, rows: 24), own: false)
+        #expect(calls.calls == [.claim(TerminalSize(cols: 100, rows: 30)), .reset,
+                                .impose(TerminalSize(cols: 100, rows: 30)),
+                                .impose(TerminalSize(cols: 80, rows: 24))])
     }
 }

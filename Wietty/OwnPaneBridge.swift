@@ -352,16 +352,18 @@ final class OwnPaneGrid {
     /// A `resize` from the server, after the hop to the main actor.
     func resizeReceived(_ grid: TerminalSize, own: Bool) {
         guard !stopped else { return }
-        apply(model.resizeReceived(grid, own: own))
+        apply(model.resizeReceived(grid, own: own, now: clock()))
     }
 
     /// The link was lost and is being made again, after the hop to the main actor.
+    /// Claims nothing: whether the pane claims again is decided by the next link's
+    /// first `resize` (`PaneGrid.resizeReceived`).
     func linkLost() {
         guard !stopped else { return }
         // The bridge first: what it held since the end is dropped with the count that
-        // held it, before the claim made again below goes out.
+        // held it, so the next link answers only claims the fresh count holds.
         resetClaims()
-        apply(model.linkEnded(now: clock()))
+        apply(model.linkEnded())
     }
 
     /// Nothing more is claimed or imposed. Idempotent.
