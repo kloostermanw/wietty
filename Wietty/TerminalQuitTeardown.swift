@@ -38,10 +38,19 @@ final class TerminalQuitTeardown {
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { [weak stack, weak remotePanes] _ in
             MainActor.assumeIsolated {
-                remotePanes?.closeAll()
-                stack?.shutDown()
+                Self.run(closeRemotePanes: { remotePanes?.closeAll() },
+                         shutDownStack: { stack?.shutDown() })
             }
         }
+    }
+
+    /// What quitting does, in this order: the remote panes are closed, then the stack
+    /// is shut down, so every viewer surface is destroyed while the surface host is
+    /// certain to be whole. A function of its own so the order is tested without
+    /// posting `willTerminate`.
+    static func run(closeRemotePanes: () -> Void, shutDownStack: () -> Void) {
+        closeRemotePanes()
+        shutDownStack()
     }
 
     deinit { NotificationCenter.default.removeObserver(token) }

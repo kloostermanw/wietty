@@ -8,9 +8,8 @@ import WiettyCore
 /// remote row.
 ///
 /// The route exists because nothing else in the protocol can revive a dead row.
-/// `restart` and `close` are keyed by session id, and the rows that print
-/// `[session ended]` in a viewer's pane are precisely the ones with no usable
-/// session id: a row imported from a workspace config and never opened carries an
+/// `restart` and `close` are keyed by session id, and the rows whose pane ends at
+/// once when a viewer attaches are precisely the ones with no usable session id: a row imported from a workspace config and never opened carries an
 /// empty one, and a row whose serving Mac was relaunched carries one that names
 /// nothing. `run_state` cannot be used to spot them either, since it reports the
 /// row's foreground job and answers "running" whenever no job has been heard of.

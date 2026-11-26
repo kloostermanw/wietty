@@ -50,10 +50,6 @@ struct TerminalStack {
     /// the seam onto an unstable API, and one owner is the point of the seam.
     func surfaceView(for session: String) -> NSView? { surfaces.view(id: session) }
 
-    /// The bundled `wietty-pty`, nil when it is missing or not executable (which is
-    /// then `setupError`). Kept because every surface runs it, a remote pane's too.
-    let helperPath: String?
-
     /// The panes of terminals on other Macs, nil when there is no real surface host or
     /// no helper (a stack that failed to build, or one a test built on a fake host), or
     /// when no connection store was given.
@@ -125,7 +121,6 @@ struct TerminalStack {
         desktopNotifications = DesktopNotificationSetting(host: built.host)
         ghosttyColors = GhosttyColorSettings(host: built.host)
         surfaces = built.host
-        self.helperPath = helper
         if let host = built.host as? GhosttySurfaceHost, let helper, let remoteConnections {
             remotePanes = RemotePanes(host: host, helperPath: helper, connections: remoteConnections)
         } else {

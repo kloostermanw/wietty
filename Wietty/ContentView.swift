@@ -633,8 +633,8 @@ struct ContentView: View {
     ///
     /// The session id comes from the reply rather than from `ref`, because a revived
     /// row gets a *new* one and `ref` still carries the dead id the last snapshot
-    /// described. Attaching to that is what put `[session ended]` in the pane with no
-    /// way back to a working terminal.
+    /// described. Attaching to that ends the pane at once (the other Mac has no such
+    /// session), with no way back to a working terminal.
     ///
     /// Awaited before the pane switches, unlike the local path, which switches first.
     /// Not because a local revival cannot renumber a row, it can and does: the

@@ -159,10 +159,12 @@ protocol GridSizedSurface: AnyObject {
 
 /// Puts an existing `NSView` into SwiftUI without owning it.
 ///
-/// The view belongs to `GhosttySurfaceHost` for the terminal's whole life, so this
-/// deliberately creates nothing and tears nothing down: it is a window into a view
-/// someone else owns. `dismantleNSView` must not free the surface, or switching
-/// rows would kill the terminal the user just left. The Task 1 spike proved a view
+/// The view belongs to `GhosttySurfaceHost`, so this deliberately creates nothing and
+/// tears nothing down: it is a window into a view someone else owns. A local
+/// terminal's surface lives as long as the terminal; a remote pane's lives only while
+/// the pane is shown, and `RemotePane` destroys it when the pane is hidden.
+/// `dismantleNSView` must not free the surface either way, or switching rows would
+/// kill the terminal the user just left. The Task 1 spike proved a view
 /// holding a live surface survives removal and re-addition, including into a
 /// different `NSWindow`, with the shell still running and the scrollback intact.
 struct SurfaceContainer: NSViewRepresentable {
@@ -188,8 +190,9 @@ struct SurfaceContainer: NSViewRepresentable {
     /// The whole substrate rests on this: the surface and its view outlive every
     /// container SwiftUI builds around them. Freeing here would destroy the
     /// terminal the user just switched away from, which is the one failure this
-    /// design exists to avoid. `GhosttyService.close` is what tears a terminal
-    /// down, and only when the row is closed.
+    /// design exists to avoid. The surface's owner frees it: `GhosttyService.close`
+    /// for a local terminal, only when the row is closed, and `RemotePane` for a
+    /// remote pane's, when the pane is hidden.
     static func dismantleNSView(_ container: SurfaceContainerView, coordinator: ()) {
         container.subviews.forEach { $0.removeFromSuperview() }
     }

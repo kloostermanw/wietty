@@ -12,7 +12,8 @@ import WiettyShared
 ///
 /// Every enqueue and every host call takes a stamp from one counter, so a test can tell
 /// whether the turn a surface was created in was put on the queue after a destroy (the
-/// rule task 2 measured), not only whether it ran later.
+/// rule `ViewerSurfaceGate` keeps, from the R8 measurement), not only whether it ran
+/// later.
 private final class ManualMain: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [(stamp: Int, work: @MainActor () -> Void)] = []
@@ -864,7 +865,7 @@ private final class Rig {
         #expect(rig.host.destroyed.count == 1)
     }
 
-    // MARK: Fix round 1
+    // MARK: The attempt timeout, the button, a helper gone after the end, the counts
 
     /// The first link (or a helper that never connects, which is the same to the pane:
     /// no snapshot) takes longer than 15 s: it counts as lost and is retired.
@@ -1137,7 +1138,7 @@ private final class Rig {
         #expect(rig.links.isEmpty)
     }
 
-    // MARK: Fix round 2: a snapshot waits for the surface's grid
+    // MARK: A snapshot waits for the surface's grid
 
     private static let ownGrid = TerminalSize(cols: 124, rows: 40)
     private static let inForce = TerminalSize(cols: 100, rows: 30)
@@ -1180,7 +1181,7 @@ private final class Rig {
 
     /// The retiring link of an attempt timeout: an inert one, observed for the answers.
     private func isInert(_ link: any TerminalStreamLink) -> Bool {
-        (link as? ObservedLink)?.inner is InertLink
+        (link as? ObservedLink)?.isInert ?? false
     }
 
     private func queries(_ bridge: FakeBridge) -> Int {
@@ -1458,7 +1459,7 @@ private final class Rig {
         #expect(tokens.all.count == 1)
     }
 
-    // MARK: Hold fix: lost queries, held bytes, late answers
+    // MARK: Lost queries, held bytes, late answers
 
     private static let other = TerminalSize(cols: 90, rows: 26)
 
@@ -1582,6 +1583,56 @@ private final class Rig {
         let typed = Array("\u{1B}[8;24;80t".utf8)
         surfaceTypes(rig, typed)
         #expect(serverInput(rig) == [0x1B] + typed)
+    }
+
+    /// A second hold that ends while the expiry of the first hold's query runs (it could
+    /// not ask, that query being out) leaves the expiry as it is: the query is given up
+    /// on one second after the FIRST hold ended, however often a link is replaced in
+    /// that second.
+    @Test func aSecondHoldEndingWithinTheExpiryLeavesTheFirstTimer() throws {
+        let (rig, pane, id) = try paneAtAnotherGrid()
+        rig.lose()
+        let out = rig.link
+        let bridge = rig.bridge
+        resize(rig, to: Self.inForce, on: out)
+        let first = heldSnapshot(rig, on: out)
+        rig.host.report(grid: Self.inForce, for: id)
+        #expect(rig.main.run(until: { queries(bridge) == 1 }))
+        // The first hold ends with its query written and unanswered.
+        let firstEnded = rig.timers.now
+        let before = rig.timers.all.count
+        pane.reconnectPressed()
+        #expect(first.wait())
+        rig.main.drain()
+        let expiry = try #require(rig.timers.made(since: before, delay: RemotePane.sizeQueryExpiry).first)
+        #expect(expiry.due == firstEnded + 1)
+
+        // Half a second later the next link's snapshot is held and cannot ask; the
+        // button replaces that link too, ending the second hold inside the running second.
+        rig.timers.now += 0.5
+        let next = rig.link
+        resize(rig, to: Self.inForce, on: next)
+        let second = heldSnapshot(rig, on: next)
+        rig.main.drain()
+        #expect(queries(bridge) == 1)
+        let beforeSecond = rig.timers.all.count
+        pane.reconnectPressed()
+        #expect(second.wait())
+        rig.main.drain()
+        #expect(!expiry.cancelled)
+        #expect(!expiry.fired)
+        #expect(rig.timers.made(since: beforeSecond, delay: RemotePane.sizeQueryExpiry).isEmpty)
+
+        // It fires at the first hold's end plus one second, and the query is given up:
+        // the next hold asks its own.
+        rig.timers.fire(expiry)
+        #expect(rig.timers.now == firstEnded + 1)
+        resize(rig, to: Self.inForce)
+        let third = heldSnapshot(rig)
+        #expect(rig.main.run(until: { queries(bridge) == 2 }))
+        surfaceTypes(rig, Self.answer(Self.inForce))
+        #expect(rig.main.run(until: { third.hasFinished }))
+        #expect(pane.state == .live)
     }
 
     /// The end of a link that holds a snapshot waits behind it, as on the link's one

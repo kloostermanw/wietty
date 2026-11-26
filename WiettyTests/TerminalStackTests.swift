@@ -35,20 +35,18 @@ import WiettyShared
         #expect(stack.setupError == stack.ghostty.setupError)
     }
 
-    /// The stack keeps the checked helper path, which a remote pane runs too, and
-    /// builds the remote panes only on the real surface host: a fake one (or the
-    /// inert host of a stack that failed) has no viewer surfaces to give.
+    /// The stack builds the remote panes only on the real surface host with a helper:
+    /// a fake one (or the inert host of a stack that failed) has no viewer surfaces to
+    /// give. The positive case needs a real `GhosttySurfaceHost`, which the normal
+    /// suite cannot build (a second host takes libghostty's callbacks over from the
+    /// test host's), so only the gated checks build panes the app's way.
     @Test func remotePanesNeedTheRealHost() {
         let connections = RemoteConnectionsStore(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         let stack = TerminalStack(ghosttyHost: FakeSurfaceHost(), helperPath: "/usr/bin/true",
                                   localSocketPath: testServerSocketPath(), readDelay: 0,
                                   remoteConnections: connections)
         defer { stack.ghostty.shutDown() }
-        #expect(stack.helperPath == "/usr/bin/true")
         #expect(stack.remotePanes == nil)
-        let missing = TerminalStack.testing(host: FakeSurfaceHost(), helperPath: nil)
-        defer { missing.ghostty.shutDown() }
-        #expect(missing.helperPath == nil)
     }
 
     /// The helper the surfaces run is the app's to find and check, so a missing one

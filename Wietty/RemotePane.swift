@@ -81,7 +81,7 @@ final class ObservedLink: TerminalStreamLink, @unchecked Sendable {
         case snapshotWaiting(token: Int)
     }
 
-    let inner: any TerminalStreamLink
+    private let inner: any TerminalStreamLink
     private let observe: @Sendable (Event) -> Void
     private let holdsSnapshots: Bool
     private let lock = NSLock()
@@ -128,6 +128,9 @@ final class ObservedLink: TerminalStreamLink, @unchecked Sendable {
 
     /// Whether a snapshot is held now. For tests.
     var isHoldingSnapshot: Bool { lock.withLock { held != nil } }
+
+    /// Whether this retires a link (it observes an `InertLink`). For tests.
+    var isInert: Bool { inner is InertLink }
 
     /// Releases the snapshot held under `token`: passed on to the bridge when `pass`,
     /// else dropped. Nothing for another token, or when none is held. Never blocks.
@@ -295,9 +298,10 @@ final class InertLink: TerminalStreamLink, @unchecked Sendable {
 /// `RemoteReconnectPolicy`'s.
 ///
 /// **Ends.** `sessionEnded` keeps the bridge, the helper and the surface, so the last
-/// screen stays. A refusal (and a surface or bridge that could not be made, and a
-/// helper that went away) keeps nothing: the bridge is stopped and the surface
-/// destroyed at once.
+/// screen stays; a helper that goes away after that stops the bridge and still keeps
+/// the surface. A refusal (and a surface or bridge that could not be made, and a
+/// helper that went away before any end) keeps nothing: the bridge is stopped and the
+/// surface destroyed at once.
 ///
 /// **Threads.** The byte path is the bridge's and the link's, off the main actor. What
 /// the link's thread reports (snapshot, resize, end) and the bridge's helper thread
@@ -381,6 +385,8 @@ final class RemotePane {
     /// Gives up on `pendingQuery` `sizeQueryExpiry` after the hold it was asked for ended
     /// without its answer.
     @ObservationIgnored private var queryExpiry: Cancel?
+    /// The query `queryExpiry` gives up on, while it runs.
+    @ObservationIgnored private var expiringQuery: Int?
 
     /// How long after its hold ended a size query still unanswered is given up on. A
     /// query can be lost without a trace: taken off the link's queue, then the link is
@@ -669,8 +675,8 @@ final class RemotePane {
     ///
     /// The surface's report alone is not enough: `ghostty_surface_set_size` changes the
     /// surface's grid at once, but libghostty resizes the terminal later on its IO
-    /// thread, and a snapshot parsed before that is laid out at the old grid (measured,
-    /// fix round 2 of task 3).
+    /// thread, and a snapshot parsed before that is laid out at the old grid (measured
+    /// on a real surface by `RemoteSurfaceMeasurementTests.r1ASnapshotAtAnotherGrid`).
     private func snapshotWaiting(token: Int) {
         dropHeldSnapshot()
         guard let target = shownGrid, let id = surfaceId else {
@@ -770,12 +776,20 @@ final class RemotePane {
     /// A hold ended with its query still unanswered: given up on `sizeQueryExpiry` from
     /// now, unless the answer comes first (`sizeAnswered`) or the pane closes. An answer
     /// later than that reaches the other Mac as input (see `SizeAnswerFilter.expire`).
+    ///
+    /// Counted from the first hold that ended with this query out: a later hold that ends
+    /// while the expiry runs (it could not ask, the query being out) leaves it as it is,
+    /// so a server that snapshots and drops within a second, or a button pressed again
+    /// and again, cannot keep pushing the expiry out.
     private func expireUnansweredQuery() {
         guard let query = pendingQuery, let answers, answers.isOutstanding(query) else { return }
+        if queryExpiry != nil, expiringQuery == query { return }
         cancelQueryExpiry()
+        expiringQuery = query
         queryExpiry = dependencies.schedule(Self.sizeQueryExpiry) { [weak self] in
             guard let self, !self.closed, self.pendingQuery == query else { return }
             self.queryExpiry = nil
+            self.expiringQuery = nil
             self.pendingQuery = nil
             Self.log.info("a remote pane's size query got no answer; it is given up on")
             // Bytes held back for it are passed on by the helper's next read.
@@ -788,6 +802,7 @@ final class RemotePane {
     private func cancelQueryExpiry() {
         queryExpiry?()
         queryExpiry = nil
+        expiringQuery = nil
     }
 
     private func cancelHoldTimers() {

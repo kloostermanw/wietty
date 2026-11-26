@@ -45,8 +45,6 @@ final class RemoteSocketLink: TerminalStreamLink, @unchecked Sendable {
         case idle, live, ended, stopped
     }
 
-    let session: String
-
     private let queue: DispatchQueue
     /// Set on `queue` only, and per link: a callback of another link that stops this one
     /// is not inside this one's callback, and must wait for it.
@@ -64,7 +62,6 @@ final class RemoteSocketLink: TerminalStreamLink, @unchecked Sendable {
     private let callbackLock = NSLock()
 
     init(connection remote: RemoteConnection, session: String) {
-        self.session = session
         let queue = DispatchQueue(label: "eu.kloosterman.wietty.remote-link")
         queue.setSpecific(key: queueKey, value: 1)
         self.queue = queue
@@ -152,10 +149,12 @@ final class RemoteSocketLink: TerminalStreamLink, @unchecked Sendable {
 
     // MARK: From the package
 
-    /// Calls `onMessage`, under the callback lock, unless the link is over. The package's
-    /// `onMessage` calls this on the link's queue. Not private so that a test can hand
-    /// the link a message after `stop()`, which the package itself would drop, and so
-    /// test the link's own guard.
+    /// Calls `onMessage`, under the callback lock, unless the link is over.
+    ///
+    /// The entry point for the package's `onMessage` callback, which calls it on the
+    /// link's queue. Tests call it too: not private so that a test can hand the link a
+    /// message after `stop()`, which the package itself would drop, and so test the
+    /// link's own guard. Nothing else calls it.
     func deliver(_ message: StreamMessage) {
         lock.withLock { arrivalCount += 1 }
         callbackLock.lock()
@@ -164,8 +163,11 @@ final class RemoteSocketLink: TerminalStreamLink, @unchecked Sendable {
         handler(message)
     }
 
-    /// Ends the link for `reason`, once, unless it was stopped. The package's `onEnded`
-    /// calls this on the link's queue. Not private for the same reason as `deliver`.
+    /// Ends the link for `reason`, once, unless it was stopped.
+    ///
+    /// The entry point for the package's `onEnded` callback, which calls it on the
+    /// link's queue. Tests call it too, for the same reason as `deliver`. Nothing else
+    /// calls it.
     func end(_ reason: TerminalEndReason) {
         callbackLock.lock()
         defer { callbackLock.unlock() }
