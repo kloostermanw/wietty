@@ -859,8 +859,13 @@ that viewer waits for the blocked write, so its owner shuts the socket down firs
 
 The attach costs the same as output, and no more. A pane that reads its snapshot slowly or not at
 all holds the thread that attached it (in `LocalStreamServer`, its own connection's thread) and its
-own terminal, whose output waits for the snapshot; a resize, a claim's answer and an ending for it are
-left with it; nothing else waits. What the delivery queue still pays is the format of the snapshot:
+own terminal, whose output waits for the snapshot: the terminal's other local viewers and its queued
+viewers (a browser, an iPad, another Mac) get no new output meanwhile. A resize, a claim's answer and
+an ending for the pane are left with it, and the attaching thread writes them too before it lets go,
+so grid changes arriving meanwhile lengthen the wait, at most one per 50 ms per claiming viewer.
+Nothing else waits. A pane that has stopped holds its terminal until 5 seconds after it last read,
+when the server drops it; a pane that reads slowly but steadily holds it for as long as the whole
+snapshot takes (3.8 seconds measured for 1.2 MB at 320 KiB/s). What the delivery queue still pays is the format of the snapshot:
 measured with a full default history of 1.2 MB, about 5 ms whether the pane read at once, slowly,
 after 4.5 seconds or never (before, the queue was held for 3 to 5 seconds by the last three), and
 about 40 to 60 ms with 100,000 lines of history.
@@ -875,7 +880,7 @@ producing nothing. The transport's owner should therefore give the socket a send
 for control messages; `LocalStreamServer` gives each accepted socket 256 KiB. It also bounds the
 rest: the connection is ended if the client reads nothing for 5 seconds while a message other than
 `data` is being written to it, so a pane that stopped reading parks the delivery queue for 5 seconds
-at most, and holds its own terminal for 5 seconds at most during its attach. That bounds a client
+at most after it last read, and holds its own terminal as long during its attach. That bounds a client
 that has stopped, not one that reads very slowly, and several stopped panes cost 5 seconds each.
 `data` has no such deadline, by design: it waits for as long as the pane does not read, because that
 wait is the backpressure, and it runs on the pty's read queue rather than on the delivery queue.
@@ -1286,9 +1291,10 @@ a socket that then stays silent forever.
 - **A pane that stops reading holds back its terminal** (decision P1). Output is written to the
   pane on the pty's read queue with a blocking write, so a surface that does not read stops the
   child at a full pty, and the terminal's other local viewers with it. The same holds at attach: the
-  snapshot is written on the attaching connection's thread (decision Q2), and the terminal's output
-  waits for it, for up to 5 seconds before the server drops the pane; the pane then reconnects with a
-  backoff. A control message written to an idle pane that has stopped (a `resize`, a claim's answer,
+  snapshot is written on the attaching connection's thread (decision Q2), and the terminal's output,
+  for its other local viewers and its queued viewers alike, waits for it: for as long as the
+  snapshot takes for a pane that reads slowly but steadily, and until 5 seconds after it last read for
+  a pane that has stopped, which the server then drops; the pane then reconnects with a backoff. A control message written to an idle pane that has stopped (a `resize`, a claim's answer,
   the ending) still parks the hub's delivery queue, and with it every queued viewer of every
   terminal, for up to 5 seconds per stopped pane; that takes a pane whose socket buffer of 256 KiB is
   already full on a terminal producing nothing. See "Serving the stream".

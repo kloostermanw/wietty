@@ -915,17 +915,13 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         hub.write(session: Self.session, bytes: bytes("before\r\n"))
         let claimer = hub.attach(session: Self.session, resize: .reflow) { _ in }
         let log = LocalLog()
-        let id = UUID()
-        let attached = onThread {
-            hub.attachLocal(session: Self.session, resize: .repaint, id: id) { message in
-                log.add(message)
-                if case .snapshot = message { gate.hold() }
-            }
-        }
-        #expect(gate.waitUntilHeld())
+        let (attached, id) = try attachBlockedOnTheSnapshot(hub, resize: .repaint, log: log, gate: gate)
 
         let writer = onThread { hub.write(session: Self.session, bytes: bytes("after\r\n")) }
-        // A precondition, not the proof: the writer has reached the hub and waits.
+        // A precondition, not the proof: it makes it likely that the writer has
+        // reached the hub and waits there. Should it not hold, the order asserted
+        // below still proves that the output follows the snapshot and what was left,
+        // but not that the delivery queue stayed free while a writer waited.
         #expect(writer.wait(timeout: .now() + 0.2) == .timedOut, "the write did not wait for the attach")
         hub.claim(connectionId: claimer, cols: 50, rows: 8)
         // The grid in force: answered to this viewer alone.
@@ -950,25 +946,41 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         #expect(log.overlapping == 0)
     }
 
+    /// Attaches a local viewer on a thread of its own, with a `write` that blocks on
+    /// the snapshot until `gate` opens and sets `finished` as its last statement.
+    /// Returns once the write is blocked, with what signals the attach's return
+    /// and the viewer's id, which `registered` handed over before the write began.
+    private func attachBlockedOnTheSnapshot(_ hub: PaneStreamHub, resize: ResizeMode, log: LocalLog,
+                                            gate: Gate, finished: Box<Bool> = Box(false))
+        throws -> (attached: DispatchSemaphore, id: UUID) {
+        let id = Box<UUID?>(nil)
+        let attached = onThread {
+            hub.attachLocal(session: Self.session, resize: resize, registered: { id.value = $0 }) { message in
+                log.add(message)
+                guard case .snapshot = message else { return }
+                gate.hold()
+                finished.value = true
+            }
+        }
+        try #require(gate.waitUntilHeld())
+        return (attached, try #require(id.value))
+    }
+
+    private static let snapshotS = TerminalSnapshotFrame(size: TerminalSize(cols: 80, rows: 24),
+                                                         bytes: bytes("S"), alternate: false)
+    private static let attachS: [StreamMessage] = [.resize(cols: 80, rows: 24, own: false),
+                                                   .snapshot(TerminalPaint.hardReset + bytes("S"))]
+
     /// An ending that arrives during the attach is written after the snapshot, by
     /// the attaching thread, and nothing follows it.
-    @Test func anEndingDuringTheAttachFollowsTheSnapshot() {
+    @Test func anEndingDuringTheAttachFollowsTheSnapshot() throws {
         let hub = PaneStreamHub()
         defer { hub.stop() }
         let gate = Gate()
         defer { gate.open() }
-        hub.onSnapshot = { _ in
-            TerminalSnapshotFrame(size: TerminalSize(cols: 80, rows: 24), bytes: bytes("S"), alternate: false)
-        }
+        hub.onSnapshot = { _ in Self.snapshotS }
         let log = LocalLog()
-        let id = UUID()
-        let attached = onThread {
-            hub.attachLocal(session: Self.session, resize: .reflow, id: id) { message in
-                log.add(message)
-                if case .snapshot = message { gate.hold() }
-            }
-        }
-        #expect(gate.waitUntilHeld())
+        let (attached, id) = try attachBlockedOnTheSnapshot(hub, resize: .reflow, log: log, gate: gate)
         hub.endViewers(ofSession: Self.session)
         #expect(settled(hub), "the ending waited for the attach")
         gate.open()
@@ -976,44 +988,118 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         hub.write(session: Self.session, bytes: bytes("late"))
         hub.claim(connectionId: id, cols: 10, rows: 10)
         #expect(settled(hub))
-        #expect(log.messages == [.resize(cols: 80, rows: 24, own: false),
-                                 .snapshot(TerminalPaint.hardReset + bytes("S")), .ended])
+        #expect(log.messages == Self.attachS + [.ended])
         #expect(Set(log.threads).count == 1)
     }
 
     /// `detach` during the attaching thread's write keeps its contract: it returns
     /// only once that write has, and nothing is written afterwards, neither what was
-    /// left with the viewer meanwhile nor anything later.
-    @Test func aDetachDuringTheAttachWaitsForItsWriteAndNothingFollows() {
+    /// left with the viewer meanwhile nor anything later. Proven by order: the write
+    /// sets a flag as its last statement, and the detaching thread reads it the
+    /// moment `detach` returns.
+    @Test func aDetachDuringTheAttachWaitsForItsWriteAndNothingFollows() throws {
         let hub = PaneStreamHub(claimClock: ClaimTimers.paced())
         defer { hub.stop() }
         let gate = Gate()
         defer { gate.open() }
-        hub.onSnapshot = { _ in
-            TerminalSnapshotFrame(size: TerminalSize(cols: 80, rows: 24), bytes: bytes("S"), alternate: false)
-        }
+        hub.onSnapshot = { _ in Self.snapshotS }
         let log = LocalLog()
-        let id = UUID()
-        let attached = onThread {
-            hub.attachLocal(session: Self.session, resize: .reflow, id: id) { message in
-                log.add(message)
-                if case .snapshot = message { gate.hold() }
-            }
-        }
-        #expect(gate.waitUntilHeld())
+        let finished = Box(false)
+        let (attached, id) = try attachBlockedOnTheSnapshot(hub, resize: .reflow, log: log, gate: gate,
+                                                            finished: finished)
         hub.claim(connectionId: id, cols: 90, rows: 20)
         #expect(settled(hub))
 
-        let detached = onThread { hub.detach(connectionId: id) }
+        let finishedWhenDetachReturned = Box<Bool?>(nil)
+        let detached = onThread {
+            hub.detach(connectionId: id)
+            finishedWhenDetachReturned.value = finished.value
+        }
+        // A precondition, not the proof: it makes it likely that the detach is in
+        // progress while the write is still blocked, which the flag then tests.
         #expect(detached.wait(timeout: .now() + 0.2) == .timedOut, "detach returned while the write ran")
         gate.open()
         #expect(detached.wait(timeout: .now() + 5) == .success, "detach did not return once the write did")
+        #expect(finishedWhenDetachReturned.value == true, "detach returned before the write did")
         #expect(attached.wait(timeout: .now() + 5) == .success)
         hub.write(session: Self.session, bytes: bytes("late"))
         hub.endViewers(ofSession: Self.session)
         #expect(settled(hub))
-        #expect(log.messages == [.resize(cols: 80, rows: 24, own: false),
-                                 .snapshot(TerminalPaint.hardReset + bytes("S"))])
+        #expect(log.messages == Self.attachS)
+    }
+
+    // MARK: The writer waiting for an attach is woken
+
+    /// A writer waiting for a blocked attach is let go by a `detach` of that viewer,
+    /// before the attach's write ends, and writes nothing to it. Proven by order:
+    /// the writer returns while the gate is still closed.
+    @Test func aDetachLetsGoAWriterWaitingForTheAttach() throws {
+        try writerWaitingForTheAttach(isLetGoBy: { hub, id in
+            // `detach` waits for the blocked write, so it runs on a thread of its own.
+            _ = onThread { hub.detach(connectionId: id) }
+        })
+    }
+
+    /// The same for `stop()`, which marks the viewer gone without waiting.
+    @Test func stopLetsGoAWriterWaitingForTheAttach() throws {
+        try writerWaitingForTheAttach(isLetGoBy: { hub, _ in hub.stop() })
+    }
+
+    private func writerWaitingForTheAttach(isLetGoBy release: (PaneStreamHub, UUID) -> Void) throws {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        hub.onSnapshot = { _ in Self.snapshotS }
+        let log = LocalLog()
+        let finished = Box(false)
+        let (attached, id) = try attachBlockedOnTheSnapshot(hub, resize: .reflow, log: log, gate: gate,
+                                                            finished: finished)
+        let finishedWhenWriterReturned = Box<Bool?>(nil)
+        let writer = onThread {
+            hub.write(session: Self.session, bytes: bytes("x"))
+            finishedWhenWriterReturned.value = finished.value
+        }
+        // A precondition, not the proof: it makes it likely that the writer waits
+        // for the attach when it is let go. Should it not hold, what is still proven
+        // is that the writer returns and nothing reaches the viewer that is gone.
+        #expect(writer.wait(timeout: .now() + 0.2) == .timedOut, "the write did not wait for the attach")
+        release(hub, id)
+        #expect(writer.wait(timeout: .now() + 5) == .success, "the writer was not let go")
+        #expect(finishedWhenWriterReturned.value == false, "the writer waited for the attach's write")
+        gate.open()
+        #expect(attached.wait(timeout: .now() + 5) == .success)
+        hub.write(session: Self.session, bytes: bytes("late"))
+        #expect(settled(hub))
+        #expect(log.messages == Self.attachS)
+    }
+
+    /// The end of the session during a blocked attach: the `ended` is left with the
+    /// viewer, so the waiting writer is let go once the attaching thread has written
+    /// it, after the snapshot, and its chunk reaches nobody.
+    @Test func theSessionsEndLetsGoAWriterWaitingForTheAttachAfterTheEnding() throws {
+        let hub = PaneStreamHub()
+        defer { hub.stop() }
+        let gate = Gate()
+        defer { gate.open() }
+        hub.onSnapshot = { _ in Self.snapshotS }
+        let log = LocalLog()
+        let (attached, _) = try attachBlockedOnTheSnapshot(hub, resize: .reflow, log: log, gate: gate)
+        let seenWhenWriterReturned = Box<[StreamMessage]>([])
+        let writer = onThread {
+            hub.write(session: Self.session, bytes: bytes("x"))
+            seenWhenWriterReturned.value = log.messages
+        }
+        // A precondition, not the proof: without it the writer may reach the hub
+        // only after the session ended, and the order below would not be tested.
+        #expect(writer.wait(timeout: .now() + 0.2) == .timedOut, "the write did not wait for the attach")
+        hub.endViewers(ofSession: Self.session)
+        #expect(settled(hub))
+        gate.open()
+        #expect(writer.wait(timeout: .now() + 5) == .success)
+        #expect(attached.wait(timeout: .now() + 5) == .success)
+        #expect(seenWhenWriterReturned.value == Self.attachS + [.ended])
+        #expect(log.messages == Self.attachS + [.ended])
     }
 
     /// Two local viewers of one session: while the second's attach is blocked, the
@@ -1027,14 +1113,12 @@ private func numberedChunks(upTo count: Int, using random: inout SystemRandomNum
         let first = LocalLog()
         hub.attachLocal(session: Self.session, resize: .reflow) { first.add($0) }
         let second = LocalLog()
-        let attached = onThread {
-            hub.attachLocal(session: Self.session, resize: .reflow) { message in
-                second.add(message)
-                if case .snapshot = message { gate.hold() }
-            }
-        }
-        #expect(gate.waitUntilHeld())
+        let (attached, _) = try attachBlockedOnTheSnapshot(hub, resize: .reflow, log: second, gate: gate)
         let writer = onThread { hub.write(session: Self.session, bytes: bytes("x")) }
+        // A precondition, not the proof: it makes it likely that the writer waits
+        // for the attach while the third attaches. Should it not hold, the order
+        // asserted below (the output after the second's snapshot, once to each)
+        // is still proven.
         #expect(writer.wait(timeout: .now() + 0.2) == .timedOut, "the write did not wait for the attach")
         let third = LocalLog()
         let thirdAttached = onThread {
