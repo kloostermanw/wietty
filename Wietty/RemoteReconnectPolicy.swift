@@ -57,8 +57,11 @@ struct RemoteReconnectPolicy: Equatable, Sendable {
     private var phaseStart: TimeInterval = 0
     /// Attempts made in the current automatic phase, which sets the next delay.
     private var attempts = 0
-    /// Whether an automatic phase has been started and not ended by a link that stayed
-    /// live for `backoff.resetAfter`.
+    /// Whether an automatic phase has ever been started (by a loss, or by the button in
+    /// `waiting`). Never cleared: a link that stays live for `backoff.resetAfter` does
+    /// not end the phase here, the loss after it starts a new one (`linkLost`). False
+    /// only until the first loss, so that the first loss from `live` starts a phase
+    /// however short the link was live.
     private var phaseOpen = false
     /// When the state last became `live`.
     private var liveSince: TimeInterval = 0

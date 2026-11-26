@@ -25,9 +25,10 @@ import os
 ///   live shell and no output: on demand 0.06 s, a 60 Hz `DispatchSourceTimer`
 ///   0.48 s, a display link 1.12 s. All three render correctly; the clocks just
 ///   burn that per pane, and a workspace can hold eight.
-/// - **`ghostty_app_tick` runs only in response to `wakeup_cb`, on the main
-///   thread.** There is no polling interval to choose. Every other call in this
-///   API is main thread only.
+/// - **`ghostty_app_tick` runs on the main thread, in response to `wakeup_cb`,
+///   and once more right after a surface is freed (`destroySurface`).** There is
+///   no polling interval to choose. Every other call in this API is main thread
+///   only.
 /// - **A view holding a live surface survives re-parenting.** Removed from its
 ///   superview and added back, and moved into a brand new `NSWindow`, with the
 ///   shell still running and the scrollback intact. The whole pane design rests on
@@ -120,9 +121,14 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// - Parameter bridges: joins each surface to its terminal's stream. The app
     ///   passes one; a test that drives a surface with a command of its own does not.
     /// - Parameter pasteboard: the general pasteboard unless a test says otherwise.
-    init(bridges: PaneBridges? = nil, pasteboard: NSPasteboard = .general) throws {
+    /// - Parameter drainsOnDestroy: whether `destroySurface` drains libghostty's
+    ///   mailbox. Always on in the app, which never passes it; only the R8
+    ///   measurement turns it off, to show what happens without it.
+    init(bridges: PaneBridges? = nil, pasteboard: NSPasteboard = .general,
+         drainsOnDestroy: Bool = true) throws {
         self.bridges = bridges
         self.pasteboard = pasteboard
+        self.drainsOnDestroy = drainsOnDestroy
         // Counted first, so a construction that then fails still shows. What is
         // being watched is whether anything reached for libghostty at all, not
         // whether it got a working host out of it.
@@ -609,8 +615,9 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         // background, a program's clipboard request) are addressed by the surface
         // pointer, and the allocator often hands the next surface that very address: a
         // surface created before the next tick (in this main turn) received them as its
-        // own (R8 of the step 5 measurement: 7 to 20 of 50 cycles). Ticked now, libghostty
-        // finds no surface at that address and drops them.
+        // own (R8 of the step 5 measurement, without this tick: 4 to 12 titles of 50
+        // cycles, and a viewer's clipboard write on an own surface in 4 to 9; with it, 0
+        // of 300). Ticked now, libghostty finds no surface at that address and drops them.
         //
         // Safe to do here: every runtime callback a tick raises hops to the main queue
         // before it touches the host, except a clipboard read, which completes on the
@@ -619,9 +626,9 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         if drainsOnDestroy, let app { ghostty_app_tick(app) }
     }
 
-    /// Whether `destroySurface` drains the app's mailbox. Off only for the R8
-    /// measurement, which shows what happens without it.
-    var drainsOnDestroy = true
+    /// Whether `destroySurface` drains the app's mailbox. Fixed at `init`: off only
+    /// for the R8 measurement, which shows what happens without it.
+    let drainsOnDestroy: Bool
 
     func view(id: String) -> NSView? { surfaces[id]?.view }
 
@@ -744,7 +751,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     // MARK: - Tick and drawing
 
     /// Drains libghostty's own event loop. Main thread only, and only when
-    /// libghostty asked for it through `wakeup_cb`.
+    /// libghostty asked for it through `wakeup_cb` (`destroySurface` ticks on its
+    /// own, without the redraw).
     private func tickAndRedrawAll() {
         guard let app else { return }
         ghostty_app_tick(app)
