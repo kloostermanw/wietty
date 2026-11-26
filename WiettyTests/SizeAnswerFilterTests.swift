@@ -18,7 +18,7 @@ import WiettyCore
         for read in reads {
             let result = scanner.scan(read)
             passed += result.passed
-            answers += result.answers
+            answers += result.answers.map(\.size)
         }
         return (passed, answers)
     }
@@ -99,30 +99,94 @@ import WiettyCore
         #expect(answers == [Self.size])
     }
 
-    @Test func aWithdrawnQueryReleasesWhatWasHeld() {
+    /// The last query withdrawn: what was held is not thrown away, the next scan passes
+    /// it on first, in order, and then nothing more is held.
+    @Test func aWithdrawnQueryLeavesWhatWasHeldForTheNextScan() {
         var scanner = SizeAnswerScanner()
-        scanner.queried()
+        let query = scanner.queried()
         let (passed, _) = run(&scanner, [Self.bytes("a\u{1B}[8;")])
         #expect(passed == Self.bytes("a"))
-        #expect(scanner.withdrawn() == Self.bytes("\u{1B}[8;"))
+        scanner.withdrawn(query)
         #expect(scanner.outstanding == 0)
-        let (later, _) = run(&scanner, [Self.answer])
-        #expect(later == Self.answer)
+        let (later, answers) = run(&scanner, [Self.answer])
+        #expect(later == Self.bytes("\u{1B}[8;") + Self.answer)
+        #expect(answers.isEmpty)
+        #expect(scanner.held.isEmpty)
+        #expect(scanner.released.isEmpty)
+    }
+
+    /// Bytes held for a query that went pass on the next scan even when another query
+    /// was armed meanwhile: they are never taken for the new query's answer's start.
+    @Test func heldBytesOfAWithdrawnQueryPassFirstWhenANewQueryIsOut() {
+        var scanner = SizeAnswerScanner()
+        let first = scanner.queried()
+        _ = scanner.scan([0x1B])
+        scanner.withdrawn(first)
+        let second = scanner.queried()
+        let result = scanner.scan(Self.answer)
+        #expect(result.passed == [0x1B])
+        #expect(result.answers == [SizeAnswerScanner.Answer(query: second, size: Self.size)])
+    }
+
+    /// Withdrawing one of two queries holds on for the other.
+    @Test func withdrawingOneOfTwoQueriesKeepsHolding() {
+        var scanner = SizeAnswerScanner()
+        let first = scanner.queried()
+        let second = scanner.queried()
+        _ = scanner.scan([0x1B])
+        scanner.withdrawn(first)
+        #expect(scanner.held == [0x1B])
+        let result = scanner.scan(Self.bytes("[8;30;100t"))
+        #expect(result.passed.isEmpty)
+        #expect(result.answers == [SizeAnswerScanner.Answer(query: second, size: Self.size)])
+        // A query answered already is withdrawn as nothing.
+        scanner.withdrawn(second)
+        #expect(scanner.outstanding == 0)
+    }
+
+    /// Answers come in the order the queries were written, and each names its query.
+    @Test func eachAnswerNamesTheQueryItAnswers() {
+        var scanner = SizeAnswerScanner()
+        let first = scanner.queried()
+        let second = scanner.queried()
+        let other = TerminalSize(cols: 80, rows: 24)
+        let result = scanner.scan(Self.answer + Self.bytes("\u{1B}[8;24;80t"))
+        #expect(result.answers == [.init(query: first, size: Self.size), .init(query: second, size: other)])
     }
 
     @Test func theSharedFilterReportsEachAnswer() {
         let seen = Seen()
         let filter = SizeAnswerFilter { seen.add($0) }
-        filter.queried()
+        let query = filter.queried()
         #expect(filter.filter(Self.bytes("x") + Self.answer) == Self.bytes("x"))
-        #expect(seen.all == [Self.size])
+        #expect(seen.all == [.init(query: query, size: Self.size)])
+        #expect(filter.outstanding == 0)
+        #expect(!filter.isOutstanding(query))
+    }
+
+    /// An expired query: a lone ESC held for it passes on the next read, before that
+    /// read's bytes, and an answer that comes after the expiry passes as input.
+    @Test func anExpiredQueryPassesWhatWasHeldAndItsLateAnswer() {
+        let seen = Seen()
+        let filter = SizeAnswerFilter { seen.add($0) }
+        let query = filter.queried()
+        #expect(filter.filter([0x1B]).isEmpty)
+        #expect(filter.heldCount == 1)
+        filter.expire(query)
+        #expect(filter.outstanding == 0)
+        #expect(filter.heldCount == 1)
+        #expect(filter.filter(Self.answer) == [0x1B] + Self.answer)
+        #expect(filter.heldCount == 0)
+        #expect(seen.all.isEmpty)
+        // Expiring it again, or one answered already, is nothing.
+        filter.expire(query)
         #expect(filter.outstanding == 0)
     }
 
     private final class Seen: @unchecked Sendable {
         private let lock = NSLock()
-        private var list: [TerminalSize] = []
-        var all: [TerminalSize] { lock.withLock { list } }
-        func add(_ size: TerminalSize) { lock.withLock { list.append(size) } }
+        private var list: [SizeAnswerScanner.Answer] = []
+        var all: [SizeAnswerScanner.Answer] { lock.withLock { list } }
+        func add(_ answer: SizeAnswerScanner.Answer) { lock.withLock { list.append(answer) } }
     }
 }

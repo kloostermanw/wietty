@@ -11,11 +11,18 @@ import WiettyCore
 /// nothing else may be removed or reordered.
 ///
 /// Exactly one answer is removed per query outstanding (`queried()`), in the order the
-/// bytes come. With no query outstanding every byte passes as it comes. With one
-/// outstanding, bytes that could still be the start of an answer are held back until a
-/// later byte decides: completed, they are the answer and removed; disproved, the first
-/// held byte passes and the rest is scanned again, so every byte that is not the answer
-/// passes unchanged and in order. Held bytes wait at most for the next read.
+/// bytes come, and reported with the query it answers (the oldest outstanding: answers
+/// come in the order the queries were written). With no query outstanding every byte
+/// passes as it comes. With one outstanding, bytes that could still be the start of an
+/// answer are held back until a later byte decides: completed, they are the answer and
+/// removed; disproved, the first held byte passes and the rest is scanned again, so every
+/// byte that is not the answer passes unchanged and in order.
+///
+/// A query that will not be answered after all (`withdrawn(_:)`: never written, or given
+/// up on) takes nothing with it: bytes held back when the last query outstanding goes are
+/// kept, and the next `scan` passes them on first, before the bytes it is given. So held
+/// bytes wait at most for the next read, and only `scan` (one thread, the helper's
+/// reader) ever hands bytes on, which keeps their order.
 ///
 /// Each number has at most `maxDigits` digits (a grid side is at most 10,000), so at most
 /// `maxHeld` bytes (`ESC [ 8 ;`, ten digits, `;`, ten digits: 25) are ever held back; an
@@ -25,33 +32,55 @@ struct SizeAnswerScanner {
     static let maxDigits = 10
     static let maxHeld = 4 + maxDigits + 1 + maxDigits
 
-    /// Queries sent whose answer has not been taken out yet.
-    private(set) var outstanding = 0
+    /// An answer taken out, and the query it answers.
+    struct Answer: Equatable, Sendable {
+        let query: Int
+        let size: TerminalSize
+    }
+
+    /// The queries sent whose answer has not been taken out yet, oldest first.
+    private(set) var queries: [Int] = []
+    private var lastQuery = 0
     /// A proper prefix of an answer, held until the next byte decides.
     private(set) var held: [UInt8] = []
+    /// Bytes held back when the last query outstanding went: passed on first by the
+    /// next `scan`.
+    private(set) var released: [UInt8] = []
 
-    /// A query was sent (before it is written, so its answer cannot come first).
-    mutating func queried() { outstanding += 1 }
+    var outstanding: Int { queries.count }
 
-    /// A query that was never written: its answer will not come.
-    mutating func withdrawn() -> [UInt8] {
-        outstanding = max(0, outstanding - 1)
-        guard outstanding == 0 else { return [] }
-        defer { held = [] }
-        return held
+    /// A query is sent (before it is written, so its answer cannot come first). Its
+    /// number, for `withdrawn(_:)` and to tell its answer from another's.
+    @discardableResult
+    mutating func queried() -> Int {
+        lastQuery += 1
+        queries.append(lastQuery)
+        return lastQuery
+    }
+
+    /// `query`'s answer will not be taken out: it was never written, or it is given up
+    /// on. Nothing for a query answered or withdrawn already. What is held is kept for the
+    /// next `scan` to pass on.
+    mutating func withdrawn(_ query: Int) {
+        queries.removeAll { $0 == query }
+        if queries.isEmpty, !held.isEmpty {
+            released += held
+            held = []
+        }
     }
 
     /// The bytes to pass on, in order, and the answers taken out of them.
-    mutating func scan(_ bytes: [UInt8]) -> (passed: [UInt8], answers: [TerminalSize]) {
-        var passed: [UInt8] = []
-        var answers: [TerminalSize] = []
+    mutating func scan(_ bytes: [UInt8]) -> (passed: [UInt8], answers: [Answer]) {
+        var passed = released
+        released = []
+        var answers: [Answer] = []
         var input = bytes
         var index = 0
         while index < input.count {
             let byte = input[index]
             index += 1
             if held.isEmpty {
-                if outstanding > 0, byte == 0x1B { held = [byte] } else { passed.append(byte) }
+                if !queries.isEmpty, byte == 0x1B { held = [byte] } else { passed.append(byte) }
                 continue
             }
             held.append(byte)
@@ -59,8 +88,7 @@ struct SizeAnswerScanner {
             case .prefix:
                 continue
             case .complete(let size):
-                answers.append(size)
-                outstanding -= 1
+                answers.append(Answer(query: queries.removeFirst(), size: size))
                 held = []
             case .none:
                 // The first held byte is not an answer's start; the rest may hold one.
@@ -113,28 +141,42 @@ struct SizeAnswerScanner {
 /// `SizeAnswerScanner` for one surface's input, shared by every link of its pane: the
 /// answer comes back on the helper's stream whichever link the bridge has by then, so a
 /// query asked through a link that was replaced still has its answer taken out.
-/// Thread safe; the scan runs on the bridge's helper thread, the count is armed from the
-/// main actor.
+/// Thread safe; the scan runs on the bridge's helper thread, the queries are armed and
+/// expired from the main actor, and withdrawn on whichever thread stops a link. The lock
+/// is never held across a call out.
 final class SizeAnswerFilter: @unchecked Sendable {
     private let lock = NSLock()
     private var scanner = SizeAnswerScanner()
-    private let onAnswer: @Sendable (TerminalSize) -> Void
+    private let onAnswer: @Sendable (SizeAnswerScanner.Answer) -> Void
 
     /// - Parameter onAnswer: every answer taken out, on the thread that scanned it;
     ///   must return at once.
-    init(onAnswer: @escaping @Sendable (TerminalSize) -> Void) {
+    init(onAnswer: @escaping @Sendable (SizeAnswerScanner.Answer) -> Void) {
         self.onAnswer = onAnswer
     }
 
     var outstanding: Int { lock.withLock { scanner.outstanding } }
-    /// How many bytes are held back now. For tests.
-    var heldCount: Int { lock.withLock { scanner.held.count } }
+    /// Whether `query`'s answer is still to be taken out.
+    func isOutstanding(_ query: Int) -> Bool { lock.withLock { scanner.queries.contains(query) } }
+    /// How many bytes are held back now, also those the next read passes on first. For
+    /// tests.
+    var heldCount: Int { lock.withLock { scanner.held.count + scanner.released.count } }
 
-    func queried() { lock.withLock { scanner.queried() } }
+    /// Arms the filter for one more answer. The query's number.
+    @discardableResult
+    func queried() -> Int { lock.withLock { scanner.queried() } }
 
-    /// A query that was never written. Returns held bytes to pass on, if that was the
-    /// last one outstanding.
-    func withdrawn() -> [UInt8] { lock.withLock { scanner.withdrawn() } }
+    /// A query that was never written: its answer will not come. Bytes held back are
+    /// passed on by the next read.
+    func withdrawn(_ query: Int) { lock.withLock { scanner.withdrawn(query) } }
+
+    /// Gives up on `query`'s answer, if it is still outstanding: the terminal did not
+    /// answer in time, or the query was lost on its way (its link replaced between being
+    /// taken off the link's queue and being written). Bytes held back are passed on by
+    /// the next read. An answer that does come after this is not taken out: it reaches
+    /// the other Mac as if typed, which is accepted, since it can no longer be told from
+    /// a program's own `CSI 18 t` answer.
+    func expire(_ query: Int) { lock.withLock { scanner.withdrawn(query) } }
 
     /// The bytes to pass on to the other Mac.
     func filter(_ bytes: [UInt8]) -> [UInt8] {
