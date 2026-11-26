@@ -8,8 +8,9 @@ import WiettyCore
 
 /// Measurements for phase 3 step 5 of issue #84, a terminal on another Mac shown in a
 /// libghostty surface: the surface's `wietty-pty` connects to a `TerminalBridge`, whose
-/// link wraps the package's `TerminalStreamConnection` over a WebSocket to a
-/// `RemoteServer`, and the surface is made on every show and destroyed on every hide.
+/// link (`RemoteSocketLink`) wraps the package's `TerminalStreamConnection` over a
+/// WebSocket to a `RemoteServer`, and the surface is made on every show and destroyed on
+/// every hide.
 ///
 /// A measurement, not a test: it asserts only what it needs to stay meaningful, and
 /// prints lines starting with `STEP5`. Every measurement runs three times.
@@ -33,7 +34,8 @@ import WiettyCore
 /// runs only with `WIETTY_REMOTE_SURFACE_CHECK=1` in the test host's environment; see
 /// `scripts/remote-surface-check.sh`. Like the other real window checks it builds a
 /// `GhosttySurfaceHost` of its own beside the app's, which takes the host callbacks over
-/// for the run. The throwaway links below live in the test target only.
+/// for the run. The scripted link below lives in the test target only; the link to the
+/// server is the product's `RemoteSocketLink`, timed by a thin wrapper.
 @MainActor
 @Suite(.enabled(if: RemoteSurfaceCheck.isRequested), .serialized)
 struct RemoteSurfaceMeasurementTests {
@@ -387,7 +389,7 @@ struct RemoteSurfaceMeasurementTests {
         let id = "r3-\(item.label)-\(run)"
         let marker = "STEP5-END \(item.label)"
         let start = now()
-        let link = WebSocketLink(port: server.port, token: server.token, session: item.label)
+        let link = ProbedRemoteLink(port: server.port, token: server.token, session: item.label)
         let surface = try rig.open(id: id, link: link, imposeOnResize: true)
         defer { surface.close() }
         let created = now()
@@ -470,7 +472,7 @@ struct RemoteSurfaceMeasurementTests {
 
     /// Show then hide: true when the snapshot became visible.
     private func cycle(_ rig: SurfaceRig, server: ServerRig, session: String, id: String) async throws -> Bool {
-        let link = WebSocketLink(port: server.port, token: server.token, session: session)
+        let link = ProbedRemoteLink(port: server.port, token: server.token, session: session)
         let surface = try rig.open(id: id, link: link, imposeOnResize: true)
         defer { surface.close() }
         return await waitUntil(10, poll: .milliseconds(2)) {
@@ -499,7 +501,7 @@ struct RemoteSurfaceMeasurementTests {
         server.rig.write(session, Array("\r\nSTEP5-END last screen of \(session)".utf8))
         let prefix = "STEP5 R7 run=\(run) bridge=\(keepBridge ? "kept-no-link" : "stopped-on-ended")"
         let before = Census.take()
-        let link = WebSocketLink(port: server.port, token: server.token, session: session)
+        let link = ProbedRemoteLink(port: server.port, token: server.token, session: session)
         let id = "r7-\(run)-\(keepBridge)"
         let surface = try rig.open(id: id, link: link, imposeOnResize: true)
         defer { surface.close() }
@@ -954,27 +956,19 @@ private final class LinkProbe: @unchecked Sendable {
     }
 }
 
-/// A `TerminalStreamLink` over the package's `TerminalStreamConnection`, on a serial
-/// queue of its own, with the protocol's `stop()` kept by a callback lock and a stopped
-/// flag. Throwaway: the shape the plan may build, not the one it must.
-private final class WebSocketLink: TerminalStreamLink, @unchecked Sendable {
-    private nonisolated(unsafe) static let key = DispatchSpecificKey<UInt8>()
+/// The product's `RemoteSocketLink` to a server on 127.0.0.1, with each callback timed
+/// for the probe. Everything else is the product link's own.
+private final class ProbedRemoteLink: TerminalStreamLink, @unchecked Sendable {
     let probe = LinkProbe()
-    private let connection: TerminalStreamConnection
+    private let link: RemoteSocketLink
     private let lock = NSLock()
-    private let callbackLock = NSLock()
-    private var isStopped = false
     private var messageHandler: (@Sendable (StreamMessage) -> Void)?
-    private var endHandler: (@Sendable (TerminalEndReason) -> Void)?
 
     init(port: Int, token: String, session: String) {
-        let queue = DispatchQueue(label: "step5.websocket-link")
-        queue.setSpecific(key: Self.key, value: 1)
-        connection = TerminalStreamConnection(
+        link = RemoteSocketLink(
             connection: RemoteConnection(id: UUID(), name: "step5", host: "127.0.0.1", port: port, token: token),
-            sessionId: session, resize: .reflow, callbackQueue: queue)
-        connection.onMessage = { [weak self] message in self?.deliver(message) }
-        connection.onEnded = { [weak self] reason in self?.end(reason) }
+            session: session)
+        link.onMessage = { [weak self] message in self?.deliver(message) }
     }
 
     var onMessage: (@Sendable (StreamMessage) -> Void)? {
@@ -983,41 +977,24 @@ private final class WebSocketLink: TerminalStreamLink, @unchecked Sendable {
     }
 
     var onEnded: (@Sendable (TerminalEndReason) -> Void)? {
-        get { lock.withLock { endHandler } }
-        set { lock.withLock { endHandler = newValue } }
+        get { link.onEnded }
+        set { link.onEnded = newValue }
     }
 
     func start() {
         probe.markStarted()
-        connection.start()
+        link.start()
     }
 
-    func stop() {
-        lock.withLock { isStopped = true }
-        connection.stop()
-        if DispatchQueue.getSpecific(key: Self.key) == nil {
-            callbackLock.lock()
-            callbackLock.unlock()
-        }
-    }
-
-    func send(_ bytes: [UInt8]) { connection.send(bytes) }
-    func claim(cols: Int, rows: Int) { connection.claim(cols: cols, rows: rows) }
+    func stop() { link.stop() }
+    func send(_ bytes: [UInt8]) { link.send(bytes) }
+    func claim(cols: Int, rows: Int) { link.claim(cols: cols, rows: rows) }
 
     private func deliver(_ message: StreamMessage) {
-        callbackLock.lock()
-        defer { callbackLock.unlock() }
-        guard let handler = lock.withLock({ isStopped ? nil : messageHandler }) else { return }
+        guard let handler = lock.withLock({ messageHandler }) else { return }
         let start = now()
         handler(message)
         probe.handled(message, from: start, to: now())
-    }
-
-    private func end(_ reason: TerminalEndReason) {
-        callbackLock.lock()
-        defer { callbackLock.unlock() }
-        guard let handler = lock.withLock({ isStopped ? nil : endHandler }) else { return }
-        handler(reason)
     }
 }
 
