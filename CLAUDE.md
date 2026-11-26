@@ -32,9 +32,10 @@ Which side of the remote protocol lives where decides which repo a bug belongs i
   so a fault seen only there is in that pane (`RemotePane`), not in the serving Mac.
 
 - **Controlling side, in `wietty-shared`.** `RemoteWorkspaceStore`, `RemoteWorkspacesController`,
-  `RemoteTerminalConnection`, `RemoteSnapshotDecoder`, `RemoteConnection`, `SecretStore`. This app
-  consumes them; `RemoteProjectAdapter` maps the package's `RemoteWorkspace` onto the local
-  `Project` type and is deliberately not in the package.
+  `TerminalStreamConnection`, `RemoteSnapshotDecoder`, `RemoteConnection`, `SecretStore`. This app
+  consumes them, the stream connection through `RemoteSocketLink`; `RemoteProjectAdapter` maps the
+  package's `RemoteWorkspace` onto the local `Project` type and is deliberately not in the package.
+  The package's `RemoteTerminalConnection` is the iPad's, and this app no longer uses it.
 
 - **The stream's messages, in `wietty-shared` for both sides.** `StreamMessage` is the one type
   both ends of a terminal stream speak, so the served side uses the package too: `WiettyCore`
@@ -198,7 +199,9 @@ hides and shows, with and without the host's drain on destroy (R8); a reconnect 
 through `RemotePanes`, the server dropped and back, compared with the server's terminal (RECONNECT); a
 viewer surface's clipboard and dropped events; and `RemoteSurfacePane` in a window (PANE). It prints
 lines starting with `STEP5`. Run it after changing the pin of libghostty, the bridge, the helper, the
-remote pane or the package's stream client:
+remote pane, the package's stream client or `GhosttySurfaceHost` (its viewer surfaces, `reloadConfig`,
+`destroySurface`): the closed clipboard, the dropped events and the drain on destroy are covered by
+this gated suite only.
 
 ```sh
 scripts/remote-surface-check.sh [test name]

@@ -632,11 +632,23 @@ retried. Input typed while there is no link is dropped.
 over it saying so. A refusal, and a serving Wietty that is too old or newer,
 show a message that fills the pane, and nothing is retried.
 
+**Known limits.** A live link that goes silent (the other Mac asleep, Wi-Fi gone
+without a close) shows no bar until a send fails or TCP gives up, because nothing
+watches a live link. A helper that never connects reads as "Connection lost.
+Reconnecting…", although the fault is on this Mac. A snapshot that takes longer
+than 15 seconds to arrive (a long history over a slow link) times out every
+attempt. A grid the surface cannot take (beyond the view's texture bound) holds
+every snapshot for the full second. Claims made while no real link is current
+are dropped, never sent later. The others, with their causes, are in
+`docs/terminal.md`, "Limitations, each with its cause".
+
 **What the other Mac's program cannot do here.** It can neither set nor read this
 Mac's clipboard (`OSC 52`): the surface runs under `clipboard-read = deny` and
 `clipboard-write = deny`. Its titles, bells, desktop notifications and close
 requests are dropped by the surface (the bell arrives through the control channel,
-below). Links are not clickable. What the user does, select and copy, paste and
+below). The host handles no link action, so a link is not opened from the pane
+(whether libghostty opens a URL by itself when the host leaves that action
+unhandled is not verified). What the user does, select and copy, paste and
 drop a file, works as in a local terminal. Its queries are answered by this
 surface as by every other viewer (issue 91).
 
@@ -646,10 +658,12 @@ the protocol has no bell message of its own. `docs/notifications.md`
 covers that diff and the two rules that keep a reconnect from re-announcing every
 waiting agent.
 
-Either way, a connection removed while one of its terminals is still on screen
-never reconnects it. The tabbed window leaves the tab showing a placeholder; the
-pane goes back to the local terminal instead, because a remote row removed with
-its connection leaves nothing in the sidebar to click out of a placeholder with.
+A connection removed while one of its terminals is still on screen never
+reconnects it. The pane goes back to the local terminal
+(`PaneRouter.connectionsChanged`), because a remote row removed with its
+connection leaves nothing in the sidebar to click out of a placeholder with. The
+"Connection removed" placeholder of `RightTerminalView` covers only the frame
+between the store changing and the pane going back.
 
 ## Ports
 
