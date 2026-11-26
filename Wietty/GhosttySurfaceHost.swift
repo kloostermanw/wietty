@@ -63,6 +63,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// the pane's grid of each that was given one.
     private var viewers: Set<String> = []
     private var viewerGrids: [String: OwnPaneGrid] = [:]
+    /// Told every grid a viewer's surface reports (`observeViewerGrid`).
+    private var viewerGridObservers: [String: @MainActor (TerminalSize) -> Void] = [:]
 
     /// The pasteboard the clipboard callbacks and a copy use: the general one, unless
     /// a test hands the host a private one.
@@ -602,6 +604,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         bridges?.close(session: id)
         viewers.remove(id)
         viewerGrids[id] = nil
+        viewerGridObservers[id] = nil
         guard let surface = surfaces.removeValue(forKey: id) else { return }
         titles[id] = nil
         // The view's pointer is cleared before the free, because a view can still
@@ -936,7 +939,18 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// nothing.
     fileprivate func report(grid: TerminalSize, for id: String) {
         guard surfaces[id] != nil, passesOn(.grid, for: id) else { return }
+        viewerGridObservers[id]?(grid)
         onResized?(id, grid)
+    }
+
+    /// Tells `handler` every grid the viewer surface `id` reports from now on, as
+    /// `onResized` is told: after `ghostty_surface_set_size`, whenever the grid changed.
+    /// For the remote pane, which holds a snapshot until its surface has the grid the
+    /// view was given. Forgotten at `destroySurface`. Not part of
+    /// `TerminalSurfaceHosting`.
+    func observeViewerGrid(id: String, _ handler: @escaping @MainActor (TerminalSize) -> Void) {
+        guard viewers.contains(id) else { return }
+        viewerGridObservers[id] = handler
     }
 
     /// Called by a view whose metrics changed. The grid that fits the pane may have

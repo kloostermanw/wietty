@@ -13,6 +13,10 @@ protocol ViewerSurfaceHosting: AnyObject {
     func destroySurface(id: String)
     func impose(grid: TerminalSize?, on id: String)
     func view(id: String) -> NSView?
+    /// The surface's grid now, as libghostty has it.
+    func size(id: String) -> TerminalSize?
+    /// Every grid the surface reports from now on, until it is destroyed.
+    func observeViewerGrid(id: String, _ handler: @escaping @MainActor (TerminalSize) -> Void)
 }
 
 extension GhosttySurfaceHost: ViewerSurfaceHosting {}
@@ -39,24 +43,59 @@ extension TerminalBridge: ViewerBridging {}
 /// so the bridge's handler runs first (the snapshot is written to the helper, the end
 /// marks the bridge's held claims) and the owner is told after, on the link's thread.
 /// `TerminalBridge` is not changed for it.
+///
+/// ## Holding a snapshot
+///
+/// With `holdsSnapshots`, a `snapshot` is not handed to the bridge (which writes it to
+/// the helper at once) until the owner releases it. The `resize` before it on this link
+/// reaches the surface by another route (the main actor's grid, the view's size, then
+/// `ghostty_surface_set_size` some turns later), and a snapshot parsed at the surface's
+/// old grid and resized after is not the server's screen (step 5 measurement, R1 at
+/// another grid and RECONNECT). The link's callback blocks here, as it blocks in the
+/// bridge's write: that is the backpressure, and since a link delivers one message at a
+/// time, nothing behind the snapshot overtakes it. The owner is told through `observe`
+/// (`.snapshotWaiting`) and answers with `releaseSnapshot(token:pass:)`.
+///
+/// Only the snapshot is held. A `resize` during live output is passed on as it comes,
+/// with nothing held behind it: an owner dragging its window would otherwise stall its
+/// own output on every step.
+///
+/// `stop()` releases a held snapshot first, and drops it, before it stops the inner
+/// link (whose `stop()` waits for a running callback, this one included): so a stop on
+/// the main actor, where the release would have come from, never waits for itself. The
+/// bridge stops the link it replaces and the link it has when it stops, so a
+/// replacement and a close both release. A snapshot released after a stop is dropped,
+/// never written.
 final class ObservedLink: TerminalStreamLink, @unchecked Sendable {
     enum Event: Sendable {
         case snapshot
         case resize(TerminalSize, own: Bool)
         case ended(TerminalEndReason)
+        /// A snapshot is held until `releaseSnapshot(token:pass:)` with this token.
+        case snapshotWaiting(token: Int)
     }
 
     let inner: any TerminalStreamLink
     private let observe: @Sendable (Event) -> Void
+    private let holdsSnapshots: Bool
     private let lock = NSLock()
     private var messageHandler: (@Sendable (StreamMessage) -> Void)?
     private var endHandler: (@Sendable (TerminalEndReason) -> Void)?
     private var snapshotSeen = false
+    // The hold, under `lock`.
+    private var stopped = false
+    private var holdToken = 0
+    private var held: (token: Int, wake: DispatchSemaphore)?
+    private var heldPasses = false
 
-    /// - Parameter observe: called on the link's thread, after the bridge's handler,
-    ///   and must return at once (hop, never wait on the main thread).
-    init(_ inner: any TerminalStreamLink, observe: @escaping @Sendable (Event) -> Void) {
+    /// - Parameter holdsSnapshots: hold every snapshot until the owner releases it.
+    /// - Parameter observe: called on the link's thread, after the bridge's handler
+    ///   (before it, for `.snapshotWaiting`), and must return at once (hop, never wait
+    ///   on the main thread).
+    init(_ inner: any TerminalStreamLink, holdsSnapshots: Bool = false,
+         observe: @escaping @Sendable (Event) -> Void) {
         self.inner = inner
+        self.holdsSnapshots = holdsSnapshots
         self.observe = observe
     }
 
@@ -66,11 +105,47 @@ final class ObservedLink: TerminalStreamLink, @unchecked Sendable {
             lock.withLock { messageHandler = newValue }
             inner.onMessage = newValue.map { handler -> @Sendable (StreamMessage) -> Void in
                 { [weak self] message in
+                    if case .snapshot = message, let self, self.holdsSnapshots {
+                        guard self.hold() else { return }
+                    }
                     handler(message)
                     self?.observed(message)
                 }
             }
         }
+    }
+
+    /// Whether a snapshot is held now. For tests.
+    var isHoldingSnapshot: Bool { lock.withLock { held != nil } }
+
+    /// Releases the snapshot held under `token`: passed on to the bridge when `pass`,
+    /// else dropped. Nothing for another token, or when none is held. Never blocks.
+    func releaseSnapshot(token: Int, pass: Bool) {
+        let wake = lock.withLock { () -> DispatchSemaphore? in
+            guard let held, held.token == token else { return nil }
+            self.held = nil
+            heldPasses = pass
+            return held.wake
+        }
+        wake?.signal()
+    }
+
+    /// On the link's thread: blocks until the owner releases the snapshot or the link is
+    /// stopped. Whether to pass it on.
+    private func hold() -> Bool {
+        let (token, wake) = lock.withLock { () -> (Int, DispatchSemaphore?) in
+            guard !stopped else { return (0, nil) }
+            holdToken += 1
+            let wake = DispatchSemaphore(value: 0)
+            held = (holdToken, wake)
+            heldPasses = false
+            return (holdToken, wake)
+        }
+        guard let wake else { return false }
+        observe(.snapshotWaiting(token: token))
+        wake.wait()
+        // A stop after the release still drops it.
+        return lock.withLock { heldPasses && !stopped }
     }
 
     var onEnded: (@Sendable (TerminalEndReason) -> Void)? {
@@ -87,7 +162,20 @@ final class ObservedLink: TerminalStreamLink, @unchecked Sendable {
     }
 
     func start() { inner.start() }
-    func stop() { inner.stop() }
+
+    /// Releases and drops a held snapshot, then stops the inner link (which waits for a
+    /// running callback; the held one returns at once now).
+    func stop() {
+        let wake = lock.withLock { () -> DispatchSemaphore? in
+            stopped = true
+            heldPasses = false
+            defer { held = nil }
+            return held?.wake
+        }
+        wake?.signal()
+        inner.stop()
+    }
+
     func send(_ bytes: [UInt8]) { inner.send(bytes) }
     func claim(cols: Int, rows: Int) { inner.claim(cols: cols, rows: rows) }
 
@@ -217,6 +305,17 @@ final class RemotePane {
     @ObservationIgnored private var watchdog: Cancel?
     @ObservationIgnored private var watchdogGeneration: Int?
     @ObservationIgnored private var closed = false
+    /// The current link, whose held snapshot this pane releases.
+    @ObservationIgnored private var currentLink: ObservedLink?
+    /// The grid the view was last given (`impose`), nil for the pane's own size.
+    @ObservationIgnored private var shownGrid: TerminalSize?
+    /// A snapshot of the current link held until the surface has `target`.
+    @ObservationIgnored private var heldSnapshot: (token: Int, target: TerminalSize)?
+    @ObservationIgnored private var holdLimit: Cancel?
+
+    /// How long a snapshot is held at most for the surface to take the grid the view
+    /// was given; past it the snapshot is passed on anyway.
+    static let snapshotHoldLimit: TimeInterval = 1
 
     /// How long a link may take from being handed to the bridge to its first snapshot
     /// before it counts as lost. For the first link this runs from the show, so it also
@@ -293,8 +392,9 @@ final class RemotePane {
             bridge?.claim(cols: size.cols, rows: size.rows) ?? false
         }, resetClaims: { [weak bridge] in
             bridge?.resetClaims()
-        }, impose: { [weak host] size in
+        }, impose: { [weak host, weak self] size in
             host?.impose(grid: size, on: id)
+            self?.imposed(size)
         })
         self.grid = grid
         do {
@@ -308,6 +408,7 @@ final class RemotePane {
             return
         }
         surfaceId = id
+        host.observeViewerGrid(id: id) { [weak self] reported in self?.surfaceReported(reported) }
         armWatchdog()
     }
 
@@ -317,9 +418,12 @@ final class RemotePane {
         linkOut = true
         let tag = generation
         let toMain = dependencies.toMain
-        return ObservedLink(dependencies.makeLink(connection, ref.sessionId)) { [weak self] event in
+        let link = ObservedLink(dependencies.makeLink(connection, ref.sessionId),
+                                holdsSnapshots: true) { [weak self] event in
             toMain { [weak self] in self?.linkReported(event, generation: tag) }
         }
+        currentLink = link
+        return link
     }
 
     // MARK: What the link and the bridge report, on the main actor
@@ -333,6 +437,10 @@ final class RemotePane {
             publish()
         case let .resize(size, own):
             grid?.resizeReceived(size, own: own)
+        case .snapshotWaiting(let token):
+            // After the `resize` before it on this link: the hops keep the link's order,
+            // so the grid has decided what the view shows, and imposed it.
+            snapshotWaiting(token: token)
         case .ended(let reason):
             cancelWatchdog()
             linkOut = false
@@ -355,6 +463,8 @@ final class RemotePane {
         watchdog = nil
         watchdogGeneration = nil
         Self.log.error("a link of a remote pane delivered no snapshot within \(Self.attemptTimeout) s")
+        dropHeldSnapshot()
+        currentLink = nil
         // A new generation, so whatever the retired link still reports is dropped.
         generation += 1
         // Claims made from here go to the inert link and are never answered: the next
@@ -410,6 +520,8 @@ final class RemotePane {
             return
         }
         let replacing = linkOut
+        // The replaced link's stop drops it too; this also forgets the hold here.
+        dropHeldSnapshot()
         bridge.reconnect(with: makeLink(connection))
         if replacing {
             // Replacing a link that has not ended: the grid's count starts over as on
@@ -447,6 +559,8 @@ final class RemotePane {
     private func tearDown() {
         cancelTimer()
         cancelWatchdog()
+        // Before the bridge's stop, which stops the link and waits for its callback.
+        dropHeldSnapshot()
         grid?.stop()
         grid = nil
         bridge?.stop()
@@ -455,6 +569,62 @@ final class RemotePane {
             surfaceId = nil
             gate.destroy(id)
         }
+    }
+
+    // MARK: The held snapshot
+
+    /// The current link holds a snapshot. Passed on at once when the view shows the
+    /// pane's own size or the surface already has the grid the view was given; else when
+    /// the surface reports that grid, or after `snapshotHoldLimit`.
+    private func snapshotWaiting(token: Int) {
+        dropHeldSnapshot()
+        guard let target = shownGrid, let id = surfaceId, dependencies.host.size(id: id) != target else {
+            currentLink?.releaseSnapshot(token: token, pass: true)
+            return
+        }
+        heldSnapshot = (token, target)
+        holdLimit = dependencies.schedule(Self.snapshotHoldLimit) { [weak self] in
+            guard let self, !self.closed, let held = self.heldSnapshot, held.token == token else { return }
+            Self.log.error("""
+                a remote pane's surface did not reach \(held.target.cols)x\(held.target.rows) \
+                within \(Self.snapshotHoldLimit) s; its snapshot is passed on anyway
+                """)
+            self.holdLimit = nil
+            self.passHeldSnapshot()
+        }
+    }
+
+    /// The grid handed to the view changed (`OwnPaneGrid` imposed it).
+    private func imposed(_ size: TerminalSize?) {
+        shownGrid = size
+        guard let held = heldSnapshot else { return }
+        if let size, let id = surfaceId, dependencies.host.size(id: id) != size {
+            heldSnapshot = (held.token, size)
+        } else {
+            passHeldSnapshot()
+        }
+    }
+
+    /// The surface reported its grid.
+    private func surfaceReported(_ size: TerminalSize) {
+        guard !closed, let held = heldSnapshot, held.target == size else { return }
+        passHeldSnapshot()
+    }
+
+    private func passHeldSnapshot() {
+        guard let held = heldSnapshot else { return }
+        heldSnapshot = nil
+        holdLimit?()
+        holdLimit = nil
+        currentLink?.releaseSnapshot(token: held.token, pass: true)
+    }
+
+    private func dropHeldSnapshot() {
+        holdLimit?()
+        holdLimit = nil
+        guard let held = heldSnapshot else { return }
+        heldSnapshot = nil
+        currentLink?.releaseSnapshot(token: held.token, pass: false)
     }
 
     /// Starts the attempt timeout of the current link, replacing any earlier one.

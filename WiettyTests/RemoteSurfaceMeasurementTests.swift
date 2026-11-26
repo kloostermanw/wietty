@@ -86,11 +86,12 @@ struct RemoteSurfaceMeasurementTests {
 
     /// R1 with the model at a grid other than the surface's, smaller and larger: the
     /// snapshot of a reconnect after another viewer changed the grid, and of every show
-    /// whose pane is not the grid's size. The surface is a viewer whose grid is imposed
-    /// by the product's `OwnPaneGrid`. Clean and dirty are compared as in R1, once the
-    /// surface has taken the model's grid; each case runs as the product orders it (the
-    /// snapshot written as it arrives) and with the snapshot held until the surface has
-    /// the grid (`settled-first`).
+    /// whose pane is not the grid's size. The surface is a `RemotePane`'s, opened through
+    /// `RemotePanes` (the product path: its `ObservedLink` holds the snapshot until the
+    /// surface has the grid its `OwnPaneGrid` imposed). Clean and dirty are compared as
+    /// in R1, once the surface has taken the model's grid; each case runs with the
+    /// messages sent as the server sends them, and with the test also waiting for the
+    /// grid before it sends the snapshot (`settled-first`).
     @Test func r1ASnapshotAtAnotherGrid() async throws {
         let rig = try await SurfaceRig.make(width: 1000, height: 700, container: true)
         defer { rig.close() }
@@ -207,35 +208,52 @@ struct RemoteSurfaceMeasurementTests {
     }
 
     /// - Parameter shift: nil for a model at the surface's own grid. Otherwise the model
-    ///   is that many columns and rows off the surface's grid, the surface is a viewer
-    ///   (`createViewerSurface`) whose grid is the product's `OwnPaneGrid`, and the
-    ///   `resize` before the snapshot reaches that grid on the main queue, as
-    ///   `RemotePane` hands it on: the snapshot of a reconnect after another viewer
-    ///   changed the grid.
-    /// - Parameter settledFirst: with `shift`, the snapshot is held back until the
-    ///   surface has the model's grid, which is not what the product does: it shows
-    ///   whether the order of the two decides the result.
+    ///   is that many columns and rows off the surface's grid, and the surface is a
+    ///   `RemotePane`'s, opened through `RemotePanes` with the app's dependencies and
+    ///   this scripted link: the `resize` before the snapshot reaches the pane's grid on
+    ///   the main queue, and the pane holds the snapshot until the surface has that grid
+    ///   (the snapshot of a reconnect after another viewer changed the grid).
+    /// - Parameter settledFirst: with `shift`, the test itself also waits for the
+    ///   surface to have the model's grid before it sends the snapshot, as the product
+    ///   order did not before the pane held it: both orders must now give the same.
     private func r1(_ rig: SurfaceRig, run: Int, variant: R1Variant, dirty: Bool,
                     shift: (cols: Int, rows: Int)? = nil, settledFirst: Bool = false) async throws -> R1Result {
         let link = ScriptedLink()
         let shiftLabel = shift.map { "-grid\($0.cols)x\($0.rows)\(settledFirst ? "-settled-first" : "")" } ?? ""
-        let id = shift == nil
-            ? "r1-\(run)-\(variant.rawValue)-\(dirty ? "dirty" : "clean")"
-            : "rv:r1:\(run)-\(variant.rawValue)\(shiftLabel)-\(dirty ? "dirty" : "clean"):1"
-        var paneGrid: OwnPaneGrid?
+        let id: String
+        // At another grid the surface is the product's: a `RemotePane` opened through
+        // `RemotePanes` with the app's dependencies, its one link this scripted one (so
+        // the pane's `ObservedLink`, its snapshot hold and its grid are in the path).
+        var panes: RemotePanes?
+        var paneRef: RemoteSessionRef?
+        var surface: OpenSurface?
         if shift != nil {
-            let host = rig.host
-            paneGrid = OwnPaneGrid(viewer: true, claim: { _ in true }, impose: { size in host.impose(grid: size, on: id) })
+            let suite = "step5-r1-\(UUID().uuidString)"
+            defer { UserDefaults().removePersistentDomain(forName: suite) }
+            let connections = RemoteConnectionsStore(defaults: UserDefaults(suiteName: suite)!,
+                                                     secretStore: PaneSecrets())
+            let connection = RemoteConnection(id: UUID(), name: "R1", host: "127.0.0.1", port: 1, token: "r1")
+            connections.add(connection)
+            var dependencies = RemotePane.Dependencies.app(host: rig.host, helperPath: rig.helper,
+                                                           connections: connections)
+            let first = LinkOnce(link)
+            dependencies.makeLink = { _, _ in first.take() }
+            let made = RemotePanes(dependencies: dependencies)
+            let ref = RemoteSessionRef(connectionId: connection.id,
+                                       sessionId: "r1-\(run)-\(variant.rawValue)\(shiftLabel)-\(dirty ? "dirty" : "clean")")
+            let pane = made.open(ref)
+            #expect(await waitUntil(10) { pane.surfaceId != nil })
+            rig.attach(pane)
+            id = try #require(pane.surfaceId)
+            panes = made
+            paneRef = ref
+        } else {
+            id = "r1-\(run)-\(variant.rawValue)-\(dirty ? "dirty" : "clean")"
+            surface = try rig.open(id: id, link: link)
         }
-        defer { paneGrid?.stop() }
-        let surface = try rig.open(id: id, link: link, viewer: shift != nil, grid: paneGrid)
-        defer { surface.close() }
-        if let grid = paneGrid {
-            surface.bridge.onResize = { cols, rows, own in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { grid.resizeReceived(TerminalSize(cols: cols, rows: rows), own: own) }
-                }
-            }
+        defer {
+            surface?.close()
+            if let panes, let paneRef { panes.close(paneRef) }
         }
         #expect(await waitUntil(10) { link.started })
         let ownGrid = try await rig.settledGrid(id)
@@ -284,7 +302,9 @@ struct RemoteSurfaceMeasurementTests {
             report("""
                 \(prefix) grid own=\(ownGrid.cols)x\(ownGrid.rows) model=\(modelSize.cols)x\(modelSize.rows) \
                 atFirstAnswers=\(gridAtAnswers.map { "\($0.cols)x\($0.rows)" } ?? "none") \
-                imposed=\(imposed ? "yes" : "NO") firstAnswers=\(escaped(after))
+                imposed=\(imposed ? "yes" : "NO") \
+                reported=\((rig.events.grids[id] ?? []).map { "\($0.cols)x\($0.rows)" }.joined(separator: ",")) \
+                firstAnswers=\(escaped(after))
                 """)
             #expect(imposed)
             try await Task.sleep(for: .milliseconds(200))
@@ -319,7 +339,10 @@ struct RemoteSurfaceMeasurementTests {
             modelScrollbackRows=\(model.scrollbackRows) modesMatchModel=\(modesMatch ? "yes" : "NO") \
             cursorMatchesModel=\(cursorMatch ? "yes" : "NO") modelCursor=\(cursor.y + 1);\(cursor.x + 1)
             """)
-        report("\(prefix) after-snapshot answers=\(escaped(after)) expectedPrefix=\(escaped(expected)) keys=\(keys)")
+        report("""
+            \(prefix) after-snapshot answers=\(escaped(after)) expectedPrefix=\(escaped(expected)) keys=\(keys) \
+            reported=\((rig.events.grids[id] ?? []).map { "\($0.cols)x\($0.rows)" }.joined(separator: ","))
+            """)
         if whole != modelWhole { report("\(prefix) first difference: \(firstDifference(whole, modelWhole))") }
         if viewport != modelViewport { report("\(prefix) viewport difference: \(firstDifference(viewport, modelViewport))") }
         #expect(old == 0)
@@ -1656,6 +1679,8 @@ private final class HostEvents {
     private(set) var all: [Event] = []
     private(set) var titles: [(at: UInt64, id: String, title: String)] = []
     private(set) var firstGrid: [String: UInt64] = [:]
+    /// Every grid each surface reported, in order.
+    private(set) var grids: [String: [TerminalSize]] = [:]
     /// Called after every title is recorded, for a measurement that samples state then.
     var onTitleSample: (() -> Void)?
 
@@ -1667,8 +1692,9 @@ private final class HostEvents {
         }
         host.onBell = { [weak self] id in self?.record("bell", id) }
         host.onDesktopNotification = { [weak self] id, _, _ in self?.record("notification", id) }
-        host.onResized = { [weak self] id, _ in
+        host.onResized = { [weak self] id, grid in
             self?.record("grid", id)
+            self?.grids[id, default: []].append(grid)
             if self?.firstGrid[id] == nil { self?.firstGrid[id] = now() }
         }
         host.onMetricsChanged = { [weak self] id in self?.record("metrics", id) }
@@ -1778,6 +1804,20 @@ private final class ScriptedLink: TerminalStreamLink, @unchecked Sendable {
             handler?(make(tick.next()))
         }
         lock.withLock { timer = source }
+    }
+}
+
+/// Hands out one link once, then fresh scripted links that deliver nothing (a retry
+/// of R1's pane, which a run should never need).
+private final class LinkOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var link: ScriptedLink?
+    init(_ link: ScriptedLink) { self.link = link }
+    func take() -> any TerminalStreamLink {
+        lock.withLock {
+            defer { link = nil }
+            return link ?? ScriptedLink()
+        }
     }
 }
 
