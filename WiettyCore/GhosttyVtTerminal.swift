@@ -347,7 +347,7 @@ package final class GhosttyVtTerminal {
         /// switching columns: its 40 is still off when the 3 arrives.
         private static let beforeContentModes: Set<Int> = [3, 40, 47, 1047, 1049]
         /// Written in front of mode 3, so that a receiver whose reset does not
-        /// turn 40 off (SwiftTerm keeps it) also finds the switch disallowed.
+        /// turn 40 off (SwiftTerm on the iPad keeps it) also finds the switch disallowed.
         /// The library's own 40 still follows, so the receiver ends allowing the
         /// switch when the source does.
         private static let disallowColumnSwitch = Array("\u{1B}[?40l".utf8)

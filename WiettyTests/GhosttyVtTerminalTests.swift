@@ -533,7 +533,7 @@ import WiettyCore
     }
 
     /// A receiver that honours DECCOLM and does not forget mode 40 on a reset
-    /// (SwiftTerm) would switch to 132 columns on the frame's `?3h`, clearing what
+    /// (SwiftTerm, on the iPad) would switch to 132 columns on the frame's `?3h`, clearing what
     /// it was told and changing its width. So the frame disallows the switch
     /// first, sets 3, and allows it again where the library puts 40.
     @Test func aSnapshotDisallowsTheColumnSwitchBeforeSettingMode3() throws {
