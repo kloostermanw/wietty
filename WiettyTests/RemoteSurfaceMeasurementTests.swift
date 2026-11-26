@@ -18,12 +18,20 @@ import WiettyCore
 ///
 /// - R1: a snapshot (hard reset, history, screen, modes) fed through the real bridge and
 ///   helper to a real surface left dirty by its child, compared with the same snapshot
-///   on a clean surface and with the libghostty-vt model that produced it.
+///   on a clean surface and with the libghostty-vt model that produced it; also with the
+///   model on the alternate screen (then leaving it, and the fresh snapshot after), and
+///   with the model at a grid other than the surface's, imposed on a viewer surface by
+///   the product's `OwnPaneGrid`, in the product's order and with the grid settled first.
+/// - RECONNECT: through `RemotePanes` as the app builds them, a surface the program left
+///   dirty, the server dropped and back on the same port, the pane's own new link on
+///   the same surface, and the surface compared with the server's terminal (same grid
+///   and a smaller one, entering and leaving the alternate screen).
 /// - R2: a real `RemoteServer` on 127.0.0.1 flooding one `TerminalStreamConnection`
 ///   whose callback is fast, slow (50 ms per message) or stalled: this process's
 ///   memory, the sockets' queues and the server's resyncs over time.
-/// - R3: the cost of a show (surface, helper, WebSocket, snapshot) for 1,000, 10,000
-///   and 100,000 lines of history, and what 100 shows and hides leave behind.
+/// - R3: the cost of a show through `RemotePanes.open` (the turn the pane waits, surface,
+///   helper, WebSocket, snapshot) for 1,000, 10,000 and 100,000 lines of history, the
+///   hide through `RemotePanes.close`, and what 100 shows and hides leave behind.
 /// - R4: the largest snapshots through the helper's 4 KiB pump: the blocking write and
 ///   the longest gap of a main queue heartbeat meanwhile.
 /// - R7: what the surface shows and does when the bridge stops after the session ended,
@@ -43,7 +51,8 @@ import WiettyCore
 /// `scripts/remote-surface-check.sh`. Like the other real window checks it builds a
 /// `GhosttySurfaceHost` of its own beside the app's, which takes the host callbacks over
 /// for the run. The scripted link below lives in the test target only; the link to the
-/// server is the product's `RemoteSocketLink`, timed by a thin wrapper.
+/// server is the product's `RemoteSocketLink`, timed by a thin wrapper, and R3, RECONNECT
+/// and PANE go through the product's `RemotePane`.
 @MainActor
 @Suite(.enabled(if: RemoteSurfaceCheck.isRequested), .serialized)
 struct RemoteSurfaceMeasurementTests {
@@ -75,6 +84,42 @@ struct RemoteSurfaceMeasurementTests {
         }
     }
 
+    /// R1 with the model at a grid other than the surface's, smaller and larger: the
+    /// snapshot of a reconnect after another viewer changed the grid, and of every show
+    /// whose pane is not the grid's size. The surface is a viewer whose grid is imposed
+    /// by the product's `OwnPaneGrid`. Clean and dirty are compared as in R1, once the
+    /// surface has taken the model's grid; each case runs as the product orders it (the
+    /// snapshot written as it arrives) and with the snapshot held until the surface has
+    /// the grid (`settled-first`).
+    @Test func r1ASnapshotAtAnotherGrid() async throws {
+        let rig = try await SurfaceRig.make(width: 1000, height: 700, container: true)
+        defer { rig.close() }
+        for run in 1...Self.runs {
+            for shift in [(cols: -23, rows: -7), (cols: 17, rows: 5)] {
+                for (variant, settledFirst) in [(R1Variant.modes, false), (.alternate, false),
+                                                 (.modes, true), (.alternate, true)] {
+                    var results: [R1Result] = []
+                    for dirty in [false, true] {
+                        results.append(try await r1(rig, run: run, variant: variant, dirty: dirty, shift: shift,
+                                                    settledFirst: settledFirst))
+                    }
+                    let clean = results[0], dirty = results[1]
+                    let same = clean.answers == dirty.answers && clean.keys == dirty.keys
+                        && clean.whole == dirty.whole && clean.viewport == dirty.viewport
+                    report("""
+                        STEP5 R1 run=\(run) model=\(variant.rawValue)-grid\(shift.cols)x\(shift.rows)\(settledFirst ? "-settled-first" : "") \
+                        compare clean-vs-dirty identical=\(same ? "yes" : "NO") \
+                        answers=\(clean.answers == dirty.answers ? "same" : "DIFF") \
+                        keys=\(clean.keys == dirty.keys ? "same" : "DIFF") \
+                        history=\(clean.whole == dirty.whole ? "same" : "DIFF") \
+                        viewport=\(clean.viewport == dirty.viewport ? "same" : "DIFF")
+                        """)
+                    #expect(same)
+                }
+            }
+        }
+    }
+
     enum R1Variant: String, CaseIterable {
         /// The model on its primary screen with history, every mode at its default.
         case plain
@@ -82,6 +127,12 @@ struct RemoteSurfaceMeasurementTests {
         /// 1006), bracketed paste, application cursor keys, kitty flags 1 and a
         /// scrolling region.
         case modes
+        /// The model on the alternate screen (`ESC [ ? 1049 h`) with text and modes of
+        /// its own, its history on the primary screen underneath: the snapshot of a
+        /// reconnect while a full screen program runs on the other Mac. After the
+        /// comparison the program leaves the alternate screen and the surface is sent a
+        /// fresh snapshot, as the server sends one then.
+        case alternate
     }
 
     struct R1Result {
@@ -145,20 +196,52 @@ struct RemoteSurfaceMeasurementTests {
         if variant == .modes {
             text += "\u{1B}[?1000h\u{1B}[?1006h\u{1B}[?2004h\u{1B}[?1h\u{1B}[>1u\u{1B}[3;20r"
         }
+        if variant == .alternate {
+            text += "\u{1B}[?1049h\u{1B}[2J\u{1B}[H"
+            for n in 0..<6 { text += "\u{1B}[3\(n % 7 + 1)mNEW-ALT \(n)\u{1B}[0m on the model's alternate screen\r\n" }
+            text += "\u{1B}[?1000h\u{1B}[?1006h\u{1B}[?2004h\u{1B}[>1u"
+        }
         text += "\u{1B}[7;15H"
         model.write(Array(text.utf8))
         return model
     }
 
-    private func r1(_ rig: SurfaceRig, run: Int, variant: R1Variant, dirty: Bool) async throws -> R1Result {
+    /// - Parameter shift: nil for a model at the surface's own grid. Otherwise the model
+    ///   is that many columns and rows off the surface's grid, the surface is a viewer
+    ///   (`createViewerSurface`) whose grid is the product's `OwnPaneGrid`, and the
+    ///   `resize` before the snapshot reaches that grid on the main queue, as
+    ///   `RemotePane` hands it on: the snapshot of a reconnect after another viewer
+    ///   changed the grid.
+    /// - Parameter settledFirst: with `shift`, the snapshot is held back until the
+    ///   surface has the model's grid, which is not what the product does: it shows
+    ///   whether the order of the two decides the result.
+    private func r1(_ rig: SurfaceRig, run: Int, variant: R1Variant, dirty: Bool,
+                    shift: (cols: Int, rows: Int)? = nil, settledFirst: Bool = false) async throws -> R1Result {
         let link = ScriptedLink()
-        let id = "r1-\(run)-\(variant.rawValue)-\(dirty ? "dirty" : "clean")"
-        let surface = try rig.open(id: id, link: link)
+        let shiftLabel = shift.map { "-grid\($0.cols)x\($0.rows)\(settledFirst ? "-settled-first" : "")" } ?? ""
+        let id = shift == nil
+            ? "r1-\(run)-\(variant.rawValue)-\(dirty ? "dirty" : "clean")"
+            : "rv:r1:\(run)-\(variant.rawValue)\(shiftLabel)-\(dirty ? "dirty" : "clean"):1"
+        var paneGrid: OwnPaneGrid?
+        if shift != nil {
+            let host = rig.host
+            paneGrid = OwnPaneGrid(viewer: true, claim: { _ in true }, impose: { size in host.impose(grid: size, on: id) })
+        }
+        defer { paneGrid?.stop() }
+        let surface = try rig.open(id: id, link: link, viewer: shift != nil, grid: paneGrid)
         defer { surface.close() }
+        if let grid = paneGrid {
+            surface.bridge.onResize = { cols, rows, own in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { grid.resizeReceived(TerminalSize(cols: cols, rows: rows), own: own) }
+                }
+            }
+        }
         #expect(await waitUntil(10) { link.started })
-        let grid = try await rig.settledGrid(id)
-        let model = try r1Model(variant, size: grid, graphemes: rig.host.graphemeClustering)
-        let prefix = "STEP5 R1 run=\(run) model=\(variant.rawValue) surface=\(dirty ? "dirty" : "clean")"
+        let ownGrid = try await rig.settledGrid(id)
+        let modelSize = shift.map { TerminalSize(cols: ownGrid.cols + $0.cols, rows: ownGrid.rows + $0.rows) } ?? ownGrid
+        let model = try r1Model(variant, size: modelSize, graphemes: rig.host.graphemeClustering)
+        let prefix = "STEP5 R1 run=\(run) model=\(variant.rawValue)\(shiftLabel) surface=\(dirty ? "dirty" : "clean")"
 
         if dirty {
             // The history first, read back, so it is known to be in the surface's
@@ -174,7 +257,7 @@ struct RemoteSurfaceMeasurementTests {
             link.deliver(.data(Self.r1Dirt))
             link.deliver(.data(Self.r1Queries))
             let control = try await answers(link)
-            let keys = try await probeInput(rig, id: id, link: link)
+            let keys = shift == nil ? try await probeInput(rig, id: id, link: link) : "not-probed"
             let text = rig.host.readText(id: id, maxLines: 1_000_000) ?? []
             report("""
                 \(prefix) before-snapshot answers=\(escaped(control)) keys=\(keys) \
@@ -185,9 +268,30 @@ struct RemoteSurfaceMeasurementTests {
         let frame = model.snapshotFrame()
         let snapshot = TerminalPaint.hardReset + frame.bytes
         link.deliver(.resize(cols: frame.size.cols, rows: frame.size.rows, own: false))
+        if settledFirst {
+            _ = await waitUntil(5) { rig.host.size(id: id) == modelSize }
+            try await Task.sleep(for: .milliseconds(300))
+        }
         link.deliver(.snapshot(snapshot))
         link.deliver(.data(Self.r1Queries))
-        let after = try await answers(link)
+        var after = try await answers(link)
+        let gridAtAnswers = rig.host.size(id: id)
+        if shift != nil {
+            // The grid reaches the surface on the main queue, the snapshot through the
+            // helper: either can come first. Once the surface has the model's grid,
+            // the queries again, so the answers are those of the surface as it stays.
+            let imposed = await waitUntil(5) { rig.host.size(id: id) == modelSize }
+            report("""
+                \(prefix) grid own=\(ownGrid.cols)x\(ownGrid.rows) model=\(modelSize.cols)x\(modelSize.rows) \
+                atFirstAnswers=\(gridAtAnswers.map { "\($0.cols)x\($0.rows)" } ?? "none") \
+                imposed=\(imposed ? "yes" : "NO") firstAnswers=\(escaped(after))
+                """)
+            #expect(imposed)
+            try await Task.sleep(for: .milliseconds(200))
+            link.deliver(.data(Self.r1Queries))
+            after = try await answers(link)
+        }
+        let grid = rig.host.size(id: id) ?? ownGrid
         let viewport = normalised(rig.host.readText(id: id, maxLines: grid.rows) ?? [])
         let modelViewport = normalised(model.viewportLines(unwrap: true))
         let whole = normalised(rig.host.readText(id: id, maxLines: 1_000_000) ?? [])
@@ -204,7 +308,9 @@ struct RemoteSurfaceMeasurementTests {
         let cpr = "\u{1B}[\(cursor.y + 1);\(cursor.x + 1)R"
         let modesMatch = after.hasPrefix(expected)
         let cursorMatch = after.contains(cpr)
-        let keys = try await probeInput(rig, id: id, link: link)
+        // A key or a click on a viewer claims the grid, which would change what is
+        // measured here; R1 at the surface's own grid probes them.
+        let keys = shift == nil ? try await probeInput(rig, id: id, link: link) : "not-probed"
         report("""
             \(prefix) after-snapshot grid=\(grid.cols)x\(grid.rows) snapshotBytes=\(snapshot.count) \
             viewportMatchesModel=\(viewport == modelViewport ? "yes" : "NO") \
@@ -220,7 +326,51 @@ struct RemoteSurfaceMeasurementTests {
         #expect(whole == modelWhole)
         #expect(viewport == modelViewport)
         #expect(modesMatch && cursorMatch)
+        if variant == .alternate {
+            try await r1LeaveTheAlternateScreen(rig, id: id, link: link, model: model, prefix: prefix)
+        }
         return R1Result(answers: after, keys: keys, whole: whole, viewport: viewport)
+    }
+
+    /// The program leaves the alternate screen. The surface holds an empty primary
+    /// screen (the snapshot had none), so the server sends a fresh snapshot then
+    /// (`PaneStreamHub`, the alternate screen rule); after it the surface must be the
+    /// model again, history included.
+    private func r1LeaveTheAlternateScreen(_ rig: SurfaceRig, id: String, link: ScriptedLink,
+                                           model: GhosttyVtTerminal, prefix: String) async throws {
+        let leave = Array("\u{1B}[?1049l".utf8)
+        model.write(leave)
+        link.deliver(.data(leave))
+        link.deliver(.data(Array("\u{1B}[5n".utf8)))
+        _ = try await answers(link)
+        let left = normalised(rig.host.readText(id: id, maxLines: 1_000_000) ?? [])
+        let frame = model.snapshotFrame()
+        link.deliver(.snapshot(TerminalPaint.hardReset + frame.bytes))
+        link.deliver(.data(Self.r1Queries))
+        let after = try await answers(link)
+        let grid = rig.host.size(id: id) ?? frame.size
+        let viewport = normalised(rig.host.readText(id: id, maxLines: grid.rows) ?? [])
+        let whole = normalised(rig.host.readText(id: id, maxLines: 1_000_000) ?? [])
+        let modelViewport = normalised(model.viewportLines(unwrap: true))
+        let modelWhole = normalised(model.text(maxLines: 1_000_000).components(separatedBy: "\n"))
+        var expected = ""
+        for mode in Self.r1Modes { expected += "\u{1B}[?\(mode);\(model.isModeSet(UInt16(mode)) ? 1 : 2)$y" }
+        expected += "\u{1B}[?\(model.kittyKeyboardFlags)u"
+        let cpr = "\u{1B}[\(model.cursor.y + 1);\(model.cursor.x + 1)R"
+        report("""
+            \(prefix) after-leaving-alternate beforeFreshSnapshot surfaceLines=\(left.count) \
+            oldLines=\(left.filter { $0.contains("OLD-") }.count) \
+            newHistLines=\(left.filter { $0.hasPrefix("NEW-HIST ") }.count) \
+            afterFreshSnapshot viewportMatchesModel=\(viewport == modelViewport ? "yes" : "NO") \
+            historyMatchesModel=\(whole == modelWhole ? "yes" : "NO") surfaceLines=\(whole.count) \
+            modelLines=\(modelWhole.count) modesMatchModel=\(after.hasPrefix(expected) ? "yes" : "NO") \
+            cursorMatchesModel=\(after.contains(cpr) ? "yes" : "NO")
+            """)
+        if whole != modelWhole { report("\(prefix) after-leaving-alternate first difference: \(firstDifference(whole, modelWhole))") }
+        #expect(left.filter { $0.contains("OLD-") }.isEmpty)
+        #expect(whole == modelWhole)
+        #expect(viewport == modelViewport)
+        #expect(after.hasPrefix(expected) && after.contains(cpr))
     }
 
     /// Everything the surface answered up to and including the status report, which the
@@ -385,27 +535,58 @@ struct RemoteSurfaceMeasurementTests {
         let heartbeat = Heartbeat()
         heartbeat.start()
         defer { heartbeat.stop() }
+        let (connections, connection) = server.connections()
+        let links = ProbedLinks()
+        let panes = probedPanes(rig, connections: connections, links: links)
+        defer { panes.closeAll() }
         for run in 1...Self.runs {
             for item in Self.showCases {
-                try await show(rig, server: server, item: item, run: run, heartbeat: heartbeat)
+                try await show(rig, panes: panes, links: links,
+                               ref: RemoteSessionRef(connectionId: connection.id, sessionId: item.label),
+                               item: item, run: run, heartbeat: heartbeat)
             }
         }
     }
 
-    private func show(_ rig: SurfaceRig, server: ServerRig, item: ShowCase, run: Int,
-                      heartbeat: Heartbeat) async throws {
-        let id = "r3-\(item.label)-\(run)"
+    /// `RemotePanes` as the app builds them on this rig's host, but each link the
+    /// product's `RemoteSocketLink` wrapped in a `ProbedRemoteLink`, kept in `links`.
+    private func probedPanes(_ rig: SurfaceRig, connections: RemoteConnectionsStore,
+                             links: ProbedLinks) -> RemotePanes {
+        var dependencies = RemotePane.Dependencies.app(host: rig.host, helperPath: rig.helper,
+                                                       connections: connections)
+        dependencies.makeLink = { connection, session in
+            let link = ProbedRemoteLink(RemoteSocketLink(connection: connection, session: session))
+            links.all.append(link)
+            return link
+        }
+        return RemotePanes(dependencies: dependencies)
+    }
+
+    /// A show through `RemotePanes.open`, the pane's surface put in the window as soon
+    /// as it exists (as `RemoteSurfacePane` puts it there), and the hide through
+    /// `RemotePanes.close`.
+    private func show(_ rig: SurfaceRig, panes: RemotePanes, links: ProbedLinks, ref: RemoteSessionRef,
+                      item: ShowCase, run: Int, heartbeat: Heartbeat) async throws {
         let marker = "STEP5-END \(item.label)"
+        let linksBefore = links.all.count
         let start = now()
-        let link = ProbedRemoteLink(port: server.port, token: server.token, session: item.label)
-        let surface = try rig.open(id: id, link: link, imposeOnResize: true)
-        defer { surface.close() }
-        let created = now()
+        let pane = panes.open(ref)
+        var created: UInt64?
         let visible = await waitUntil(60, poll: .milliseconds(2)) {
-            (rig.host.readText(id: id, maxLines: 34) ?? []).contains { $0.contains(marker) }
+            if created == nil, pane.surfaceId != nil { created = now() }
+            rig.attach(pane)
+            guard let id = pane.surfaceId else { return false }
+            return (rig.host.readText(id: id, maxLines: 34) ?? []).contains { $0.contains(marker) }
         }
         let shown = now()
-        let probe = link.probe
+        let id = pane.surfaceId ?? "none"
+        let state = "\(pane.state)"
+        guard links.all.count > linksBefore else {
+            Issue.record("no link was made")
+            panes.close(ref)
+            return
+        }
+        let probe = links.all[linksBefore].probe
         let grid = rig.events.firstGrid[id]
         let received = probe.snapshotReceivedAt ?? 0, written = probe.snapshotWrittenAt ?? 0
         let gap = heartbeat.maxGap(from: received, to: shown)
@@ -413,8 +594,9 @@ struct RemoteSurfaceMeasurementTests {
         // The whole screen read is slow on a deep scrollback; after the timing.
         let kept = normalised(rig.host.readText(id: id, maxLines: 1_000_000) ?? []).count
         report("""
-            STEP5 R3 run=\(run) hist=\(item.label) visible=\(visible ? "yes" : "NO") \
-            snapshotBytes=\(probe.snapshotBytes) createMs=\(ms(created &- start)) \
+            STEP5 R3 run=\(run) hist=\(item.label) via=RemotePane visible=\(visible ? "yes" : "NO") state=\(state) \
+            links=\(links.all.count - linksBefore) \
+            snapshotBytes=\(probe.snapshotBytes) toSurfaceMs=\(created.map { ms($0 &- start) } ?? "none") \
             toFirstGridMs=\(grid.map { ms($0 &- start) } ?? "none") \
             toHelperConnectedMs=\(probe.startedAt.map { ms($0 &- start) } ?? "none") \
             toFirstMessageMs=\(probe.firstMessageAt.map { ms($0 &- start) } ?? "none") \
@@ -429,10 +611,12 @@ struct RemoteSurfaceMeasurementTests {
             mainGapUntilVisibleMs=\(ms(gap)) heartbeatMaxRunMs=\(ms(heartbeat.maxGap(from: start, to: shown)))
             """)
         #expect(visible)
-        // The hide, timed: the bridge stopped and the surface freed, on the main actor.
+        // The hide, timed: the pane's timers, grid and bridge stopped and its surface
+        // freed, on the main actor.
         let hideStart = now()
-        surface.close()
+        panes.close(ref)
         let hidden = now()
+        #expect(rig.host.view(id: id) == nil)
         try await Task.sleep(for: .milliseconds(200))
         report("""
             STEP5 R3-HIDE run=\(run) hist=\(item.label) hideMs=\(ms(hidden &- hideStart)) \
@@ -449,9 +633,14 @@ struct RemoteSurfaceMeasurementTests {
         try server.rig.add(session, cols: 120, rows: 34, scrollback: 1_000)
         server.rig.fill(session, lines: 1_200)
         server.rig.write(session, Array("\r\nSTEP5-END cycles".utf8))
+        let (connections, connection) = server.connections()
+        let links = ProbedLinks()
+        let panes = probedPanes(rig, connections: connections, links: links)
+        defer { panes.closeAll() }
+        let ref = RemoteSessionRef(connectionId: connection.id, sessionId: session)
         // One show first, so what is created once per process (the renderer's caches,
         // URLSession, the helper's image in the page cache) is not counted as a leak.
-        try await cycle(rig, server: server, session: session, id: "r3-warm")
+        _ = await cycle(rig, panes: panes, ref: ref)
         try await Task.sleep(for: .seconds(3))
         for run in 1...Self.runs {
             let before = Census.take()
@@ -459,7 +648,7 @@ struct RemoteSurfaceMeasurementTests {
             var failures = 0
             for index in 0..<100 {
                 let start = now()
-                let shown = try await cycle(rig, server: server, session: session, id: "r3-\(run)-\(index)")
+                let shown = await cycle(rig, panes: panes, ref: ref)
                 if !shown { failures += 1 }
                 times.append(now() &- start)
                 if index == 49 {
@@ -478,13 +667,14 @@ struct RemoteSurfaceMeasurementTests {
         }
     }
 
-    /// Show then hide: true when the snapshot became visible.
-    private func cycle(_ rig: SurfaceRig, server: ServerRig, session: String, id: String) async throws -> Bool {
-        let link = ProbedRemoteLink(port: server.port, token: server.token, session: session)
-        let surface = try rig.open(id: id, link: link, imposeOnResize: true)
-        defer { surface.close() }
+    /// Show then hide through `RemotePanes`: true when the snapshot became visible.
+    private func cycle(_ rig: SurfaceRig, panes: RemotePanes, ref: RemoteSessionRef) async -> Bool {
+        let pane = panes.open(ref)
+        defer { panes.close(ref) }
         return await waitUntil(10, poll: .milliseconds(2)) {
-            (rig.host.readText(id: id, maxLines: 34) ?? []).contains { $0.contains("STEP5-END") }
+            rig.attach(pane)
+            guard let id = pane.surfaceId else { return false }
+            return (rig.host.readText(id: id, maxLines: 34) ?? []).contains { $0.contains("STEP5-END") }
         }
     }
 
@@ -551,6 +741,186 @@ struct RemoteSurfaceMeasurementTests {
         surface.close()
         try await Task.sleep(for: .seconds(2))
         report("\(prefix) after-hide2s[\(Census.take().describe(against: before))]")
+    }
+
+    // MARK: RECONNECT. A kept dirty surface, through RemotePane
+
+    enum ReconnectScenario: String, CaseIterable {
+        /// On the alternate screen with modes set when the link drops. While it is down
+        /// the program leaves it, resets its modes and prints, and another viewer makes
+        /// the grid smaller.
+        case leftAlternate = "left-alternate"
+        /// On the primary screen with modes set when the link drops. While it is down
+        /// the program enters the alternate screen, at the same grid. After the
+        /// comparison it leaves it again, and the server sends its fresh snapshot.
+        case enteredAlternate = "entered-alternate"
+    }
+
+    /// A terminal of another Mac through `RemotePanes` as the app builds them (real
+    /// `RemoteSocketLink`, `TerminalBridge`, helper and viewer surface) against a real
+    /// `RemoteServer` on 127.0.0.1. The program leaves the surface dirty, the server
+    /// goes away, the terminal changes while the pane is `reconnecting`, the server
+    /// comes back on the same port, and the pane makes a new link by itself on the same
+    /// surface. Then the surface is compared with the server's terminal: history,
+    /// viewport, modes, kitty flags and cursor (a second terminal fed the same bytes
+    /// stands in for the model, which exposes no modes).
+    @Test func reconnectOnAKeptDirtySurfaceThroughRemotePane() async throws {
+        let server = try await ServerRig.start()
+        defer { server.stop() }
+        let rig = try await SurfaceRig.make(width: 1100, height: 760, container: true)
+        defer { rig.close() }
+        let (connections, connection) = server.connections()
+        let panes = RemotePanes(host: rig.host, helperPath: rig.helper, connections: connections)
+        defer { panes.closeAll() }
+        for run in 1...Self.runs {
+            for scenario in ReconnectScenario.allCases {
+                try await reconnect(rig, server: server, panes: panes, connectionId: connection.id,
+                                    run: run, scenario: scenario)
+            }
+        }
+    }
+
+    private func reconnect(_ rig: SurfaceRig, server: ServerRig, panes: RemotePanes, connectionId: UUID,
+                           run: Int, scenario: ReconnectScenario) async throws {
+        let session = "rc-\(run)-\(scenario.rawValue)"
+        let prefix = "STEP5 RECONNECT run=\(run) scenario=\(scenario.rawValue)"
+        let streams = server.rig
+        try streams.add(session, cols: 100, rows: 30, scrollback: 1_000, shadow: true)
+        defer { streams.end(session) }
+        streams.fill(session, lines: 300)
+        streams.write(session, Array("\r\nSTEP5-RC-SHOWN\r\n".utf8))
+        let ref = RemoteSessionRef(connectionId: connectionId, sessionId: session)
+        let pane = panes.open(ref)
+        defer { panes.close(ref) }
+        func text(_ rows: Int) -> [String] {
+            guard let id = pane.surfaceId else { return [] }
+            return rig.host.readText(id: id, maxLines: rows) ?? []
+        }
+        func visible(_ marker: String) -> Bool {
+            rig.attach(pane)
+            return text(200).contains { $0.contains(marker) }
+        }
+        /// Sends `bytes` through the server, then a status report, and waits for the
+        /// surface's answer, which follows every answer to what came before it.
+        func through(_ bytes: [UInt8]) async -> String {
+            _ = streams.takeInput()
+            streams.write(session, bytes + Array("\u{1B}[5n".utf8))
+            _ = await waitUntil(10) { String(decoding: streams.inputSoFar, as: UTF8.self).contains("\u{1B}[0n") }
+            return String(decoding: streams.takeInput(), as: UTF8.self)
+        }
+
+        let shown = await waitUntil(20) { pane.state == .live && visible("STEP5-RC-SHOWN") }
+        #expect(shown, "never live")
+        let surfaceId = pane.surfaceId
+
+        // The program leaves the surface dirty.
+        var dirt = ""
+        if scenario == .leftAlternate {
+            dirt += "\u{1B}[?1049h\u{1B}[2J\u{1B}[H"
+            for n in 0..<10 { dirt += "RC-ALT \(n) full screen program before the drop\r\n" }
+        } else {
+            for n in 0..<10 { dirt += "RC-PRIMARY \(n) before the drop\r\n" }
+        }
+        dirt += "\u{1B}[?1000h\u{1B}[?1002h\u{1B}[?1006h\u{1B}[?2004h\u{1B}[?1h\u{1B}=\u{1B}[>5u"
+        dirt += "\u{1B}[5 q\u{1B}[3;15r\u{1B}[?6h\u{1B}[1;31;44m\u{1B}[?25l\u{1B}[5;10H"
+        _ = await through(Array(dirt.utf8))
+        let dirtyAnswers = await through(Self.r1Queries)
+
+        // The server goes away; the terminal changes meanwhile.
+        server.drop()
+        let lost = await waitUntil(10) { pane.state == .reconnecting }
+        var down = ""
+        if scenario == .leftAlternate {
+            down += "\u{1B}[?1049l"
+            down += "\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1006l\u{1B}[?2004l\u{1B}[?1l\u{1B}>\u{1B}[<u"
+            down += "\u{1B}[0 q\u{1B}[r\u{1B}[?6l\u{1B}[0m\u{1B}[?25h"
+            for n in 0..<20 { down += "WHILE-DOWN \(n) printed while the link was down\r\n" }
+            streams.write(session, Array(down.utf8))
+            streams.resize(session, to: TerminalSize(cols: 90, rows: 26))
+        } else {
+            // Origin mode off first: a cursor report under it is relative to the
+            // scrolling region, which the shadow cannot say, and the alternate screen
+            // saves the cursor with it.
+            down += "\u{1B}[?6l\u{1B}[?1049h\u{1B}[2J\u{1B}[H"
+            for n in 0..<8 { down += "\u{1B}[3\(n % 7 + 1)mRC-ALT-DOWN \(n)\u{1B}[0m entered while the link was down\r\n" }
+            down += "\u{1B}[?1003h\u{1B}[?2004l"
+            streams.write(session, Array(down.utf8))
+        }
+        streams.write(session, Array("STEP5-RC-BACK\u{1B}[3;7H".utf8))
+        let wanted = streams.model(session)?.size
+
+        // It comes back on the same port: the pane reconnects by itself.
+        let downAt = now()
+        try await server.restart()
+        let back = await waitUntil(30) {
+            pane.state == .live && visible("STEP5-RC-BACK") && rig.host.size(id: pane.surfaceId ?? "") == wanted
+        }
+        let backMs = ms(now() &- downAt)
+        try await Task.sleep(for: .milliseconds(300))
+        let header = "\(prefix) lost=\(lost ? "yes" : "NO") back=\(back ? "yes" : "NO") backMs=\(backMs) "
+            + "sameSurface=\(pane.surfaceId == surfaceId ? "yes" : "NO") "
+            + "mouseBeforeTheDrop=\(dirtyAnswers.contains("\u{1B}[?1000;1$y") ? "set" : "unset")"
+        try await compare(rig, pane: pane, session: session, streams: streams, step: "after-reconnect",
+                          prefix: header, through: through)
+        #expect(lost && back && pane.surfaceId == surfaceId)
+
+        if scenario == .enteredAlternate {
+            // The program leaves the alternate screen: the server sends a fresh snapshot,
+            // since the surface joined on it and holds no primary screen.
+            streams.write(session, Array("\u{1B}[?1049l".utf8))
+            _ = await waitUntil(10) { visible("STEP5-RC-SHOWN") }
+            try await Task.sleep(for: .milliseconds(300))
+            try await compare(rig, pane: pane, session: session, streams: streams, step: "after-leaving-alternate",
+                              prefix: prefix, through: through)
+        }
+    }
+
+    /// The surface of `pane` against the session's shadow terminal.
+    private func compare(_ rig: SurfaceRig, pane: RemotePane, session: String, streams: StreamRig, step: String,
+                         prefix: String, through: ([UInt8]) async -> String) async throws {
+        let answers = await through(Self.r1Queries)
+        guard let id = pane.surfaceId,
+              let reference = streams.shadow(session, { terminal in
+                  (size: terminal.size,
+                   viewport: normalised(terminal.viewportLines(unwrap: true)),
+                   whole: normalised(terminal.text(maxLines: 1_000_000).components(separatedBy: "\n")),
+                   modes: Self.r1Modes.map { terminal.isModeSet(UInt16($0)) },
+                   kitty: terminal.kittyKeyboardFlags,
+                   cursor: terminal.cursor,
+                   alternate: terminal.isAlternateScreen)
+              }) else {
+            Issue.record("no surface or no shadow")
+            return
+        }
+        let modelWhole = normalised((streams.model(session)?.text(maxLines: 1_000_000) ?? "").components(separatedBy: "\n"))
+        let grid = rig.host.size(id: id)
+        let viewport = normalised(rig.host.readText(id: id, maxLines: grid?.rows ?? reference.size.rows) ?? [])
+        let whole = normalised(rig.host.readText(id: id, maxLines: 1_000_000) ?? [])
+        var expected = ""
+        for (mode, set) in zip(Self.r1Modes, reference.modes) { expected += "\u{1B}[?\(mode);\(set ? 1 : 2)$y" }
+        expected += "\u{1B}[?\(reference.kitty)u"
+        let cpr = "\u{1B}[\(reference.cursor.y + 1);\(reference.cursor.x + 1)R"
+        report("""
+            \(prefix) \(step) grid=\(grid.map { "\($0.cols)x\($0.rows)" } ?? "none") \
+            model=\(reference.size.cols)x\(reference.size.rows) alternate=\(reference.alternate) \
+            viewportMatchesModel=\(viewport == reference.viewport ? "yes" : "NO") \
+            historyMatchesModel=\(whole == reference.whole ? "yes" : "NO") \
+            shadowIsModel=\(reference.whole == modelWhole ? "yes" : "NO") surfaceLines=\(whole.count) \
+            modelLines=\(reference.whole.count) modesMatchModel=\(answers.hasPrefix(expected) ? "yes" : "NO") \
+            cursorMatchesModel=\(answers.contains(cpr) ? "yes" : "NO")
+            """)
+        if whole != reference.whole { report("\(prefix) \(step) first difference: \(firstDifference(whole, reference.whole))") }
+        if viewport != reference.viewport {
+            report("\(prefix) \(step) viewport difference: \(firstDifference(viewport, reference.viewport))")
+        }
+        if !answers.hasPrefix(expected) || !answers.contains(cpr) {
+            report("\(prefix) \(step) answers=\(escaped(answers)) expectedPrefix=\(escaped(expected)) cpr=\(escaped(cpr))")
+        }
+        #expect(grid == reference.size)
+        #expect(reference.whole == modelWhole)
+        #expect(whole == reference.whole)
+        #expect(viewport == reference.viewport)
+        #expect(answers.hasPrefix(expected) && answers.contains(cpr))
     }
 
     // MARK: A viewer surface
@@ -1224,6 +1594,14 @@ private final class SurfaceRig {
         return OpenSurface(host: host, id: id, bridge: bridge)
     }
 
+    /// Puts the pane's surface in this rig's container once it exists, as
+    /// `RemoteSurfacePane` puts it in the window's pane.
+    func attach(_ pane: RemotePane) {
+        guard let container, let view = pane.surfaceView, view.superview !== container else { return }
+        SurfaceContainer.attach(view, to: container)
+        window.contentView?.layoutSubtreeIfNeeded()
+    }
+
     /// The surface's grid once it has not moved for 300 ms.
     func settledGrid(_ id: String) async throws -> TerminalSize {
         var last: TerminalSize?
@@ -1403,6 +1781,12 @@ private final class ScriptedLink: TerminalStreamLink, @unchecked Sendable {
     }
 }
 
+/// The links `probedPanes` made, in order.
+@MainActor
+private final class ProbedLinks {
+    var all: [ProbedRemoteLink] = []
+}
+
 /// When each step of a link's life happened.
 private final class LinkProbe: @unchecked Sendable {
     private let lock = NSLock()
@@ -1441,10 +1825,14 @@ private final class ProbedRemoteLink: TerminalStreamLink, @unchecked Sendable {
     private let lock = NSLock()
     private var messageHandler: (@Sendable (StreamMessage) -> Void)?
 
-    init(port: Int, token: String, session: String) {
-        link = RemoteSocketLink(
+    convenience init(port: Int, token: String, session: String) {
+        self.init(RemoteSocketLink(
             connection: RemoteConnection(id: UUID(), name: "step5", host: "127.0.0.1", port: port, token: token),
-            session: session)
+            session: session))
+    }
+
+    init(_ link: RemoteSocketLink) {
+        self.link = link
         link.onMessage = { [weak self] message in self?.deliver(message) }
     }
 
@@ -1485,11 +1873,25 @@ private final class StreamRig: @unchecked Sendable {
     private var models: [String: GhosttyVtScreenModel] = [:]
     private var snapshotCounts: [String: Int] = [:]
     private var claimLog: [TerminalSize] = []
+    private var inputLog: [UInt8] = []
+    /// A second terminal per session, written and resized as the model is, whose modes,
+    /// cursor and viewport the model does not expose.
+    private var shadows: [String: GhosttyVtTerminal] = [:]
     /// Every claim the hub applied, in order.
     var claims: [TerminalSize] { lock.withLock { claimLog } }
+    /// What the viewers sent as input (the pty's writer would get it), of every session.
+    var inputSoFar: [UInt8] { lock.withLock { inputLog } }
 
     init() {
-        hub.onIngest = { [weak self] session, bytes in self?.model(session)?.write(bytes) }
+        hub.onIngest = { [weak self] session, bytes in
+            guard let self else { return }
+            self.model(session)?.write(bytes)
+            self.lock.withLock { self.shadows[session]?.write(bytes) }
+        }
+        hub.onInput = { [weak self] _, bytes in
+            guard let self else { return }
+            self.lock.withLock { self.inputLog += bytes }
+        }
         hub.onSnapshot = { [weak self] session in
             guard let self, let model = self.model(session) else { return nil }
             let frame = model.snapshotFrame()
@@ -1500,7 +1902,10 @@ private final class StreamRig: @unchecked Sendable {
         hub.onAlternateScreen = { [weak self] session in self?.model(session)?.isAlternateScreen ?? false }
         hub.onClaim = { [weak self] session, size in
             guard let self else { return }
-            self.lock.withLock { self.claimLog.append(size) }
+            self.lock.withLock {
+                self.claimLog.append(size)
+                self.shadows[session]?.resize(to: size)
+            }
             self.model(session)?.resize(to: size)
         }
         hub.onSessionCensus = { [weak self] in
@@ -1512,10 +1917,35 @@ private final class StreamRig: @unchecked Sendable {
     func model(_ session: String) -> GhosttyVtScreenModel? { lock.withLock { models[session] } }
     func snapshots(of session: String) -> Int { lock.withLock { snapshotCounts[session, default: 0] } }
 
-    func add(_ session: String, cols: Int, rows: Int, scrollback: Int) throws {
-        let model = try GhosttyVtScreenModel(size: TerminalSize(cols: cols, rows: rows),
-                                             scrollbackLines: scrollback, graphemeClustering: true)
-        lock.withLock { models[session] = model }
+    /// - Parameter shadow: also keep a `GhosttyVtTerminal` fed the same, for `shadow(_:_:)`.
+    func add(_ session: String, cols: Int, rows: Int, scrollback: Int, shadow: Bool = false) throws {
+        let size = TerminalSize(cols: cols, rows: rows)
+        let model = try GhosttyVtScreenModel(size: size, scrollbackLines: scrollback, graphemeClustering: true)
+        let twin = shadow ? try GhosttyVtTerminal(size: size, scrollbackLines: scrollback, graphemeClustering: true) : nil
+        lock.withLock {
+            models[session] = model
+            shadows[session] = twin
+        }
+    }
+
+    /// Reads the session's shadow under the lock every write to it takes.
+    func shadow<T>(_ session: String, _ body: (GhosttyVtTerminal) -> T) -> T? {
+        lock.withLock { shadows[session].map(body) }
+    }
+
+    /// Resizes the model and its shadow, as a claim of a viewer not in this measurement
+    /// would.
+    func resize(_ session: String, to size: TerminalSize) {
+        model(session)?.resize(to: size)
+        lock.withLock { shadows[session]?.resize(to: size) }
+    }
+
+    func takeInput() -> [UInt8] {
+        lock.withLock {
+            let taken = inputLog
+            inputLog = []
+            return taken
+        }
     }
 
     /// Lines straight into the model, before any viewer: coloured log lines, or with
@@ -1525,7 +1955,9 @@ private final class StreamRig: @unchecked Sendable {
         var from = 0
         while from < lines {
             let count = min(2_000, lines - from)
-            model.write(dense ? Self.denseLines(from: from, count: count) : Self.logLines(from: from, count: count))
+            let bytes = dense ? Self.denseLines(from: from, count: count) : Self.logLines(from: from, count: count)
+            model.write(bytes)
+            lock.withLock { shadows[session]?.write(bytes) }
             from += count
         }
     }
@@ -1536,7 +1968,10 @@ private final class StreamRig: @unchecked Sendable {
     /// The session ends: its viewers are sent `ended`, and it leaves the census.
     func end(_ session: String) {
         hub.endViewers(ofSession: session)
-        lock.withLock { models[session] = nil }
+        lock.withLock {
+            models[session] = nil
+            shadows[session] = nil
+        }
     }
 
     static func logLines(from: Int, count: Int) -> [UInt8] {
@@ -1571,18 +2006,23 @@ private final class StreamRig: @unchecked Sendable {
 @MainActor
 private final class ServerRig {
     let rig: StreamRig
-    let server: RemoteServer
+    private(set) var server: RemoteServer
     let port: Int
     let token: String
+    private let accessToken: RemoteAccessToken
     private let suite: String
+    private let defaults: UserDefaults
     private let store: ProjectStore
 
-    private init(server: RemoteServer, store: ProjectStore, port: Int, token: String, suite: String, rig: StreamRig) {
+    private init(server: RemoteServer, store: ProjectStore, port: Int, accessToken: RemoteAccessToken,
+                 suite: String, defaults: UserDefaults, rig: StreamRig) {
         self.server = server
         self.store = store
         self.port = port
-        self.token = token
+        self.accessToken = accessToken
+        token = accessToken.value
         self.suite = suite
+        self.defaults = defaults
         self.rig = rig
     }
 
@@ -1594,12 +2034,36 @@ private final class ServerRig {
         let rig = StreamRig()
         let server = RemoteServer(store: store, streamer: rig.hub, token: token, host: "127.0.0.1", port: 0)
         await server.start()
+        let port = try #require(await Self.boundPort(server))
+        return ServerRig(server: server, store: store, port: port, accessToken: token, suite: suite,
+                         defaults: defaults, rig: rig)
+    }
+
+    private static func boundPort(_ server: RemoteServer) async -> Int? {
         let deadline = Date().addingTimeInterval(10)
         while server.boundPort == nil && Date() < deadline {
-            try await Task.sleep(nanoseconds: 10_000_000)
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        let port = try #require(server.boundPort)
-        return ServerRig(server: server, store: store, port: port, token: token.value, suite: suite, rig: rig)
+        return server.boundPort
+    }
+
+    /// The server goes away (every viewer's socket closes) and the hub and its models
+    /// stay, as when the other Mac's network drops or Wietty restarts its server there.
+    func drop() { server.stop() }
+
+    /// A new server on the same port, the same hub and the same token.
+    func restart() async throws {
+        server = RemoteServer(store: store, streamer: rig.hub, token: accessToken, host: "127.0.0.1", port: port)
+        await server.start()
+        _ = try #require(await Self.boundPort(server))
+    }
+
+    /// A store holding one connection to this server, with its secret in memory.
+    func connections() -> (store: RemoteConnectionsStore, connection: RemoteConnection) {
+        let connections = RemoteConnectionsStore(defaults: defaults, secretStore: PaneSecrets())
+        let connection = RemoteConnection(id: UUID(), name: "Loopback", host: "127.0.0.1", port: port, token: token)
+        connections.add(connection)
+        return (connections, connection)
     }
 
     func stop() {

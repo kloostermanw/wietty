@@ -4,11 +4,13 @@
 #
 # Measures what showing a terminal of another Mac in a libghostty surface costs
 # and does (phase 3 step 5 of issue #84): a snapshot fed through the bridge and
-# the helper to a surface its child left dirty (R1), backpressure through the
-# package's WebSocket client against a real RemoteServer on 127.0.0.1 (R2), the
-# cost of a show and of 100 shows and hides (R3), large snapshots through the
-# helper's pump (R4), the ends that stop the helper (R7) and fast hides and shows
-# (R8). Every line of a result starts with STEP5.
+# the helper to a surface its child left dirty, also on the alternate screen and
+# at a grid other than the surface's (R1), backpressure through the package's
+# WebSocket client against a real RemoteServer on 127.0.0.1 (R2), the cost of a
+# show through RemotePane and of 100 shows and hides (R3), large snapshots through
+# the helper's pump (R4), the ends that stop the helper (R7), fast hides and shows
+# (R8), a reconnect on a kept dirty surface through RemotePane (RECONNECT) and the
+# SwiftUI pane (PANE). Every line of a result starts with STEP5.
 #
 # The normal suite cannot do this. It needs a window, a Metal device and minutes,
 # so the test this runs (RemoteSurfaceMeasurementTests) is skipped unless
