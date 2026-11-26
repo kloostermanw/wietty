@@ -27,8 +27,9 @@ import WiettyCore
 ///   the longest gap of a main queue heartbeat meanwhile.
 /// - R7: what the surface shows and does when the bridge stops after the session ended,
 ///   and when it is kept with no link.
-/// - R8: 50 destroy and create cycles in one main turn, with an id per creation and
-///   with one id reused: which late callbacks of an old surface reach the host.
+/// - R8: 50 destroy and create cycles, with an id per creation, the create in the
+///   destroy's main turn, on the next turn, or once the old helper has exited: which
+///   late titles and backgrounds (`OSC 11`) of an old surface reach its successor.
 ///
 /// **Not part of the normal suite.** It needs a window, a Metal device and minutes. It
 /// runs only with `WIETTY_REMOTE_SURFACE_CHECK=1` in the test host's environment; see
@@ -547,51 +548,124 @@ struct RemoteSurfaceMeasurementTests {
 
     // MARK: R8. Fast hide and show
 
+    /// When the next surface is created after its predecessor was destroyed.
+    enum R8Timing: String, CaseIterable {
+        /// Destroy and create in one main turn.
+        case sameTurn = "same-turn"
+        /// The create on the main queue turn after the destroy's: everything queued on
+        /// the main queue before it (wakeups, action hops) runs first.
+        case nextTurn = "one-turn-between"
+        /// The create once the old helper process has exited, which closes its end of
+        /// the bridge's socket.
+        case helperExited = "after-helper-exit"
+    }
+
     @Test func r8FastHideAndShow() async throws {
         let rig = try await SurfaceRig.make(width: 1000, height: 700, container: true)
         defer { rig.close() }
-        for run in 1...Self.runs {
-            for reuse in [false, true] {
-                try await r8(rig, run: run, reuseId: reuse)
+        for timing in R8Timing.allCases {
+            for run in 1...Self.runs {
+                try await r8(rig, run: run, timing: timing)
             }
         }
     }
 
-    private func r8(_ rig: SurfaceRig, run: Int, reuseId: Bool) async throws {
-        let prefix = "STEP5 R8 run=\(run) ids=\(reuseId ? "one-reused" : "one-per-creation")"
+    /// The marker in the green byte of every background this measurement sets, so a
+    /// background it did not set reads as foreign.
+    private nonisolated static let r8BackgroundMarker = 0x5A
+
+    /// The generation a program background of this measurement encodes, nil for none,
+    /// -1 for a colour it did not set.
+    static func r8Generation(of color: NSColor?) -> Int? {
+        guard let color else { return nil }
+        guard let srgb = color.usingColorSpace(.sRGB) else { return -1 }
+        let red = Int((srgb.redComponent * 255).rounded())
+        let green = Int((srgb.greenComponent * 255).rounded())
+        return green == r8BackgroundMarker ? red : -1
+    }
+
+    private func r8(_ rig: SurfaceRig, run: Int, timing: R8Timing) async throws {
+        let prefix = "STEP5 R8 timing=\(timing.rawValue) run=\(run)"
         let before = Census.take()
         rig.events.reset()
-        func idFor(_ generation: Int) -> String { reuseId ? "r8-\(run)-same" : "r8-\(run)-\(generation)" }
-        func open(_ generation: Int) throws -> OpenSurface {
-            let link = ScriptedLink()
-            // As a remote program would: a title every 2 ms and a bell every 20 ms,
-            // each naming the generation that sent it.
-            link.generate(everyMilliseconds: 2) { tick in
-                let bell = tick % 10 == 0 ? "\u{07}" : ""
-                return .data(Array("\u{1B}]2;g\(generation)-\(tick)\u{07}\(bell)line \(tick)\r\n".utf8))
-            }
-            return try rig.open(id: idFor(generation), link: link, imposeOnResize: false)
-        }
-        var current = try open(0)
-        var destroyed: [(id: String, generation: Int, at: UInt64)] = []
-        var generationSince: [UInt64] = [now()]
+        func idFor(_ generation: Int) -> String { "r8-\(timing.rawValue)-\(run)-\(generation)" }
+        let cycles = 50
+        var generationSince: [UInt64] = []
+        var handles: [UInt] = []
         func handle(_ id: String) -> UInt {
             (rig.host.view(id: id) as? GhosttySurfaceView)?.surfaceHandle.map { UInt(bitPattern: $0) } ?? 0
         }
-        var handles: [UInt] = [handle(idFor(0))]
-        let cycles = 50
+        func open(_ generation: Int) throws -> OpenSurface {
+            let link = ScriptedLink()
+            // As a remote program would: a background (`OSC 11`) and a title every 2 ms
+            // and a bell every 20 ms, each naming the generation that sent it. The
+            // background's red byte is the generation, its green byte the marker.
+            let background = String(format: "rgb:%02x/%02x/%02x", generation, Self.r8BackgroundMarker, run)
+            link.generate(everyMilliseconds: 2) { tick in
+                let bell = tick % 10 == 0 ? "\u{07}" : ""
+                return .data(Array("\u{1B}]11;\(background)\u{07}\u{1B}]2;g\(generation)-\(tick)\u{07}\(bell)line \(tick)\r\n".utf8))
+            }
+            let surface = try rig.open(id: idFor(generation), link: link, imposeOnResize: false)
+            generationSince.append(now())
+            handles.append(handle(idFor(generation)))
+            return surface
+        }
+
+        // Which generation's background the host holds for the surface shown now,
+        // sampled on every title the host reports and on a 1 ms main queue timer.
+        let backgrounds = R8BackgroundSamples(host: rig.host, idFor: idFor)
+        rig.events.onTitleSample = { [weak backgrounds] in backgrounds?.sample() }
+        let sampler = DispatchSource.makeTimerSource(queue: .main)
+        sampler.schedule(deadline: .now(), repeating: .milliseconds(1))
+        sampler.setEventHandler { [weak backgrounds] in MainActor.assumeIsolated { backgrounds?.sample() } }
+        sampler.resume()
+        defer {
+            sampler.cancel()
+            rig.events.onTitleSample = nil
+        }
+
+        var current = try open(0)
+        backgrounds.shown(generation: 0, at: generationSince[0])
+        var destroyed: [(id: String, generation: Int, at: UInt64)] = []
+        // The background each surface held when it was destroyed: its own, an older
+        // generation's, none, or a colour this measurement did not set.
+        var heldAtDestroy = (own: 0, older: 0, none: 0, foreign: 0)
+        var exitWaits: [UInt64] = []
+        var exitsNotSeen = 0
+        var helpersAliveBeforeClose = 0
         for generation in 1...cycles {
-            // Live: a grid reported and a title of this generation seen.
+            // Live: a title of this generation seen.
             let liveId = idFor(generation - 1)
             _ = await waitUntil(2) {
                 rig.events.titles.contains { $0.id == liveId && $0.title.hasPrefix("g\(generation - 1)-") }
             }
-            // One main turn: hide (bridge first, as the host does), then show.
+            let view = rig.host.view(id: liveId) as? GhosttySurfaceView
+            switch Self.r8Generation(of: view?.programBackground) {
+            case nil: heldAtDestroy.none += 1
+            case -1: heldAtDestroy.foreign += 1
+            case generation - 1: heldAtDestroy.own += 1
+            default: heldAtDestroy.older += 1
+            }
+            let helper = current.bridge.helperDescriptor.flatMap(peerPid(of:))
+            if let helper, !processGone(helper) { helpersAliveBeforeClose += 1 }
+            // Hide (bridge first, as the host does), then show, at the time measured.
             current.close()
             destroyed.append((liveId, generation - 1, now()))
-            current = try open(generation)
-            generationSince.append(now())
-            handles.append(handle(idFor(generation)))
+            switch timing {
+            case .sameTurn:
+                current = try open(generation)
+            case .nextTurn:
+                current = try await onNextMainTurn { try open(generation) }
+            case .helperExited:
+                let start = now()
+                if let helper, await waitForExit(of: helper, seconds: 5) {
+                    exitWaits.append(now() - start)
+                } else {
+                    exitsNotSeen += 1
+                }
+                current = try open(generation)
+            }
+            backgrounds.shown(generation: generation, at: generationSince[generation])
         }
         _ = await waitUntil(2) {
             rig.events.titles.contains { $0.id == idFor(cycles) && $0.title.hasPrefix("g\(cycles)-") }
@@ -601,57 +675,154 @@ struct RemoteSurfaceMeasurementTests {
         destroyed.append((idFor(cycles), cycles, now()))
         try await Task.sleep(for: .seconds(2))
 
-        // Late: an event naming a destroyed id after its destruction, for an id that no
-        // surface had again. Cross talk: an event of an older generation delivered while
-        // a newer surface had the id.
-        var late = 0, crossTitles = 0, crossCloses = 0
+        // Late: an event naming a destroyed id after its destruction. Cross talk: a
+        // title of one generation reported under the id of another.
+        var late = 0, crossTitles = 0
         let events = rig.events
-        for entry in destroyed where !reuseId {
+        for entry in destroyed {
             late += events.all.filter { $0.id == entry.id && $0.at > entry.at }.count
         }
-        func generationAt(_ time: UInt64) -> Int { generationSince.lastIndex { $0 <= time } ?? 0 }
         var foreign: [String] = []
         var crossSamples: [String] = []
         var crossOnReusedAddress = 0
+        var cyclesWithCrossedTitle = Set<String>()
         for title in events.titles {
             guard title.title.hasPrefix("g"), let sent = Int(title.title.dropFirst().prefix { $0 != "-" }) else {
                 foreign.append("\(title.id)=\(title.title.debugDescription)")
                 continue
             }
-            if reuseId, sent < generationAt(title.at) { crossTitles += 1 }
-            if !reuseId, title.id != idFor(sent) {
-                crossTitles += 1
-                let receiver = destroyed.firstIndex { $0.id == title.id } ?? cycles
-                let reused = receiver > 0 && sent < handles.count && handles[sent] == handles[receiver]
-                if reused { crossOnReusedAddress += 1 }
-                if crossSamples.count < 6 {
-                    let age = (Int64(title.at) - Int64(generationSince[receiver])) / 1_000_000
-                    crossSamples.append("\(title.id)<-\(title.title)(msAfterCreation=\(age),sameHandleAsSender=\(reused))")
-                }
-            }
-            if reuseId, sent < generationAt(title.at), crossSamples.count < 6 {
-                crossSamples.append("\(title.id)<-\(title.title)(gen now \(generationAt(title.at)))")
+            guard title.id != idFor(sent) else { continue }
+            crossTitles += 1
+            cyclesWithCrossedTitle.insert(title.id)
+            let receiver = destroyed.firstIndex { $0.id == title.id } ?? cycles
+            let reused = receiver > 0 && sent < handles.count && handles[sent] == handles[receiver]
+            if reused { crossOnReusedAddress += 1 }
+            if crossSamples.count < 6 {
+                let age = (Int64(title.at) - Int64(generationSince[receiver])) / 1_000_000
+                crossSamples.append("\(title.id)<-\(title.title)(msAfterCreation=\(age),sameHandleAsSender=\(reused))")
             }
         }
         let reusedHandles = (1..<handles.count).filter { handles[$0] == handles[$0 - 1] }.count
         report("""
-            \(prefix) crossSamples=\(crossSamples.joined(separator: ",")) \
+            \(prefix) crossTitleSamples=\(crossSamples.joined(separator: ",")) \
+            crossBackgroundSamples=\(backgrounds.crossedExamples.joined(separator: ",")) \
             creationsOnThePreviousSurfacesAddress=\(reusedHandles)/\(handles.count - 1) \
             crossTitlesOnAReusedAddress=\(crossOnReusedAddress)
             """)
         report("\(prefix) titlesNotFromTheStream=\(foreign.count) samples=\(foreign.prefix(4).joined(separator: ","))")
-        if reuseId {
-            // Every close request while a surface had the id is an old helper's.
-            crossCloses = events.all.filter { $0.kind == "close" && generationAt($0.at) <= cycles
-                && $0.at < (destroyed.last?.at ?? 0) }.count
+        if timing == .helperExited {
+            report("""
+                \(prefix) helpersAliveBeforeClose=\(helpersAliveBeforeClose)/\(cycles) \
+                helperExitWait[\(summary(exitWaits))] exitsNotSeen=\(exitsNotSeen)
+                """)
         }
         let kinds = Dictionary(grouping: events.all, by: \.kind).mapValues(\.count)
             .sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
         report("""
             \(prefix) cycles=\(cycles) events[\(kinds)] lateForDestroyedIds=\(late) \
-            crossTitles=\(crossTitles) crossCloseRequests=\(crossCloses) \
+            crossTitles=\(crossTitles) cyclesWithCrossTitle=\(cyclesWithCrossedTitle.count) \
+            backgroundSamples=\(backgrounds.samples) crossBackgroundSamples=\(backgrounds.crossed) \
+            cyclesWithCrossBackground=\(backgrounds.cyclesCrossed.count) foreignBackgrounds=\(backgrounds.foreign) \
+            heldAtDestroy[own=\(heldAtDestroy.own),older=\(heldAtDestroy.older),none=\(heldAtDestroy.none),foreign=\(heldAtDestroy.foreign)] \
             after2s[\(Census.take().describe(against: before))]
             """)
+    }
+}
+
+/// R8's record of which generation's background the host holds for the surface shown.
+@MainActor
+private final class R8BackgroundSamples {
+    private let host: GhosttySurfaceHost
+    private let idFor: (Int) -> String
+    private var generation = 0
+    private var since: UInt64 = 0
+    private(set) var samples = 0
+    private(set) var crossed = 0
+    private(set) var foreign = 0
+    private(set) var cyclesCrossed = Set<Int>()
+    private(set) var crossedExamples: [String] = []
+
+    init(host: GhosttySurfaceHost, idFor: @escaping (Int) -> String) {
+        self.host = host
+        self.idFor = idFor
+    }
+
+    /// The surface of `generation`, created at `at`, is the one shown from now on.
+    func shown(generation: Int, at: UInt64) {
+        self.generation = generation
+        since = at
+    }
+
+    func sample() {
+        let view = host.view(id: idFor(generation)) as? GhosttySurfaceView
+        guard let view, let held = RemoteSurfaceMeasurementTests.r8Generation(of: view.programBackground) else { return }
+        samples += 1
+        if held == -1 { foreign += 1; return }
+        guard held != generation else { return }
+        crossed += 1
+        cyclesCrossed.insert(generation)
+        if crossedExamples.count < 6 {
+            let age = (Int64(now()) - Int64(since)) / 1_000_000
+            crossedExamples.append("g\(generation)<-bg\(held)(msAfterCreation=\(age))")
+        }
+    }
+}
+
+/// Runs `body` on the main queue turn after this one, and returns what it returned.
+@MainActor
+private func onNextMainTurn(_ body: @escaping @MainActor () throws -> OpenSurface) async throws -> OpenSurface {
+    final class Box: @unchecked Sendable { var result: Result<OpenSurface, Error>? }
+    let box = Box()
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { box.result = Result { try body() } }
+            continuation.resume()
+        }
+    }
+    return try box.result!.get()
+}
+
+/// The process at the other end of a Unix domain socket.
+private func peerPid(of descriptor: Int32) -> pid_t? {
+    var pid: pid_t = 0
+    var length = socklen_t(MemoryLayout<pid_t>.size)
+    guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &pid, &length) == 0, pid > 0 else { return nil }
+    return pid
+}
+
+/// Whether `pid` has exited (a zombie counts) within `seconds`. Watched by the kernel's
+/// exit event, and checked once after the watch is in place, for an exit before it.
+/// Whether `pid` is no longer running: gone, or a zombie.
+private func processGone(_ pid: pid_t) -> Bool {
+    var info = proc_bsdinfo()
+    let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return true }
+    return info.pbi_status == UInt32(SZOMB)
+}
+
+@MainActor
+private func waitForExit(of pid: pid_t, seconds: Double) async -> Bool {
+    let gone: @Sendable () -> Bool = { processGone(pid) }
+    final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Bool, Never>?
+        init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+        func finish(_ value: Bool) {
+            let taken: CheckedContinuation<Bool, Never>? = lock.withLock {
+                defer { continuation = nil }
+                return continuation
+            }
+            taken?.resume(returning: value)
+        }
+    }
+    let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
+    defer { source.cancel() }
+    return await withCheckedContinuation { continuation in
+        let once = Once(continuation)
+        source.setEventHandler { once.finish(true) }
+        source.resume()
+        if gone() { once.finish(true) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { once.finish(gone()) }
     }
 }
 
@@ -804,11 +975,14 @@ private final class HostEvents {
     private(set) var all: [Event] = []
     private(set) var titles: [(at: UInt64, id: String, title: String)] = []
     private(set) var firstGrid: [String: UInt64] = [:]
+    /// Called after every title is recorded, for a measurement that samples state then.
+    var onTitleSample: (() -> Void)?
 
     func attach(to host: GhosttySurfaceHost) {
         host.onTitle = { [weak self] id, title in
             self?.record("title", id)
             self?.titles.append((now(), id, title))
+            self?.onTitleSample?()
         }
         host.onBell = { [weak self] id in self?.record("bell", id) }
         host.onDesktopNotification = { [weak self] id, _, _ in self?.record("notification", id) }
