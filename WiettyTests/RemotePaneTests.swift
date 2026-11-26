@@ -121,8 +121,10 @@ private final class FakeLink: TerminalStreamLink, @unchecked Sendable {
     func end(_ reason: TerminalEndReason) { onEnded?(reason) }
 }
 
-/// A bridge that starts every link it is given at once, as the real one does once its
-/// helper is there, and records what the owner asks of it. It models the real bridge's
+/// A bridge that records what the owner asks of it. As the real one, it starts a link
+/// only once its helper is there: the link it holds when the helper connects, and every
+/// later one as it is given. Made with `helperConnected` (the default) the helper is
+/// there from the start, so every link starts at once. It models the real bridge's
 /// held claims: with `holdsClaimsUntilReset`, the end of the link that is the bridge's
 /// holds every claim until `resetClaims()`, and a held claim is accepted but never sent.
 /// The end of a link the bridge no longer has holds nothing.
@@ -130,6 +132,8 @@ private final class FakeBridge: ViewerBridging, @unchecked Sendable {
     let helperSocketPath: String
     private let lock = NSLock()
     private var linkList: [any TerminalStreamLink] = []
+    private var helperThere: Bool
+    private var started: Set<ObjectIdentifier> = []
     private var stopCount = 0
     private var claimList: [[Int]] = []
     private var heldList: [[Int]] = []
@@ -139,8 +143,9 @@ private final class FakeBridge: ViewerBridging, @unchecked Sendable {
     private var gone: (@Sendable () -> Void)?
     private var beforeReconnectHook: (() -> Void)?
 
-    init(path: String, link: any TerminalStreamLink) {
+    init(path: String, link: any TerminalStreamLink, helperConnected: Bool = true) {
         helperSocketPath = path
+        helperThere = helperConnected
         attach(link)
     }
 
@@ -203,8 +208,26 @@ private final class FakeBridge: ViewerBridging, @unchecked Sendable {
     /// The helper went away by itself.
     func helperWentAway() { onHelperGone?() }
 
+    /// The helper connects: the link the bridge holds now starts.
+    func helperConnects() {
+        lock.withLock { helperThere = true }
+        startIfReady()
+    }
+
     private func attach(_ link: any TerminalStreamLink) {
         lock.withLock { linkList.append(link) }
+        startIfReady()
+    }
+
+    /// Starts the current link if the helper is there and it has not been started.
+    private func startIfReady() {
+        let current = lock.withLock { () -> (any TerminalStreamLink)? in
+            guard helperThere, stopCount == 0, let link = linkList.last,
+                  !started.contains(ObjectIdentifier(link)) else { return nil }
+            started.insert(ObjectIdentifier(link))
+            return link
+        }
+        guard let link = current else { return }
         // As the real bridge: its own handlers, then the start.
         link.onMessage = { _ in }
         link.onEnded = { [weak self, weak link] _ in
@@ -263,6 +286,8 @@ private final class Made {
     var links: [FakeLink] = []
     var bridges: [FakeBridge] = []
     var failBridge = false
+    /// Whether the helper of each bridge made is there from the start.
+    var helperConnectsAtOnce = true
 }
 
 /// Everything a pane is given, by hand, and what it made.
@@ -305,7 +330,8 @@ private final class Rig {
             },
             makeBridge: { link in
                 if made.failBridge { throw SurfaceHostError.surfaceFailed }
-                let bridge = FakeBridge(path: "/tmp/wty-\(made.bridges.count).sock", link: link)
+                let bridge = FakeBridge(path: "/tmp/wty-\(made.bridges.count).sock", link: link,
+                                        helperConnected: made.helperConnectsAtOnce)
                 made.bridges.append(bridge)
                 return bridge
             },
@@ -687,6 +713,55 @@ private final class Rig {
         #expect(rig.links.count == 2)
         rig.snapshot()
         #expect(pane.state == .live)
+    }
+
+    /// The first link's timeout fires before the helper has connected to the bridge, so
+    /// the bridge has started no link: the attempt still counts as lost, the unstarted
+    /// link is retired, and the next one starts when the helper connects.
+    @Test func aTimeoutBeforeTheHelperConnectedCountsAsLostAndTheNextLinkStartsWhenItDoes() {
+        let rig = Rig()
+        rig.made.helperConnectsAtOnce = false
+        let pane = rig.shown()
+        let first = rig.link
+        #expect(first.starts == 0)
+        #expect(rig.timers.watchdogs.map(\.due) == [rig.timers.now + 15])
+        rig.timers.fireNext()
+        #expect(pane.state == .reconnecting)
+        #expect(first.starts == 0)
+        #expect(first.stops == 1)
+        #expect(rig.bridge.links.count == 3)
+        #expect(rig.bridge.links[1] is InertLink)
+        #expect(rig.links.count == 2)
+        let second = rig.link
+        #expect(second.starts == 0)
+        #expect(rig.timers.watchdogs.count == 1)
+        #expect(rig.host.created.count == 1)
+
+        rig.bridge.helperConnects()
+        #expect(first.starts == 0)
+        #expect(second.starts == 1)
+        rig.snapshot()
+        #expect(pane.state == .live)
+        #expect(rig.timers.watchdogs.isEmpty)
+    }
+
+    /// A helper that never connects: every attempt times out unstarted, until the 2
+    /// minutes are over and the pane waits for the button. Shown as a lost connection,
+    /// though the fault is on this Mac.
+    @Test func aHelperThatNeverConnectsEndsInWaiting() {
+        let rig = Rig()
+        rig.made.helperConnectsAtOnce = false
+        let pane = rig.shown()
+        let start = rig.timers.now
+        for _ in 0..<100 where !rig.timers.live.isEmpty { rig.timers.fireNext() }
+        #expect(pane.state == .waiting)
+        #expect(rig.timers.live.isEmpty)
+        #expect(rig.links.count > 2)
+        #expect(rig.links.allSatisfy { $0.starts == 0 })
+        // The 2 minutes run from the first timeout, and the last attempt's own timeout
+        // ends them.
+        #expect(rig.timers.now - start <= RemoteReconnectPolicy.automaticPhase + 2 * RemotePane.attemptTimeout)
+        #expect(rig.host.created.count == 1)
     }
 
     @Test func aSnapshotCancelsTheTimeout() {

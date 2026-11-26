@@ -862,8 +862,9 @@ struct RemoteSurfaceMeasurementTests {
 
     /// When the next surface is created after its predecessor was destroyed.
     enum R8Timing: String, CaseIterable {
-        /// Destroy and create in one main turn, with the host's drain on destroy
-        /// turned off (`drainsOnDestroy`): what the host did before it drained.
+        /// Destroy and create in one main turn, on a host made with its drain on
+        /// destroy turned off (`drainsOnDestroy: false`): what the host did before it
+        /// drained.
         case sameTurnNoDrain = "same-turn-no-drain"
         /// Destroy and create in one main turn, as the host does it: it drains
         /// libghostty's mailbox right after the free.
@@ -887,15 +888,18 @@ struct RemoteSurfaceMeasurementTests {
     @Test func r8FastHideAndShow() async throws {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("eu.kloosterman.wietty.step5.r8.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
-        let rig = try await SurfaceRig.make(width: 1000, height: 700, container: true, pasteboard: pasteboard)
-        defer {
-            rig.host.drainsOnDestroy = true
-            rig.close()
-        }
-        for mix in R8Mix.allCases {
-            for timing in R8Timing.allCases {
-                for run in 1...Self.runs {
-                    try await r8(rig, pasteboard: pasteboard, run: run, timing: timing, mix: mix)
+        // The host's drain is fixed when it is made, so the runs without it have a host
+        // of their own, made and dropped before the host of the other runs.
+        for drains in [false, true] {
+            let rig = try await SurfaceRig.make(width: 1000, height: 700, container: true, pasteboard: pasteboard,
+                                                drainsOnDestroy: drains)
+            defer { rig.close() }
+            #expect(rig.host.drainsOnDestroy == drains)
+            for mix in R8Mix.allCases {
+                for timing in R8Timing.allCases where (timing == .sameTurnNoDrain) == !drains {
+                    for run in 1...Self.runs {
+                        try await r8(rig, pasteboard: pasteboard, run: run, timing: timing, mix: mix)
+                    }
                 }
             }
         }
@@ -920,8 +924,6 @@ struct RemoteSurfaceMeasurementTests {
         let prefix = "STEP5 R8 mix=\(mix.rawValue) timing=\(timing.rawValue) run=\(run)"
         let before = Census.take()
         rig.events.reset()
-        rig.host.drainsOnDestroy = timing != .sameTurnNoDrain
-        defer { rig.host.drainsOnDestroy = true }
         pasteboard.clearContents()
         pasteboard.setString("on this Mac", forType: .string)
         let changeCount = pasteboard.changeCount
@@ -1151,11 +1153,12 @@ private final class SurfaceRig {
     }
 
     /// - Parameter pasteboard: the host's; a private one for a test of the clipboard.
+    /// - Parameter drainsOnDestroy: the host's; off only for R8's runs without it.
     static func make(width: CGFloat, height: CGFloat, container wantsContainer: Bool,
-                     pasteboard: NSPasteboard = .general) async throws -> SurfaceRig {
+                     pasteboard: NSPasteboard = .general, drainsOnDestroy: Bool = true) async throws -> SurfaceRig {
         let directory = TestScratch.root.appendingPathComponent("wietty-step5-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let host = try GhosttySurfaceHost(pasteboard: pasteboard)
+        let host = try GhosttySurfaceHost(pasteboard: pasteboard, drainsOnDestroy: drainsOnDestroy)
         let events = HostEvents()
         events.attach(to: host)
         let window = NSWindow(contentRect: NSRect(x: 60, y: 60, width: width, height: height),
