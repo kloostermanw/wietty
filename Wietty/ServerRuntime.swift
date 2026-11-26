@@ -29,7 +29,8 @@ final class ServerRuntime {
     /// server ever reports into `store.mcpStatus`.
     func start(store: ProjectStore, terminals: TerminalStack) async {
         if quitTeardown == nil, terminals.ghostty.ghosttyService != nil {
-            quitTeardown = TerminalQuitTeardown(stack: terminals.ghostty)
+            quitTeardown = TerminalQuitTeardown(stack: terminals.ghostty,
+                                                remotePanes: terminals.remotePanes)
         }
         if mcpHost == nil {
             let host = MCPServerHost(router: MCPToolRouter(store: store, port: store.mcpPort),

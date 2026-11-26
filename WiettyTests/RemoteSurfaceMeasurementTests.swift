@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import SwiftUI
 import Testing
 import WiettyCore
 @testable import WiettyShared
@@ -32,6 +33,10 @@ import WiettyCore
 ///   turn, own surfaces after own ones and after viewers: which late titles,
 ///   backgrounds (`OSC 11`) and clipboard writes (`OSC 52`) of an old surface reach
 ///   its successor.
+/// - PANE: `RemoteSurfacePane` in a window over `RemotePanes` as the app builds them: a
+///   show, a hide and a second show, the server stopped and back on the same port, the
+///   session ended on the server and the last hide, with the state and where the
+///   surface's container sits at each step.
 ///
 /// **Not part of the normal suite.** It needs a window, a Metal device and minutes. It
 /// runs only with `WIETTY_REMOTE_SURFACE_CHECK=1` in the test host's environment; see
@@ -690,6 +695,105 @@ struct RemoteSurfaceMeasurementTests {
         view.keyDown(with: key)
         await nextMainTurn()
         return rig.events.closes(surface.id)
+    }
+
+    // MARK: The SwiftUI pane
+
+    /// `RemoteSurfacePane` in a window, over `RemotePanes` built as the app builds them
+    /// (`RemotePane.Dependencies.app`) on this rig's host and a real `RemoteServer` on
+    /// 127.0.0.1: a show, a hide and a second show of the same session, the server
+    /// going away and coming back on the same port, the session ending on the server,
+    /// and the last hide. Prints `STEP5 PANE` lines with the state and the pane's
+    /// layout (whether the bar takes the top of the pane) at each step.
+    @Test func theSwiftUIPaneShowsReconnectsAndEnds() async throws {
+        let suite = "test.step5.pane.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let token = RemoteAccessToken(defaults: defaults)
+        let projects = ProjectStore(defaults: defaults, service: FakeTerminalService())
+        let streams = StreamRig()
+        defer { streams.hub.stop() }
+        try streams.add("pane", cols: 100, rows: 30, scrollback: 1_000)
+        streams.write("pane", Array("STEP5-PANE-MARKER\r\n".utf8))
+        var server = RemoteServer(store: projects, streamer: streams.hub, token: token, host: "127.0.0.1", port: 0)
+        await server.start()
+        #expect(await waitUntil(10) { server.boundPort != nil })
+        let port = try #require(server.boundPort)
+        defer { server.stop() }
+
+        let rig = try await SurfaceRig.make(width: 1000, height: 700, container: false)
+        defer { rig.close() }
+        let connections = RemoteConnectionsStore(defaults: defaults, secretStore: PaneSecrets())
+        let connection = RemoteConnection(id: UUID(), name: "Loopback", host: "127.0.0.1", port: port,
+                                          token: token.value)
+        connections.add(connection)
+        let panes = RemotePanes(host: rig.host, helperPath: rig.helper, connections: connections)
+        defer { panes.closeAll() }
+        let ref = RemoteSessionRef(connectionId: connection.id, sessionId: "pane")
+        let shown = PaneShown()
+        let hosting = NSHostingView(rootView: PaneProbe(shown: shown, panes: panes, session: ref))
+        rig.window.contentView = hosting
+
+        func layout() -> String {
+            guard let pane = panes.pane(for: ref), let view = pane.surfaceView,
+                  let container = view.superview as? SurfaceContainerView else { return "no-surface" }
+            hosting.layoutSubtreeIfNeeded()
+            let frame = container.convert(container.bounds, to: hosting)
+            let top = hosting.isFlipped ? frame.minY : hosting.bounds.height - frame.maxY
+            return "containerTop=\(Int(top)) containerHeight=\(Int(container.bounds.height)) paneHeight=\(Int(hosting.bounds.height))"
+        }
+        func visible(_ marker: String) -> Bool {
+            guard let id = panes.pane(for: ref)?.surfaceId else { return false }
+            return (rig.host.readText(id: id, maxLines: 30) ?? []).contains { $0.contains(marker) }
+        }
+        func step(_ name: String, _ ok: Bool) {
+            let pane = panes.pane(for: ref)
+            let state = pane.map { "\($0.state)" } ?? "closed"
+            report("STEP5 PANE \(name) ok=\(ok ? "yes" : "NO") state=\(state) "
+                + "surface=\(pane?.surfaceId ?? "none") panes=\(panes.count) \(layout())")
+            #expect(ok, "\(name)")
+        }
+
+        // Show.
+        let first = await waitUntil(20) { panes.pane(for: ref)?.state == .live && visible("STEP5-PANE-MARKER") }
+        step("show", first)
+        let firstId = try #require(panes.pane(for: ref)?.surfaceId)
+
+        // Hide: the pane closes and its surface goes.
+        shown.on = false
+        let hidden = await waitUntil(5) { panes.count == 0 && rig.host.view(id: firstId) == nil }
+        step("hide", hidden)
+
+        // Show the same session again: a new pane, a new surface, a new attach.
+        shown.on = true
+        let again = await waitUntil(20) {
+            panes.pane(for: ref)?.state == .live && visible("STEP5-PANE-MARKER")
+                && panes.pane(for: ref)?.surfaceId != firstId
+        }
+        step("show-again", again)
+
+        // The server goes away: the link is lost, the bar comes.
+        server.stop()
+        let lost = await waitUntil(10) { panes.pane(for: ref)?.state == .reconnecting }
+        step("server-stopped", lost)
+
+        // It comes back on the same port: the pane reconnects by itself, the bar goes.
+        server = RemoteServer(store: projects, streamer: streams.hub, token: token, host: "127.0.0.1", port: port)
+        await server.start()
+        streams.write("pane", Array("STEP5-PANE-BACK\r\n".utf8))
+        let back = await waitUntil(30) { panes.pane(for: ref)?.state == .live && visible("STEP5-PANE-BACK") }
+        step("server-back", back)
+
+        // The session ends on the server: the bar says so and the surface stays.
+        streams.end("pane")
+        let ended = await waitUntil(10) { panes.pane(for: ref)?.state == .ended }
+        step("session-ended", ended && panes.pane(for: ref)?.surfaceView != nil)
+
+        // The last hide.
+        let lastId = panes.pane(for: ref)?.surfaceId
+        shown.on = false
+        let gone = await waitUntil(5) { panes.count == 0 && lastId.map { rig.host.view(id: $0) == nil } ?? false }
+        step("last-hide", gone)
     }
 
     // MARK: R8. Fast hide and show
@@ -1784,4 +1888,37 @@ private func offMain<T: Sendable>(_ body: @escaping @Sendable () throws -> T) as
     try await withCheckedThrowingContinuation { continuation in
         Thread.detachNewThread { continuation.resume(with: Result { try body() }) }
     }
+}
+
+// MARK: - The SwiftUI pane
+
+/// Whether the probe shows the pane.
+@MainActor @Observable
+private final class PaneShown {
+    var on = true
+}
+
+/// The pane, as `RightTerminalView` puts it: keyed by its session, and gone when hidden.
+private struct PaneProbe: View {
+    let shown: PaneShown
+    let panes: RemotePanes
+    let session: RemoteSessionRef
+
+    var body: some View {
+        if shown.on {
+            RemoteSurfacePane(panes: panes, session: session)
+                .id(session)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            Color.clear
+        }
+    }
+}
+
+/// Secrets in memory, so the keychain is never touched.
+private final class PaneSecrets: SecretStore {
+    private var secrets: [String: String] = [:]
+    func secret(for key: String) -> String? { secrets[key] }
+    func setSecret(_ value: String, for key: String) { secrets[key] = value }
+    func removeSecret(for key: String) { secrets[key] = nil }
 }

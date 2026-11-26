@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import WiettyCore
+import WiettyShared
 
 /// The terminal this launch runs on, built once.
 ///
@@ -49,6 +50,19 @@ struct TerminalStack {
     /// the seam onto an unstable API, and one owner is the point of the seam.
     func surfaceView(for session: String) -> NSView? { surfaces.view(id: session) }
 
+    /// The bundled `wietty-pty`, nil when it is missing or not executable (which is
+    /// then `setupError`). Kept because every surface runs it, a remote pane's too.
+    let helperPath: String?
+
+    /// The panes of terminals on other Macs, nil when there is no real surface host or
+    /// no helper (a stack that failed to build, or one a test built on a fake host), or
+    /// when no connection store was given.
+    ///
+    /// Built here because this is the one place that has the concrete host and the
+    /// helper together. `TerminalQuitTeardown` closes them at quit, before the stack's
+    /// own terminals, so no viewer surface outlives the teardown.
+    let remotePanes: RemotePanes?
+
     /// What is wrong with the terminal, if anything. With nothing left to fall back
     /// to, this message is all a user whose libghostty failed to start ever gets,
     /// so it has to say what they can do about it.
@@ -69,10 +83,13 @@ struct TerminalStack {
     ///   the app's one process.
     /// - Parameter readDelay: how long a terminal waits for its pane's viewer before
     ///   its pty is read anyway. Shorter in tests, whose fake hosts have no pane.
+    /// - Parameter remoteConnections: the connections a remote pane reads its
+    ///   connection from at every attempt. Nil builds no `remotePanes`.
     init(ghosttyHost: (any TerminalSurfaceHosting & TerminalSurfaceViewing)? = nil,
          helperPath: String? = Self.helperPath(),
          localSocketPath: String? = nil,
-         readDelay: TimeInterval = GhosttyService.unattachedReadDelay) {
+         readDelay: TimeInterval = GhosttyService.unattachedReadDelay,
+         remoteConnections: RemoteConnectionsStore? = nil) {
         let helper = helperPath.flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil }
         var socketFailure: TerminalError?
         let serverPath: String
@@ -108,6 +125,12 @@ struct TerminalStack {
         desktopNotifications = DesktopNotificationSetting(host: built.host)
         ghosttyColors = GhosttyColorSettings(host: built.host)
         surfaces = built.host
+        self.helperPath = helper
+        if let host = built.host as? GhosttySurfaceHost, let helper, let remoteConnections {
+            remotePanes = RemotePanes(host: host, helperPath: helper, connections: remoteConnections)
+        } else {
+            remotePanes = nil
+        }
         // Unconditional, because the sweep answers "is this socket abandoned" itself
         // (its owner's pid is gone) rather than trusting its caller to be the only
         // Wietty on the machine.

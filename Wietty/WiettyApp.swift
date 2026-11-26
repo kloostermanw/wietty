@@ -52,7 +52,9 @@ struct WiettyApp: App {
         GhosttyLog.stack.notice("""
             open descriptor limit \(descriptors.before, privacy: .public) -> \(descriptors.after, privacy: .public)
             """)
-        let stack = TerminalStack()
+        // Before the stack, which builds the remote panes on it.
+        let connections = RemoteConnectionsStore()
+        let stack = TerminalStack(remoteConnections: connections)
         _terminals = State(wrappedValue: stack)
         // The job poll needs the live service, which only exists once the stack is
         // built, so the store is handed a closure rather than the service itself.
@@ -76,7 +78,6 @@ struct WiettyApp: App {
             launch: projects.launch,
             writer: projects.settingsWriter,
             knownGroupIds: { [weak projects] in Set(projects?.groups.map(\.id) ?? []) }))
-        let connections = RemoteConnectionsStore()
         _remoteConnections = StateObject(wrappedValue: connections)
         _remoteWorkspaces = StateObject(wrappedValue: RemoteWorkspacesController(connections: connections))
     }
