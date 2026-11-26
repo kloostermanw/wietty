@@ -50,20 +50,29 @@ private final class ManualMain: @unchecked Sendable {
 @MainActor
 private final class ManualTimers {
     final class Timer {
+        let delay: TimeInterval
         let due: TimeInterval
         let work: @MainActor () -> Void
         var cancelled = false
         var fired = false
-        init(due: TimeInterval, work: @escaping @MainActor () -> Void) { self.due = due; self.work = work }
+        init(delay: TimeInterval, due: TimeInterval, work: @escaping @MainActor () -> Void) {
+            self.delay = delay
+            self.due = due
+            self.work = work
+        }
     }
 
     var now: TimeInterval = 1000
     private(set) var all: [Timer] = []
 
     var live: [Timer] { all.filter { !$0.cancelled && !$0.fired } }
+    /// Live retry timers (a policy delay, at most 5 s).
+    var retries: [Timer] { live.filter { $0.delay != RemotePane.attemptTimeout } }
+    /// Live attempt timeouts.
+    var watchdogs: [Timer] { live.filter { $0.delay == RemotePane.attemptTimeout } }
 
     func schedule(_ delay: TimeInterval, _ work: @escaping @MainActor () -> Void) -> RemotePane.Cancel {
-        let timer = Timer(due: now + delay, work: work)
+        let timer = Timer(delay: delay, due: now + delay, work: work)
         all.append(timer)
         return { timer.cancelled = true }
     }
@@ -113,16 +122,22 @@ private final class FakeLink: TerminalStreamLink, @unchecked Sendable {
 }
 
 /// A bridge that starts every link it is given at once, as the real one does once its
-/// helper is there, and records what the owner asks of it.
+/// helper is there, and records what the owner asks of it. It models the real bridge's
+/// held claims: with `holdsClaimsUntilReset`, the end of the link that is the bridge's
+/// holds every claim until `resetClaims()`, and a held claim is accepted but never sent.
+/// The end of a link the bridge no longer has holds nothing.
 private final class FakeBridge: ViewerBridging, @unchecked Sendable {
     let helperSocketPath: String
     private let lock = NSLock()
     private var linkList: [any TerminalStreamLink] = []
     private var stopCount = 0
     private var claimList: [[Int]] = []
+    private var heldList: [[Int]] = []
+    private var claimsHeld = false
     private var resets = 0
     private var holds = false
     private var gone: (@Sendable () -> Void)?
+    private var beforeReconnectHook: (() -> Void)?
 
     init(path: String, link: any TerminalStreamLink) {
         helperSocketPath = path
@@ -131,8 +146,18 @@ private final class FakeBridge: ViewerBridging, @unchecked Sendable {
 
     var links: [any TerminalStreamLink] { lock.withLock { linkList } }
     var stops: Int { lock.withLock { stopCount } }
+    /// Claims sent to a link.
     var claims: [[Int]] { lock.withLock { claimList } }
+    /// Claims accepted while held, never sent.
+    var held: [[Int]] { lock.withLock { heldList } }
     var resetCount: Int { lock.withLock { resets } }
+
+    /// Runs once, inside the next `reconnect(with:)`, before the link is swapped: what
+    /// the old link's thread does at that moment.
+    var beforeReconnect: (() -> Void)? {
+        get { lock.withLock { beforeReconnectHook } }
+        set { lock.withLock { beforeReconnectHook = newValue } }
+    }
 
     var holdsClaimsUntilReset: Bool {
         get { lock.withLock { holds } }
@@ -146,12 +171,23 @@ private final class FakeBridge: ViewerBridging, @unchecked Sendable {
     func claim(cols: Int, rows: Int) -> Bool {
         lock.withLock {
             guard stopCount == 0 else { return false }
-            claimList.append([cols, rows])
+            if claimsHeld { heldList.append([cols, rows]) } else { claimList.append([cols, rows]) }
             return true
         }
     }
-    func resetClaims() { lock.withLock { resets += 1 } }
+    func resetClaims() {
+        lock.withLock {
+            resets += 1
+            claimsHeld = false
+            heldList = []
+        }
+    }
     func reconnect(with link: any TerminalStreamLink) {
+        let hook = lock.withLock { () -> (() -> Void)? in
+            defer { beforeReconnectHook = nil }
+            return beforeReconnectHook
+        }
+        hook?()
         let old = lock.withLock { linkList.last }
         old?.stop()
         attach(link)
@@ -171,7 +207,12 @@ private final class FakeBridge: ViewerBridging, @unchecked Sendable {
         lock.withLock { linkList.append(link) }
         // As the real bridge: its own handlers, then the start.
         link.onMessage = { _ in }
-        link.onEnded = { _ in }
+        link.onEnded = { [weak self, weak link] _ in
+            guard let self, let link else { return }
+            self.lock.withLock {
+                if self.holds, self.linkList.last === link { self.claimsHeld = true }
+            }
+        }
         link.start()
     }
 }
@@ -353,7 +394,7 @@ private final class Rig {
         rig.lose()
         #expect(pane.state == .reconnecting)
         // At once: no timer, a second link on the one bridge.
-        #expect(rig.timers.live.isEmpty)
+        #expect(rig.timers.retries.isEmpty)
         #expect(rig.bridges.count == 1)
         #expect(rig.bridge.links.count == 2)
         #expect(rig.links[1].starts == 1)
@@ -365,7 +406,7 @@ private final class Rig {
         // The second loss waits 0.25 s.
         rig.lose()
         #expect(rig.bridge.links.count == 2)
-        #expect(rig.timers.live.map(\.due) == [rig.timers.now + 0.25])
+        #expect(rig.timers.retries.map(\.due) == [rig.timers.now + 0.25])
         rig.timers.fireNext()
         #expect(rig.bridge.links.count == 3)
         #expect(rig.host.created.count == 1)
@@ -416,7 +457,7 @@ private final class Rig {
         #expect(rig.bridge.stops == 0)
         #expect(rig.host.destroyed.isEmpty)
         #expect(pane.surfaceId != nil)
-        #expect(rig.timers.all.isEmpty)
+        #expect(rig.timers.live.isEmpty)
         #expect(rig.bridge.links.count == 1)
         // The button does nothing now.
         pane.reconnectPressed()
@@ -480,8 +521,8 @@ private final class Rig {
         _ = rig.shown()
         rig.lose()
         rig.lose()
-        #expect(rig.timers.live.count == 1)
-        let timer = rig.timers.live[0]
+        #expect(rig.timers.retries.count == 1)
+        let timer = rig.timers.retries[0]
         rig.panes.close(rig.ref)
         #expect(timer.cancelled)
         // Fired anyway, as a timer already on its way would be: nothing comes of it.
@@ -502,6 +543,8 @@ private final class Rig {
         #expect(rig.host.destroyed.count == 1)
         let calls = rig.host.calls
         let imposed = rig.host.imposed.count
+        let timers = rig.timers.all.count
+        #expect(rig.timers.live.isEmpty)
 
         // Whatever the link's thread still had on its way.
         link.deliver(.snapshot([0x1B, 0x63]))
@@ -517,7 +560,8 @@ private final class Rig {
         #expect(rig.links.count == 1)
         #expect(bridge.links.count == 1)
         #expect(bridge.claims.isEmpty)
-        #expect(rig.timers.all.isEmpty)
+        #expect(rig.timers.all.count == timers)
+        #expect(rig.timers.live.isEmpty)
         #expect(rig.host.calls == calls)
         #expect(rig.host.imposed.count == imposed)
         #expect(bridge.stops == 1)
@@ -559,7 +603,7 @@ private final class Rig {
         let pane = rig.shown()
         rig.lose()
         rig.lose()
-        let timer = rig.timers.live[0]
+        let timer = rig.timers.retries[0]
         pane.reconnectPressed()
         #expect(timer.cancelled)
         #expect(rig.bridge.links.count == 3)
@@ -573,7 +617,7 @@ private final class Rig {
         rig.timers.now += 200
         rig.lose()
         #expect(pane.state == .waiting)
-        #expect(rig.timers.live.isEmpty)
+        #expect(rig.timers.retries.isEmpty)
         let links = rig.bridge.links.count
         pane.reconnectPressed()
         #expect(rig.bridge.links.count == links + 1)
@@ -615,6 +659,209 @@ private final class Rig {
         }
         #expect(rig.bridge.stops == 1)
         #expect(rig.host.destroyed.count == 1)
+    }
+
+    // MARK: Fix round 1
+
+    /// The first link (or a helper that never connects, which is the same to the pane:
+    /// no snapshot) takes longer than 15 s: it counts as lost and is retired.
+    @Test func aFirstLinkWithNoSnapshotWithin15SecondsCountsAsLost() throws {
+        let rig = Rig()
+        let pane = rig.shown()
+        let first = rig.link
+        #expect(rig.timers.watchdogs.map(\.due) == [rig.timers.now + 15])
+        rig.timers.fireNext()
+        #expect(pane.state == .reconnecting)
+        // Retired as a replaced link is, then a new attempt at once.
+        #expect(first.stops == 1)
+        #expect(rig.bridge.links.count == 3)
+        #expect(rig.bridge.links[1] is InertLink)
+        #expect(rig.links.count == 2)
+        #expect(rig.host.created.count == 1)
+        #expect(rig.timers.watchdogs.count == 1)
+        // What the retired link still reports is not taken for the new one's.
+        first.deliver(.snapshot([0x1B, 0x63]))
+        first.end(.connectionLost)
+        rig.main.drain()
+        #expect(pane.state == .reconnecting)
+        #expect(rig.links.count == 2)
+        rig.snapshot()
+        #expect(pane.state == .live)
+    }
+
+    @Test func aSnapshotCancelsTheTimeout() {
+        let rig = Rig()
+        let pane = rig.shown()
+        let watchdog = rig.timers.watchdogs[0]
+        rig.snapshot()
+        #expect(watchdog.cancelled)
+        // A late fire of it does nothing.
+        watchdog.work()
+        #expect(pane.state == .live)
+        #expect(rig.bridge.links.count == 1)
+    }
+
+    @Test func anEndCancelsTheTimeoutAndTheNextLinkHasItsOwn() {
+        let rig = Rig()
+        _ = rig.shown()
+        let first = rig.timers.watchdogs[0]
+        rig.lose()
+        #expect(first.cancelled)
+        #expect(rig.timers.watchdogs.count == 1)
+        #expect(rig.timers.watchdogs[0] !== first)
+        first.work()
+        #expect(rig.bridge.links.count == 2)
+    }
+
+    @Test func aReplacementCancelsTheTimeoutOfTheReplacedLink() {
+        let rig = Rig()
+        let pane = rig.shown()
+        rig.lose()
+        let replaced = rig.timers.watchdogs[0]
+        pane.reconnectPressed()
+        #expect(replaced.cancelled)
+        #expect(rig.timers.watchdogs.count == 1)
+        replaced.work()
+        #expect(rig.bridge.links.count == 3)
+        #expect(pane.state == .reconnecting)
+    }
+
+    @Test func closeCancelsTheTimeout() {
+        let rig = Rig()
+        let pane = rig.shown()
+        let watchdog = rig.timers.watchdogs[0]
+        rig.panes.close(rig.ref)
+        #expect(watchdog.cancelled)
+        let calls = rig.host.calls
+        watchdog.work()
+        #expect(rig.bridge.links.count == 1)
+        #expect(rig.host.calls == calls)
+        #expect(pane.state == .connecting)
+    }
+
+    /// The last attempt before the 2 minutes hangs: its timeout ends the automatic phase,
+    /// the hung link is retired, and the button still makes a link whose claims flow.
+    @Test func aHungLastAttemptEndsInWaitingAndTheButtonStillWorks() throws {
+        let rig = Rig()
+        let pane = rig.shown()
+        let grid = try #require(rig.host.grids[pane.surfaceId!])
+        rig.snapshot()
+        rig.lose()                       // at 1000: a new phase, link 2 at once
+        rig.timers.now = 1119
+        rig.lose()                       // 0.25 s: due 1119.25, inside the 2 minutes
+        rig.timers.fireNext()            // link 3, which never delivers
+        let hung = rig.link
+        #expect(rig.links.count == 3)
+        rig.timers.fireNext()            // its timeout, at 1134.25
+        #expect(pane.state == .waiting)
+        #expect(hung.stops == 1)
+        #expect(rig.bridge.links.last is InertLink)
+        #expect(rig.timers.live.isEmpty)
+        hung.deliver(.snapshot([0x1B, 0x63]))
+        rig.main.drain()
+        #expect(pane.state == .waiting)
+
+        let resets = rig.bridge.resetCount
+        pane.reconnectPressed()
+        #expect(rig.links.count == 4)
+        // The inert link was out: the grid's count starts over after the replacement.
+        #expect(rig.bridge.resetCount == resets + 1)
+        grid.paneChanged(ownGrid: TerminalSize(cols: 80, rows: 24))
+        grid.userActed()
+        #expect(rig.bridge.claims == [[80, 24]])
+    }
+
+    /// The race of a replacement: the old link ends after the grid was reset and before
+    /// the bridge has the new link. The bridge then holds claims, and the reset after
+    /// the reconnect lets them flow again.
+    @Test func anOldLinkEndingDuringAReplacementLeavesClaimsFlowing() throws {
+        let rig = Rig()
+        let pane = rig.shown()
+        let grid = try #require(rig.host.grids[pane.surfaceId!])
+        grid.paneChanged(ownGrid: TerminalSize(cols: 80, rows: 24))
+        rig.lose()
+        let old = rig.link
+        rig.bridge.beforeReconnect = { old.end(.connectionLost) }
+        pane.reconnectPressed()
+        rig.main.drain()
+        #expect(pane.state == .reconnecting)
+        grid.userActed()
+        #expect(rig.bridge.claims == [[80, 24]])
+        #expect(rig.bridge.held.isEmpty)
+    }
+
+    @Test func theButtonWithNoLinkOutDoesNotResetTheGrid() {
+        let rig = Rig()
+        let pane = rig.shown()
+        rig.lose()
+        rig.lose()                        // link 2 ended, a retry pending: nothing out
+        var resets = rig.bridge.resetCount
+        pane.reconnectPressed()
+        #expect(rig.bridge.resetCount == resets)
+        rig.timers.now += 200
+        rig.lose()                        // waiting: nothing out
+        #expect(pane.state == .waiting)
+        resets = rig.bridge.resetCount
+        pane.reconnectPressed()
+        #expect(rig.bridge.resetCount == resets)
+    }
+
+    @Test func anEndedPaneWhoseHelperWentAwayKeepsItsSurface() {
+        let rig = Rig()
+        let pane = rig.shown()
+        rig.snapshot()
+        rig.link.end(.sessionEnded)
+        rig.main.drain()
+        rig.bridge.helperWentAway()
+        rig.main.drain()
+        #expect(pane.state == .ended)
+        #expect(rig.bridge.stops == 1)
+        #expect(rig.host.destroyed.isEmpty)
+        #expect(pane.surfaceId != nil)
+        rig.panes.close(rig.ref)
+        #expect(rig.bridge.stops == 1)
+        #expect(rig.host.destroyed.count == 1)
+    }
+
+    /// SwiftUI may run a new view's appear before the old one's disappear for one ref.
+    @Test func opensAndClosesAreCountedPerSession() {
+        let rig = Rig()
+        let first = rig.panes.open(rig.ref)
+        let second = rig.panes.open(rig.ref)
+        #expect(first === second)
+        rig.main.drain()
+        #expect(rig.host.created.count == 1)
+        #expect(rig.panes.opens(of: rig.ref) == 2)
+
+        rig.panes.close(rig.ref)
+        #expect(rig.host.destroyed.isEmpty)
+        #expect(rig.panes.pane(for: rig.ref) === first)
+        #expect(first.surfaceId != nil)
+
+        rig.panes.close(rig.ref)
+        #expect(rig.host.destroyed.count == 1)
+        #expect(rig.panes.pane(for: rig.ref) == nil)
+        // A further close is nothing.
+        rig.panes.close(rig.ref)
+        #expect(rig.host.destroyed.count == 1)
+
+        // The closed pane never comes back.
+        let third = rig.panes.open(rig.ref)
+        #expect(third !== first)
+        rig.main.drain()
+        #expect(rig.host.created.count == 2)
+        #expect(third.surfaceId != nil)
+    }
+
+    @Test func closeAllIgnoresTheCounts() {
+        let rig = Rig()
+        _ = rig.panes.open(rig.ref)
+        _ = rig.panes.open(rig.ref)
+        rig.main.drain()
+        rig.panes.closeAll()
+        #expect(rig.panes.count == 0)
+        #expect(rig.host.destroyed.count == 1)
+        #expect(rig.bridge.stops == 1)
     }
 
     // MARK: The registry and the turn between a destroy and a create
@@ -748,5 +995,84 @@ private final class Rig {
         link.stop()
         #expect(inner.starts == 1)
         #expect(inner.stops == 1)
+    }
+}
+
+/// The app's own dependencies (`RemotePane.Dependencies.app`), as far as they go without
+/// a real surface: the store, the real bridge on a real socket, and the main queue's
+/// hops and timers. The host is the fake one; nothing connects as the helper, so no
+/// link is ever started and nothing reaches the network.
+@MainActor
+@Suite struct RemotePaneAppDependenciesTests {
+    private final class MemorySecrets: SecretStore {
+        private var secrets: [String: String] = [:]
+        func secret(for key: String) -> String? { secrets[key] }
+        func setSecret(_ value: String, for key: String) { secrets[key] = value }
+        func removeSecret(for key: String) { secrets[key] = nil }
+    }
+
+    private final class Box { var events: [String] = [] }
+
+    private let connection = RemoteConnection(id: UUID(), name: "Studio", host: "127.0.0.1",
+                                              port: 9, token: "not-a-token")
+
+    private func store() -> RemoteConnectionsStore {
+        let store = RemoteConnectionsStore(defaults: UserDefaults(suiteName: UUID().uuidString)!,
+                                           secretStore: MemorySecrets())
+        store.add(connection)
+        return store
+    }
+
+    /// Lets the main queue run until `condition` holds or 5 s pass.
+    private func until(_ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition() && ContinuousClock.now < deadline { await Task.yield() }
+        return condition()
+    }
+
+    @Test func aConnectionRemovedFromTheStoreBeforeTheShowIsRefused() async {
+        let store = store()
+        let host = FakeViewerHost(main: ManualMain())
+        let panes = RemotePanes(dependencies: .app(host: host, helperPath: "/usr/bin/false", connections: store))
+        store.remove(id: connection.id)
+        let pane = panes.open(RemoteSessionRef(connectionId: connection.id, sessionId: "s1"))
+        #expect(pane.state == .connecting)
+        #expect(await until { pane.state != .connecting })
+        #expect(pane.state == .refused("Connection removed"))
+        #expect(host.calls.isEmpty)
+    }
+
+    @Test func aShownPaneListensOnARealSocketAndCloseRemovesIt() async throws {
+        let store = store()
+        let host = FakeViewerHost(main: ManualMain())
+        let panes = RemotePanes(dependencies: .app(host: host, helperPath: "/usr/bin/false", connections: store))
+        let ref = RemoteSessionRef(connectionId: connection.id, sessionId: "s1")
+        let pane = panes.open(ref)
+        #expect(await until { pane.surfaceId != nil })
+        let id = try #require(pane.surfaceId)
+        let command = try #require(host.commands[id])
+        let parts = command.components(separatedBy: "' '")
+        #expect(parts.count == 2)
+        let socket = String(parts[1].dropLast())
+        #expect(socket.hasSuffix(".sock"))
+        #expect((socket as NSString).lastPathComponent.hasPrefix("wty-\(getpid())-"))
+        #expect(FileManager.default.fileExists(atPath: socket))
+        panes.close(ref)
+        #expect(!FileManager.default.fileExists(atPath: socket))
+        #expect(host.destroyed == [id])
+    }
+
+    @Test func theTimerRunsOnTheMainQueueAndACancelledOneNeverDoes() async {
+        let dependencies = RemotePane.Dependencies.app(host: FakeViewerHost(main: ManualMain()),
+                                                       helperPath: "/usr/bin/false",
+                                                       connections: store())
+        let box = Box()
+        let cancel = dependencies.schedule(0.01) { box.events.append("cancelled") }
+        cancel()
+        // A later timer on the same queue: by the time it runs, the cancelled one's
+        // deadline has passed.
+        _ = dependencies.schedule(0.05) { box.events.append("later") }
+        #expect(await until { !box.events.isEmpty })
+        #expect(box.events == ["later"])
     }
 }

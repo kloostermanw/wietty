@@ -12,7 +12,7 @@ import WiettyShared
     /// A policy that is live, as after its first snapshot.
     private func live() -> Policy {
         var policy = Policy()
-        policy.snapshotDelivered()
+        policy.snapshotDelivered(now: 0)
         return policy
     }
 
@@ -111,7 +111,8 @@ import WiettyShared
     @Test func aSnapshotMakesItLiveAndStartsTheCountOver() {
         var policy = live()
         _ = delays(&policy, losses: 5, start: 0)
-        policy.snapshotDelivered()
+        // Live for 10 s before the next loss.
+        policy.snapshotDelivered(now: 990)
         #expect(policy.state == .live)
         // At once again, and a fresh 2 minutes from this loss.
         #expect(policy.linkEnded(.connectionLost, now: 1000) == .attempt(after: 0))
@@ -121,12 +122,59 @@ import WiettyShared
         #expect(policy.state == .waiting)
     }
 
+    /// A link that delivers its snapshot and drops a second later does not start the
+    /// count over: the delays go on doubling and the 2 minutes run from the first loss.
+    @Test func aFlappingLinkWalksTheDelaysAndReachesWaiting() {
+        var policy = live()
+        var now: TimeInterval = 1
+        var seen: [TimeInterval] = []
+        // Bounded, so a policy that never stops fails here rather than hanging.
+        for _ in 0..<200 {
+            guard case .attempt(let after) = policy.linkEnded(.connectionLost, now: now) else { break }
+            seen.append(after)
+            now += after
+            policy.snapshotDelivered(now: now)
+            #expect(policy.state == .live)
+            now += 1
+        }
+        #expect(Array(seen.prefix(8)) == [0, 0.25, 0.5, 1, 2, 4, 5, 5])
+        #expect(seen.dropFirst(6).allSatisfy { $0 == 5 })
+        #expect(policy.state == .waiting)
+        // Stopped at the first attempt that would start after 2 minutes from the loss at 1.
+        #expect(now + 5 > 121)
+        #expect(now - 6 + 5 <= 121)
+    }
+
+    @Test func aLinkLiveForTenSecondsStartsTheCountAndTheTwoMinutesOver() {
+        var policy = live()
+        #expect(policy.linkEnded(.connectionLost, now: 0) == .attempt(after: 0))
+        policy.snapshotDelivered(now: 0)
+        #expect(policy.linkEnded(.connectionLost, now: 1) == .attempt(after: 0.25))
+        policy.snapshotDelivered(now: 1.25)
+        #expect(policy.linkEnded(.connectionLost, now: 11.24) == .attempt(after: 0.5))
+        policy.snapshotDelivered(now: 11.75)
+        // Exactly 10 s live: a new phase, at once again, 2 minutes from this loss.
+        #expect(policy.linkEnded(.connectionLost, now: 21.75) == .attempt(after: 0))
+        _ = delays(&policy, losses: 7, start: 21.75)
+        #expect(policy.linkEnded(.connectionLost, now: 136.75) == .attempt(after: 5))
+        #expect(policy.linkEnded(.connectionLost, now: 137) == .none)
+        #expect(policy.state == .waiting)
+    }
+
+    @Test func aRefusalWithNothingLeftOfItsMessageShowsAFixedText() {
+        for message in ["", "\u{1B}\u{07}\u{9B}", "  "] {
+            var policy = Policy()
+            _ = policy.linkEnded(.refused(code: "x", message: message), now: 0)
+            #expect(policy.state == .refused("The other Mac refused the connection."))
+        }
+    }
+
     @Test func aSnapshotAfterTheButtonInWaitingMakesItLive() {
         var policy = live()
         _ = policy.linkEnded(.connectionLost, now: 0)
         _ = policy.linkEnded(.connectionLost, now: 200)
         _ = policy.reconnectPressed(now: 300)
-        policy.snapshotDelivered()
+        policy.snapshotDelivered(now: 0)
         #expect(policy.state == .live)
     }
 
@@ -134,7 +182,7 @@ import WiettyShared
         var policy = live()
         _ = policy.linkEnded(.connectionLost, now: 0)
         _ = policy.linkEnded(.connectionLost, now: 200)
-        policy.snapshotDelivered()
+        policy.snapshotDelivered(now: 0)
         #expect(policy.state == .waiting)
     }
 
@@ -146,7 +194,7 @@ import WiettyShared
             #expect(policy.isFinal)
             #expect(policy.linkEnded(.connectionLost, now: 1) == .none)
             #expect(policy.reconnectPressed(now: 2) == .none)
-            policy.snapshotDelivered()
+            policy.snapshotDelivered(now: 0)
             #expect(policy.state == .ended)
         }
         var reconnecting = live()
@@ -162,7 +210,7 @@ import WiettyShared
         #expect(policy.isFinal)
         #expect(policy.linkEnded(.connectionLost, now: 1) == .none)
         #expect(policy.reconnectPressed(now: 2) == .none)
-        policy.snapshotDelivered()
+        policy.snapshotDelivered(now: 0)
         #expect(policy.state == .refused("The other Mac runs an older Wietty. Update Wietty on that Mac."))
     }
 
