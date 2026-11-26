@@ -546,6 +546,116 @@ struct RemoteSurfaceMeasurementTests {
         report("\(prefix) after-hide2s[\(Census.take().describe(against: before))]")
     }
 
+    // MARK: A viewer surface
+
+    /// A viewer surface (`createViewerSurface`) on a real surface: a program's `OSC 52`
+    /// write leaves the pasteboard alone, before and after a configuration reload, its
+    /// `OSC 52` read is answered with nothing, and its title, bell and desktop
+    /// notification reach no host callback; a key reaches no `onInput` and claims
+    /// through the viewer's grid, and the user's own paste and copy work. The same
+    /// program on a surface of this Mac's own (`createSurface`) shows that each would
+    /// have been seen. The host is given a private pasteboard, so the user's is never
+    /// touched.
+    ///
+    /// Every absence is proved by an ordering, not a wait: each request is followed by
+    /// an `OSC 11` background, which libghostty hands the host after the request on the
+    /// same main queue, so once the host holds that background the request has been
+    /// handled; and the read's answer would reach the link before the answer to a
+    /// device attributes query sent after it.
+    @Test func aViewerSurfaceKeepsAProgramOnAnotherMacAwayFromThisMac() async throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("eu.kloosterman.wietty.step5.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let rig = try await SurfaceRig.make(width: 800, height: 500, container: true, pasteboard: pasteboard)
+        defer { rig.close() }
+        var marker = 0
+        /// Delivers `bytes` and then a background of its own, and waits until the host
+        /// holds that background for `id`.
+        func deliver(_ bytes: String, to link: ScriptedLink, id: String) async -> Bool {
+            marker += 1
+            let background = String(format: "rgb:%02x/%02x/00", marker, Self.r8BackgroundMarker)
+            link.deliver(.data(Array((bytes + "\u{1B}]11;\(background)\u{07}").utf8)))
+            let wanted = marker
+            return await waitUntil(5) {
+                Self.r8Generation(of: (rig.host.view(id: id) as? GhosttySurfaceView)?.programBackground) == wanted
+            }
+        }
+        func osc52Write(_ text: String) -> String {
+            "\u{1B}]52;c;\(Data(text.utf8).base64EncodedString())\u{07}"
+        }
+        let events = "\u{1B}]2;a title\u{07}\u{07}\u{1B}]9;a notification\u{07}"
+
+        // This Mac's own terminal: each request is seen.
+        let ownLink = ScriptedLink()
+        let own = try rig.open(id: "own", link: ownLink)
+        #expect(await waitUntil(10) { ownLink.started })
+        pasteboard.clearContents()
+        pasteboard.setString("on this Mac", forType: .string)
+        #expect(await deliver(osc52Write("from the own terminal") + events, to: ownLink, id: "own"))
+        #expect(pasteboard.string(forType: .string) == "from the own terminal")
+        #expect(rig.events.titles.contains { $0.id == "own" && $0.title == "a title" })
+        #expect(rig.events.all.contains { $0.id == "own" && $0.kind == "bell" })
+        #expect(rig.events.all.contains { $0.id == "own" && $0.kind == "notification" })
+        own.close()
+
+        // A terminal on another Mac.
+        let claims = ClaimLog()
+        let grid = OwnPaneGrid(viewer: true, claim: { claims.add($0); return true }, impose: { _ in })
+        defer { grid.stop() }
+        let link = ScriptedLink()
+        let viewer = try rig.open(id: "rv:test:s:1", link: link, viewer: true, grid: grid)
+        defer { viewer.close() }
+        let id = viewer.id
+        #expect(await waitUntil(10) { link.started })
+        rig.events.reset()
+        pasteboard.clearContents()
+        pasteboard.setString("on this Mac", forType: .string)
+        let changeCount = pasteboard.changeCount
+
+        #expect(await deliver(osc52Write("from the other Mac") + events, to: link, id: id))
+        #expect(pasteboard.changeCount == changeCount)
+        #expect(pasteboard.string(forType: .string) == "on this Mac")
+        #expect(rig.events.all.filter { $0.id == id && ["title", "bell", "notification", "close", "input"].contains($0.kind) }.isEmpty)
+
+        rig.host.reloadConfig()
+        #expect(await deliver(osc52Write("after a reload"), to: link, id: id))
+        #expect(pasteboard.changeCount == changeCount)
+
+        _ = link.takeSent()
+        #expect(await deliver("\u{1B}]52;c;?\u{07}", to: link, id: id))
+        link.deliver(.data(Array("\u{1B}[c".utf8)))
+        #expect(await waitUntil(5) { String(decoding: link.sentSoFar, as: UTF8.self).contains("\u{1B}[?") })
+        let answered = String(decoding: link.takeSent(), as: UTF8.self)
+        #expect(!answered.contains("]52;"), "answered \(escaped(answered))")
+        #expect(NSApp.modalWindow == nil)
+
+        // Showing it claimed nothing; a key claims, and reaches no `onInput`.
+        #expect(claims.grids.isEmpty)
+        guard let view = rig.host.view(id: id) as? GhosttySurfaceView else {
+            Issue.record("no view")
+            return
+        }
+        rig.window.makeFirstResponder(view)
+        let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                   timestamp: ProcessInfo.processInfo.systemUptime,
+                                   windowNumber: rig.window.windowNumber, context: nil, characters: "x",
+                                   charactersIgnoringModifiers: "x", isARepeat: false, keyCode: 7)!
+        view.keyDown(with: key)
+        #expect(!rig.events.all.contains { $0.id == id && $0.kind == "input" })
+        #expect(claims.grids.count == 1)
+        #expect(await waitUntil(5) { String(decoding: link.sentSoFar, as: UTF8.self).contains("x") })
+
+        // The user's own paste and copy.
+        _ = link.takeSent()
+        pasteboard.clearContents()
+        pasteboard.setString("pasted by the user", forType: .string)
+        view.paste(nil)
+        #expect(await waitUntil(5) { String(decoding: link.sentSoFar, as: UTF8.self).contains("pasted by the user") })
+        #expect(await deliver("\u{1B}[2J\u{1B}[Hcopied by the user", to: link, id: id))
+        view.selectAll(nil)
+        view.copy(nil)
+        #expect(pasteboard.string(forType: .string)?.contains("copied by the user") == true)
+    }
+
     // MARK: R8. Fast hide and show
 
     /// When the next surface is created after its predecessor was destroyed.
@@ -729,6 +839,13 @@ struct RemoteSurfaceMeasurementTests {
     }
 }
 
+/// The grids a pane's grid claimed.
+@MainActor
+private final class ClaimLog {
+    private(set) var grids: [TerminalSize] = []
+    func add(_ grid: TerminalSize) { grids.append(grid) }
+}
+
 /// R8's record of which generation's background the host holds for the surface shown.
 @MainActor
 private final class R8BackgroundSamples {
@@ -858,10 +975,12 @@ private final class SurfaceRig {
         self.helper = helper
     }
 
-    static func make(width: CGFloat, height: CGFloat, container wantsContainer: Bool) async throws -> SurfaceRig {
+    /// - Parameter pasteboard: the host's; a private one for a test of the clipboard.
+    static func make(width: CGFloat, height: CGFloat, container wantsContainer: Bool,
+                     pasteboard: NSPasteboard = .general) async throws -> SurfaceRig {
         let directory = TestScratch.root.appendingPathComponent("wietty-step5-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let host = try GhosttySurfaceHost()
+        let host = try GhosttySurfaceHost(pasteboard: pasteboard)
         let events = HostEvents()
         events.attach(to: host)
         let window = NSWindow(contentRect: NSRect(x: 60, y: 60, width: width, height: height),
@@ -890,7 +1009,9 @@ private final class SurfaceRig {
     /// A bridge for `link` and a surface running the helper pointed at it, shown in the
     /// window. With `imposeOnResize` the server's grid is imposed on the surface, as the
     /// pane would.
-    func open(id: String, link: any TerminalStreamLink, imposeOnResize: Bool = false) throws -> OpenSurface {
+    /// With `viewer` the surface is made through the host's viewer entry, with `grid`.
+    func open(id: String, link: any TerminalStreamLink, imposeOnResize: Bool = false,
+              viewer: Bool = false, grid: OwnPaneGrid? = nil) throws -> OpenSurface {
         Self.sequence += 1
         let path = try LocalSocketPaths.bridge(Self.sequence)
         let bridge = try TerminalBridge(helperSocketPath: path, link: link)
@@ -903,8 +1024,12 @@ private final class SurfaceRig {
             }
         }
         do {
-            try host.createSurface(id: id, command: PaneBridges.command(helper: helper, socket: path),
-                                   directory: directory, title: nil)
+            let command = PaneBridges.command(helper: helper, socket: path)
+            if viewer {
+                try host.createViewerSurface(id: id, command: command, grid: grid)
+            } else {
+                try host.createSurface(id: id, command: command, directory: directory, title: nil)
+            }
         } catch {
             bridge.stop()
             throw error

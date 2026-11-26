@@ -303,16 +303,20 @@ final class OwnPaneGrid {
     private var debounce: DispatchWorkItem?
     private var stopped = false
 
+    /// - Parameter viewer: the grid of a viewer of a terminal on another Mac, which
+    ///   claims nothing until the user acts (`PaneGrid.init(debounce:viewer:)`).
+    ///   False, the default, is the own pane's.
     /// - Parameter claim: sends a claim; whether the bridge accepted it.
     /// - Parameter resetClaims: drops the claims the bridge held since the link ended
     ///   (`TerminalBridge.resetClaims()`), called as the count starts over.
     /// - Parameter impose: shows a grid in the view, nil for the pane's own size.
     init(debounce: UInt64 = 50_000_000,
+         viewer: Bool = false,
          claim: @escaping (TerminalSize) -> Bool,
          resetClaims: @escaping () -> Void = {},
          impose: @escaping @MainActor (TerminalSize?) -> Void,
          clock: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
-        model = PaneGrid(debounce: debounce)
+        model = PaneGrid(debounce: debounce, viewer: viewer)
         self.claim = claim
         self.resetClaims = resetClaims
         self.impose = impose

@@ -52,6 +52,19 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     private nonisolated(unsafe) var app: ghostty_app_t?
     private nonisolated(unsafe) var config: ghostty_config_t?
     private nonisolated(unsafe) var surfaces: [String: Surface] = [:]
+    /// The configuration of a viewer surface: the app's, with `viewerOverlay` loaded
+    /// last. Nil when the overlay could not be written, and then no viewer surface is
+    /// made, since one would take a program's clipboard requests.
+    private nonisolated(unsafe) var viewerConfig: ghostty_config_t?
+
+    /// The surfaces that show a terminal of another Mac (`createViewerSurface`), and
+    /// the pane's grid of each that was given one.
+    private var viewers: Set<String> = []
+    private var viewerGrids: [String: OwnPaneGrid] = [:]
+
+    /// The pasteboard the clipboard callbacks and a copy use: the general one, unless
+    /// a test hands the host a private one.
+    let pasteboard: NSPasteboard
 
     /// The label the app gave each surface. libghostty has no title setter of any
     /// kind, so this is the host's own record rather than something pushed into
@@ -105,8 +118,10 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
 
     /// - Parameter bridges: joins each surface to its terminal's stream. The app
     ///   passes one; a test that drives a surface with a command of its own does not.
-    init(bridges: PaneBridges? = nil) throws {
+    /// - Parameter pasteboard: the general pasteboard unless a test says otherwise.
+    init(bridges: PaneBridges? = nil, pasteboard: NSPasteboard = .general) throws {
         self.bridges = bridges
+        self.pasteboard = pasteboard
         // Counted first, so a construction that then fails still shows. What is
         // being watched is whether anything reached for libghostty at all, not
         // whether it got a working host out of it.
@@ -120,6 +135,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
 
         let config = Self.buildConfig()
         self.config = config
+        viewerConfig = Self.viewerOverlayFile().flatMap { Self.buildConfig(viewer: $0) }
         padding = GhosttyPadding.resolveHostConfiguration()
         background = Self.background(in: config) ?? .black
         backgroundOpacity = Self.backgroundOpacity(in: config)
@@ -141,17 +157,24 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         runtime.read_clipboard_cb = { userdata, _, request in
             GhosttySurfaceHost.readClipboard(userdata: userdata, request: request)
         }
-        runtime.confirm_read_clipboard_cb = { userdata, string, request, _ in
+        runtime.confirm_read_clipboard_cb = { userdata, string, request, kind in
             GhosttySurfaceHost.confirmReadClipboard(userdata: userdata,
                                                     string: string,
-                                                    request: request)
+                                                    request: request,
+                                                    kind: ClipboardRequest(kind: Int(kind.rawValue)))
         }
+        // A program's `OSC 52` write, or a copy binding of the user's own Ghostty
+        // configuration; the callback is not told which. A viewer surface never sees
+        // the first: its configuration has libghostty refuse it (`viewerOverlay`).
         runtime.write_clipboard_cb = { _, _, contents, count, _ in
             guard count > 0, let data = contents?.pointee.data else { return }
             let string = String(cString: data)
             DispatchQueue.main.async {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(string, forType: .string)
+                MainActor.assumeIsolated {
+                    guard let pasteboard = GhosttySurfaceHost.current?.pasteboard else { return }
+                    pasteboard.clearContents()
+                    pasteboard.setString(string, forType: .string)
+                }
             }
         }
         runtime.close_surface_cb = { userdata, _ in
@@ -161,6 +184,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         guard let app = ghostty_app_new(&runtime, config) else {
             ghostty_config_free(config)
             self.config = nil
+            if let viewerConfig { ghostty_config_free(viewerConfig) }
+            viewerConfig = nil
             throw SurfaceHostError.initFailed("libghostty could not create its app.")
         }
         self.app = app
@@ -197,12 +222,61 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// - Parameter overlay: nil builds the user's configuration alone, which is what
     ///   `desktopNotifications` compares against to tell whether Wietty is
     ///   overriding a value the user set themselves.
-    private static func buildConfig(overlay: URL? = GhosttyOverrideFile.defaultURL) -> ghostty_config_t? {
+    /// - Parameter viewer: `viewerOverlay`'s file, loaded last, for a viewer surface's
+    ///   configuration.
+    private static func buildConfig(overlay: URL? = GhosttyOverrideFile.defaultURL,
+                                    viewer: URL? = nil) -> ghostty_config_t? {
         let config = ghostty_config_new()
         ghostty_config_load_default_files(config)
         if let overlay { ghostty_config_load_file(config, overlay.path) }
+        if let viewer { ghostty_config_load_file(config, viewer.path) }
         ghostty_config_finalize(config)
         return config
+    }
+
+    /// What a viewer surface's configuration adds over the app's: libghostty refuses a
+    /// program's `OSC 52` read and write on it (logging "application attempted to read
+    /// clipboard, but 'clipboard-read' is set to deny"), so a program on another Mac can
+    /// neither read nor set this Mac's clipboard. Neither key governs the user's own
+    /// paste or copy. Last, so it wins over the user's Ghostty config and Wietty's file.
+    ///
+    /// Done by configuration because the clipboard callbacks cannot tell the two apart
+    /// themselves: `read_clipboard_cb` is handed only an opaque request (libghostty's
+    /// own tagged union) for a paste and an `OSC 52` read alike, and
+    /// `write_clipboard_cb` no kind at all. Only `confirm_read_clipboard_cb` is told
+    /// the kind (`ghostty_clipboard_request_e`), which `passesOn` uses as a second
+    /// guard.
+    nonisolated static let viewerOverlay = "clipboard-read = deny\nclipboard-write = deny\n"
+
+    /// `viewerOverlay` as a file libghostty can load (it has no setter), in this user's
+    /// temporary directory, written again on every call so a cleaned directory does not
+    /// matter. Nil when it cannot be written.
+    private static func viewerOverlayFile() -> URL? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wietty-viewer-surface.cfg")
+        do {
+            try viewerOverlay.write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            log.fault("the viewer surface configuration could not be written: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    /// What a configuration made of one file alone resolves for `clipboard-read` and
+    /// `clipboard-write`, for the suite. Nil for a key the getter refuses.
+    static func clipboardAccess(loading file: URL) -> (read: String?, write: String?) {
+        let config = ghostty_config_new()
+        defer { ghostty_config_free(config) }
+        ghostty_config_load_file(config, file.path)
+        ghostty_config_finalize(config)
+        func value(_ key: String) -> String? {
+            var value: UnsafePointer<CChar>?
+            let found = key.withCString { ghostty_config_get(config, &value, $0, UInt(strlen($0))) }
+            guard found, let value else { return nil }
+            return String(cString: value)
+        }
+        return (value("clipboard-read"), value("clipboard-write"))
     }
 
     var desktopNotifications: (effective: Bool, userConfig: Bool) {
@@ -262,16 +336,34 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     func reloadConfig() {
         guard let app else { return }
         let rebuilt = Self.buildConfig()
+        let viewerRebuilt = Self.viewerOverlayFile().flatMap { Self.buildConfig(viewer: $0) }
         // The app first, then every surface. libghostty copies what it needs out of
         // the config, so the old one can be freed once both have been handed the new
         // one, and freeing it before the surfaces are updated would leave them
         // reading it.
+        //
+        // A viewer surface gets the viewer's configuration, after the app's update
+        // (which hands every surface the app's: measured, a viewer left out of this
+        // loop takes a program's `OSC 52` write after a reload) and in the same main
+        // turn, so no
+        // clipboard request of its program is handled under the app's in between. With
+        // no viewer configuration rebuilt it is given the previous one again.
         ghostty_app_update_config(app, rebuilt)
-        for surface in surfaces.values {
-            ghostty_surface_update_config(surface.handle, rebuilt)
+        for (id, surface) in surfaces {
+            if viewers.contains(id) {
+                if let current = viewerRebuilt ?? viewerConfig {
+                    ghostty_surface_update_config(surface.handle, current)
+                }
+            } else {
+                ghostty_surface_update_config(surface.handle, rebuilt)
+            }
         }
         if let previous = config { ghostty_config_free(previous) }
         config = rebuilt
+        if let viewerRebuilt {
+            if let previous = viewerConfig { ghostty_config_free(previous) }
+            viewerConfig = viewerRebuilt
+        }
         padding = GhosttyPadding.resolveHostConfiguration()
         background = Self.background(in: rebuilt) ?? .black
         backgroundOpacity = Self.backgroundOpacity(in: rebuilt)
@@ -367,8 +459,36 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// coexistence check and the imposed grid measurement drive a surface this way.
     /// `destroySurface(id:)` frees it as any other.
     func createSurface(id: String, command: String, directory: URL, title: String?) throws {
+        try makeSurface(id: id, command: command, directory: directory, title: title, viewer: false)
+    }
+
+    /// A surface that shows a terminal of another Mac: it runs `command`, the helper
+    /// pointed at a bridge its owner made, and belongs to no session of this Mac's.
+    /// Not part of `TerminalSurfaceHosting`.
+    ///
+    /// The host records that `id` is a viewer, and for it drops what would reach the
+    /// app's terminals, its store or Notification Center: titles, bells, desktop
+    /// notifications, close requests and `onInput` (`passesOn`). A program's `OSC 52`
+    /// read and write are refused by libghostty itself (`viewerOverlay`); the user's
+    /// own copy and paste work as in the own pane. Cell size, metrics, background,
+    /// rendering and `impose(grid:on:)` work as for any surface.
+    ///
+    /// - Parameter grid: the pane's grid (`OwnPaneGrid(viewer: true, ...)`), told the
+    ///   pane's size as the surface comes on and off display and every user action, as
+    ///   `PaneBridges` grids are for the own pane. The host keeps it until
+    ///   `destroySurface(id:)` and never stops it; its owner does.
+    func createViewerSurface(id: String, command: String, grid: OwnPaneGrid?) throws {
+        try makeSurface(id: id, command: command,
+                        directory: FileManager.default.homeDirectoryForCurrentUser,
+                        title: nil, viewer: true)
+        viewerGrids[id] = grid
+    }
+
+    private func makeSurface(id: String, command: String, directory: URL, title: String?,
+                             viewer: Bool) throws {
         guard let app else { throw SurfaceHostError.surfaceFailed }
         guard surfaces[id] == nil else { throw SurfaceHostError.surfaceFailed }
+        if viewer && viewerConfig == nil { throw SurfaceHostError.surfaceFailed }
 
         // A size, not zero: a surface created against a zero sized view stays
         // blank even after it is laid out, unless the metrics are sent again. The
@@ -402,6 +522,12 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         guard let handle = ghostty_surface_new(app, &config) else {
             throw SurfaceHostError.surfaceFailed
         }
+        if viewer, let viewerConfig {
+            // In the creating main turn: libghostty handles a program's clipboard
+            // request on a later one (in `ghostty_app_tick`), under this configuration.
+            ghostty_surface_update_config(handle, viewerConfig)
+            viewers.insert(id)
+        }
         surfaces[id] = Surface(view: view, handle: handle)
         if let title { setTitle(title, for: id) }
         view.configuredBackground = background
@@ -417,6 +543,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         // later main turn and finds no surface. Also for a surface that is already
         // gone, since stopping a bridge twice is nothing.
         bridges?.close(session: id)
+        viewers.remove(id)
+        viewerGrids[id] = nil
         guard let surface = surfaces.removeValue(forKey: id) else { return }
         titles[id] = nil
         // The view's pointer is cleared before the free, because a view can still
@@ -646,8 +774,67 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         return true
     }
 
+    /// A callback of a surface, as far as passing it on depends on whether the surface
+    /// is a viewer of another Mac.
+    enum SurfaceCallback: Equatable, Sendable {
+        case render, cellSize, background, grid, metrics, userAction
+        case title, bell, desktopNotification, closeRequest, input
+        /// libghostty asking whether to complete a clipboard read it judged unsafe or
+        /// not yet allowed, of this kind (nil: one this build does not know).
+        case confirmClipboard(ClipboardRequest?)
+    }
+
+    /// libghostty's `ghostty_clipboard_request_e`.
+    enum ClipboardRequest: Equatable, Sendable {
+        /// The user's paste (`paste_from_clipboard`).
+        case paste
+        /// A program's `OSC 52` read or write.
+        case osc52Read, osc52Write
+
+        /// - Parameter kind: the C enum's raw value.
+        nonisolated init?(kind: Int) {
+            switch kind {
+            case Int(GHOSTTY_CLIPBOARD_REQUEST_PASTE.rawValue): self = .paste
+            case Int(GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ.rawValue): self = .osc52Read
+            case Int(GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE.rawValue): self = .osc52Write
+            default: return nil
+            }
+        }
+    }
+
+    /// Whether the host passes `callback` on, for a surface that is a viewer of another
+    /// Mac or one of this Mac's own terminals. A viewer belongs to no session here, so
+    /// nothing that would reach `GhosttyService`, the store, `GhosttyMonitor` or
+    /// Notification Center is passed on, and a program's clipboard request is never put
+    /// to the user. Everything that draws and sizes the surface, and the user's own
+    /// actions, are passed on for both.
+    nonisolated static func passesOn(_ callback: SurfaceCallback, viewer: Bool) -> Bool {
+        guard viewer else { return true }
+        switch callback {
+        case .render, .cellSize, .background, .grid, .metrics, .userAction:
+            return true
+        case .title, .bell, .desktopNotification, .closeRequest, .input:
+            return false
+        case .confirmClipboard(let request):
+            return request == .paste
+        }
+    }
+
+    private func passesOn(_ callback: SurfaceCallback, for id: String) -> Bool {
+        Self.passesOn(callback, viewer: viewers.contains(id))
+    }
+
     private func apply(_ event: SurfaceEvent, to id: String) {
         guard let surface = surfaces[id] else { return }
+        let callback: SurfaceCallback = switch event {
+        case .render: .render
+        case .bell: .bell
+        case .notification: .desktopNotification
+        case .title: .title
+        case .cellSize: .cellSize
+        case .background: .background
+        }
+        guard passesOn(callback, for: id) else { return }
         switch event {
         case .render:
             surface.view.requestRedraw()
@@ -669,16 +856,23 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// Called by a view whose grid changed. Passed on as `onResized`, which resizes
     /// nothing.
     fileprivate func report(grid: TerminalSize, for id: String) {
-        guard surfaces[id] != nil else { return }
+        guard surfaces[id] != nil, passesOn(.grid, for: id) else { return }
         onResized?(id, grid)
     }
 
     /// Called by a view whose metrics changed. The grid that fits the pane may have
     /// moved with them (a font size, a padding, another scale).
     fileprivate func reportMetrics(for id: String) {
-        guard surfaces[id] != nil else { return }
+        guard surfaces[id] != nil, passesOn(.metrics, for: id) else { return }
         onMetricsChanged?(id)
         paneChanged(for: id)
+    }
+
+    /// Called by a view on every key the user typed: `onInput`, for this Mac's own
+    /// terminals only.
+    fileprivate func userTyped(in id: String) {
+        guard passesOn(.input, for: id) else { return }
+        onInput?(id)
     }
 
     // MARK: - The pane's grid
@@ -687,14 +881,21 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// display: its pane's grid is told the grid that fits the pane now, nil when the
     /// surface is not on display. A surface with no bridge (a measurement's) has none.
     fileprivate func paneChanged(for id: String) {
-        guard let view = surfaces[id]?.view, let grid = bridges?.grid(for: id) else { return }
+        guard let view = surfaces[id]?.view, let grid = grid(for: id) else { return }
         grid.paneChanged(ownGrid: view.ownGrid)
     }
 
     /// The user typed, clicked, pasted or dropped something in the surface: a pane
     /// that does not own the grid claims it.
     fileprivate func userActed(in id: String) {
-        bridges?.grid(for: id)?.userActed()
+        guard passesOn(.userAction, for: id) else { return }
+        grid(for: id)?.userActed()
+    }
+
+    /// The pane's grid of surface `id`: the one its viewer entry was given, or the own
+    /// pane's bridge's.
+    private func grid(for id: String) -> OwnPaneGrid? {
+        viewers.contains(id) ? viewerGrids[id] : bridges?.grid(for: id)
     }
 
     // MARK: - Close requests
@@ -730,7 +931,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// job is to retire the terminal, and `close`/`closeAll` remain the only
     /// things that destroy a surface.
     private func requestClose(_ id: String) {
-        guard surfaces[id] != nil else { return }
+        guard surfaces[id] != nil, passesOn(.closeRequest, for: id) else { return }
         onCloseRequested?(id)
     }
 
@@ -748,6 +949,11 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// libghostty to apply its own unsafe paste check and come back through
     /// `confirm_read_clipboard_cb` if the text could run as commands the moment it
     /// lands. Passing true here would skip that check for every paste.
+    ///
+    /// Not told whether the request is a paste or an `OSC 52` read (`request` is
+    /// libghostty's own opaque union). A viewer surface's are always pastes: its
+    /// configuration has libghostty refuse a read before it gets here
+    /// (`viewerOverlay`).
     private nonisolated static func readClipboard(userdata: UnsafeMutableRawPointer?,
                                                   request: UnsafeMutableRawPointer?) -> Bool {
         guard Thread.isMainThread, let userdata, let request else { return false }
@@ -757,7 +963,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
             let surfaceView = Unmanaged<GhosttySurfaceView>.fromOpaque(view.pointer)
                 .takeUnretainedValue()
             guard let surface = surfaceView.surfaceHandle,
-                  let text = NSPasteboard.general.string(forType: .string) else { return false }
+                  let pasteboard = GhosttySurfaceHost.current?.pasteboard,
+                  let text = pasteboard.string(forType: .string) else { return false }
             text.withCString {
                 ghostty_surface_complete_clipboard_request(surface, $0, pending.pointer, false)
             }
@@ -777,9 +984,14 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// let a wakeup tick libghostty again from inside its own tick. The request
     /// pointer is libghostty's, stays valid until it is completed, and completing
     /// late is exactly what it is for.
+    ///
+    /// The one clipboard callback told the request's kind. A viewer surface's program
+    /// request is not put to the user (`passesOn`): it is left uncompleted, which is how
+    /// libghostty reads a refusal, and no alert is shown.
     private nonisolated static func confirmReadClipboard(userdata: UnsafeMutableRawPointer?,
                                                          string: UnsafePointer<CChar>?,
-                                                         request: UnsafeMutableRawPointer?) {
+                                                         request: UnsafeMutableRawPointer?,
+                                                         kind: ClipboardRequest?) {
         guard let userdata, let string, let request else { return }
         let id = Unmanaged<GhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue().id
         // Copied here: the C string's lifetime is this call, not the hop.
@@ -787,13 +999,14 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         let pending = RawPointerBox(pointer: request)
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                GhosttySurfaceHost.current?.confirmPaste(text, request: pending, for: id)
+                GhosttySurfaceHost.current?.confirmPaste(text, request: pending, kind: kind, for: id)
             }
         }
     }
 
-    private func confirmPaste(_ text: String, request: RawPointerBox, for id: String) {
-        guard surfaces[id] != nil else { return }
+    private func confirmPaste(_ text: String, request: RawPointerBox, kind: ClipboardRequest?,
+                              for id: String) {
+        guard surfaces[id] != nil, passesOn(.confirmClipboard(kind), for: id) else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Paste into the terminal?"
@@ -829,6 +1042,7 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         // process exit rather than a live one.
         if let app { ghostty_app_free(app) }
         if let config { ghostty_config_free(config) }
+        if let viewerConfig { ghostty_config_free(viewerConfig) }
     }
 }
 
@@ -1296,7 +1510,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         // it rang while the app was in the background. Reported before the key is
         // encoded, and unconditionally: the store drops the flag once and no-ops
         // after, so gating on which key it was would buy nothing.
-        host?.onInput?(id)
+        host?.userTyped(in: id)
         // And takes the grid back if another viewer had it.
         onUserAction?()
         let action: ghostty_input_action_e =
@@ -1698,8 +1912,9 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         let string = String(decoding: UnsafeRawBufferPointer(start: pointer,
                                                             count: Int(text.text_len)),
                             as: UTF8.self)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(string, forType: .string)
+        let pasteboard = host?.pasteboard ?? .general
+        pasteboard.clearContents()
+        pasteboard.setString(string, forType: .string)
     }
 
     /// Paste, through libghostty's own binding rather than by writing the text.
