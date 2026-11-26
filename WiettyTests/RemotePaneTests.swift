@@ -163,7 +163,10 @@ private final class FakeLink: TerminalStreamLink, @unchecked Sendable {
             lock.withLock { stopWaitedTooLong = true }
         }
     }
-    func send(_ bytes: [UInt8]) {}
+    private var input: [UInt8] = []
+    /// Every byte sent to the other Mac through this link.
+    var sentBytes: [UInt8] { lock.withLock { input } }
+    func send(_ bytes: [UInt8]) { lock.withLock { input += bytes } }
     func claim(cols: Int, rows: Int) {}
 
     func deliver(_ message: StreamMessage) { inCallback { onMessage?(message) } }
@@ -799,7 +802,7 @@ private final class Rig {
         // Retired as a replaced link is, then a new attempt at once.
         #expect(first.stops == 1)
         #expect(rig.bridge.links.count == 3)
-        #expect(rig.bridge.links[1] is InertLink)
+        #expect(isInert(rig.bridge.links[1]))
         #expect(rig.links.count == 2)
         #expect(rig.host.created.count == 1)
         #expect(rig.timers.watchdogs.count == 1)
@@ -828,7 +831,7 @@ private final class Rig {
         #expect(first.starts == 0)
         #expect(first.stops == 1)
         #expect(rig.bridge.links.count == 3)
-        #expect(rig.bridge.links[1] is InertLink)
+        #expect(isInert(rig.bridge.links[1]))
         #expect(rig.links.count == 2)
         let second = rig.link
         #expect(second.starts == 0)
@@ -928,7 +931,7 @@ private final class Rig {
         rig.timers.fireNext()            // its timeout, at 1134.25
         #expect(pane.state == .waiting)
         #expect(hung.stops == 1)
-        #expect(rig.bridge.links.last is InertLink)
+        #expect(isInert(rig.bridge.links.last!))
         #expect(rig.timers.live.isEmpty)
         hung.deliver(.snapshot([0x1B, 0x63]))
         rig.main.drain()
@@ -1098,37 +1101,95 @@ private final class Rig {
         bridge.messages.filter { if case .snapshot = $0 { true } else { false } }.count
     }
 
-    @Test func aSnapshotAfterAResizeToAnotherGridWaitsForTheSurfaceToReportIt() throws {
+    /// The retiring link of an attempt timeout: an inert one, observed for the answers.
+    private func isInert(_ link: any TerminalStreamLink) -> Bool {
+        (link as? ObservedLink)?.inner is InertLink
+    }
+
+    private func queries(_ bridge: FakeBridge) -> Int {
+        bridge.messages.filter { $0 == .data(SizeAnswerScanner.query) }.count
+    }
+
+    /// The stream's own payloads the bridge was handed, without the size queries.
+    private func streamPayloads(_ bridge: FakeBridge) -> [StreamMessage] {
+        payloads(bridge).filter { $0 != .data(SizeAnswerScanner.query) }
+    }
+
+    private static func answer(_ size: TerminalSize) -> [UInt8] {
+        Array("\u{1B}[8;\(size.rows);\(size.cols)t".utf8)
+    }
+
+    /// The surface's input reaching the bridge's current link, as the helper thread hands
+    /// it over.
+    private func surfaceTypes(_ rig: Rig, _ bytes: [UInt8]) {
+        rig.bridge.links.last!.send(bytes)
+    }
+
+    /// Every byte any link of the rig sent to the other Mac.
+    private func serverInput(_ rig: Rig) -> [UInt8] {
+        rig.links.flatMap(\.sentBytes)
+    }
+
+    @Test func aHeldSnapshotPassesWhenTheTerminalAnswersTheGridAfterTheSurfaceReportedIt() throws {
         let (rig, pane, id) = try paneAtAnotherGrid()
         let call = heldSnapshot(rig)
-        // Held: neither the snapshot nor the data behind it reached the bridge.
+        // Held: neither the snapshot nor the data behind it reached the bridge, and the
+        // terminal is not asked before the surface reported the grid.
         #expect(payloads(rig.bridge).isEmpty)
         #expect(!call.hasFinished)
         #expect(pane.state == .connecting)
-        // Another grid reported is not the one the view was given.
         rig.host.report(grid: TerminalSize(cols: 110, rows: 35), for: id)
         rig.main.drain()
         #expect(payloads(rig.bridge).isEmpty)
 
         rig.host.report(grid: Self.inForce, for: id)
+        // One query, written by the held callback, as output to the surface.
+        #expect(rig.main.run(until: { queries(rig.bridge) == 1 }))
+        #expect(!call.hasFinished)
+        #expect(streamPayloads(rig.bridge).isEmpty)
+        // The answer, between keys the user typed meanwhile, in one read.
+        surfaceTypes(rig, Array("ab".utf8) + Self.answer(Self.inForce) + Array("c".utf8))
         #expect(rig.main.run(until: { call.hasFinished }))
         // In the link's order, the snapshot first.
-        #expect(payloads(rig.bridge) == [.snapshot(Self.snapshotBytes), .data(Self.dataBytes)])
+        #expect(streamPayloads(rig.bridge) == [.snapshot(Self.snapshotBytes), .data(Self.dataBytes)])
+        #expect(queries(rig.bridge) == 1)
+        #expect(serverInput(rig) == Array("abc".utf8))
         #expect(pane.state == .live)
         #expect(rig.timers.holdLimits.isEmpty)
         #expect(rig.timers.watchdogs.isEmpty)
     }
 
-    @Test func aSnapshotIsPassedAtOnceWhenTheSurfaceHasTheGridAlready() throws {
+    @Test func anAnswerNamingAnotherGridAsksAgainAfterTenMilliseconds() throws {
+        let (rig, _, id) = try paneAtAnotherGrid()
+        let call = heldSnapshot(rig)
+        rig.host.report(grid: Self.inForce, for: id)
+        #expect(rig.main.run(until: { queries(rig.bridge) == 1 }))
+        // The terminal has not taken the grid yet.
+        surfaceTypes(rig, Self.answer(Self.ownGrid))
+        rig.main.drain()
+        #expect(!call.hasFinished)
+        #expect(queries(rig.bridge) == 1)
+        let retry = try #require(rig.timers.live.first { $0.delay == RemotePane.sizeQueryRetry })
+        #expect(retry.due == rig.timers.now + 0.01)
+        rig.timers.fire(retry)
+        #expect(rig.main.run(until: { queries(rig.bridge) == 2 }))
+        surfaceTypes(rig, Self.answer(Self.inForce))
+        #expect(rig.main.run(until: { call.hasFinished }))
+        #expect(queries(rig.bridge) == 2)
+        #expect(streamPayloads(rig.bridge) == [.snapshot(Self.snapshotBytes), .data(Self.dataBytes)])
+        #expect(serverInput(rig).isEmpty)
+    }
+
+    @Test func theTerminalIsAskedAtOnceWhenTheSurfaceHasTheGridAlready() throws {
         let (rig, pane, id) = try paneAtAnotherGrid()
         rig.host.sizes[id] = Self.inForce
-        let created = rig.timers.all.count
         let call = rig.deliver([.snapshot(Self.snapshotBytes), .data(Self.dataBytes)])
+        #expect(rig.main.run(until: { queries(rig.bridge) == 1 }))
+        surfaceTypes(rig, Self.answer(Self.inForce))
         #expect(rig.main.run(until: { call.hasFinished }))
-        #expect(payloads(rig.bridge) == [.snapshot(Self.snapshotBytes), .data(Self.dataBytes)])
+        #expect(streamPayloads(rig.bridge) == [.snapshot(Self.snapshotBytes), .data(Self.dataBytes)])
         #expect(pane.state == .live)
-        // No hold limit was ever started.
-        #expect(rig.timers.all.count == created)
+        #expect(serverInput(rig).isEmpty)
     }
 
     @Test func aSnapshotIsPassedAtOnceWhenTheViewShowsThePanesOwnSize() throws {
@@ -1139,48 +1200,69 @@ private final class Rig {
         let created = rig.timers.all.count
         rig.snapshot()
         #expect(snapshots(rig.bridge) == 1)
+        #expect(queries(rig.bridge) == 0)
         #expect(rig.timers.all.count == created)
     }
 
-    @Test func aSnapshotIsPassedAfterTheBoundWhenTheSurfaceNeverGetsThere() throws {
-        let (rig, pane, _) = try paneAtAnotherGrid()
+    /// The bound passes the snapshot with a query outstanding: its late answer is still
+    /// taken out, and the next bytes that look the same pass.
+    @Test func theBoundPassesItAndTheOutstandingAnswerIsStillTakenOut() throws {
+        let (rig, pane, id) = try paneAtAnotherGrid()
         let call = heldSnapshot(rig)
+        rig.host.report(grid: Self.inForce, for: id)
+        #expect(rig.main.run(until: { queries(rig.bridge) == 1 }))
         let limit = rig.timers.holdLimits[0]
         #expect(limit.due == rig.timers.now + 1)
         rig.timers.fire(limit)
         #expect(rig.main.run(until: { call.hasFinished }))
-        #expect(payloads(rig.bridge) == [.snapshot(Self.snapshotBytes), .data(Self.dataBytes)])
+        #expect(streamPayloads(rig.bridge) == [.snapshot(Self.snapshotBytes), .data(Self.dataBytes)])
         #expect(pane.state == .live)
+        surfaceTypes(rig, Self.answer(Self.ownGrid))
+        #expect(serverInput(rig).isEmpty)
+        surfaceTypes(rig, Self.answer(Self.ownGrid))
+        #expect(serverInput(rig) == Self.answer(Self.ownGrid))
+        rig.main.drain()
+        #expect(queries(rig.bridge) == 1)
     }
 
     /// The main actor stops the link while its callback waits for the main actor: the
-    /// stop releases it first, so it returns, and the snapshot is never written.
+    /// stop releases it first, so it returns, and the snapshot is never written. The
+    /// query it had written still has its answer taken out.
     @Test func closeReleasesAHeldSnapshotAndDropsIt() throws {
         let (rig, pane, id) = try paneAtAnotherGrid()
         let link = rig.link
         let call = heldSnapshot(rig)
+        rig.host.report(grid: Self.inForce, for: id)
+        #expect(rig.main.run(until: { queries(rig.bridge) == 1 }))
         let limit = rig.timers.holdLimits[0]
+        let observed = rig.bridge.links.last!
         rig.panes.close(rig.ref)
         #expect(!link.stopTimedOut)
         #expect(call.wait())
         rig.main.drain()
         #expect(snapshots(rig.bridge) == 0)
         #expect(limit.cancelled)
-        // A late fire, a late report: nothing.
+        // A late fire, a late report, the late answer: nothing, and nothing to the server.
         limit.work()
         rig.host.report(grid: Self.inForce, for: id)
+        observed.send(Self.answer(Self.inForce))
         rig.main.drain()
         #expect(snapshots(rig.bridge) == 0)
         #expect(pane.state == .connecting)
+        #expect(serverInput(rig).isEmpty)
+        observed.send(Self.answer(Self.inForce))
+        #expect(serverInput(rig) == Self.answer(Self.inForce))
     }
 
-    @Test func theButtonReplacingTheLinkReleasesItsHeldSnapshotAndDropsIt() throws {
-        let (rig, pane, _) = try paneAtAnotherGrid()
+    @Test func theButtonReplacingTheLinkReleasesItsHeldSnapshotAndTheAnswerStillGoesOut() throws {
+        let (rig, pane, id) = try paneAtAnotherGrid()
         rig.lose()
         let out = rig.link
         out.deliver(.resize(cols: Self.inForce.cols, rows: Self.inForce.rows, own: false))
         rig.main.drain()
         let call = heldSnapshot(rig, on: out)
+        rig.host.report(grid: Self.inForce, for: id)
+        #expect(rig.main.run(until: { queries(rig.bridge) == 1 }))
         let limit = rig.timers.holdLimits[0]
         pane.reconnectPressed()
         #expect(!out.stopTimedOut)
@@ -1190,14 +1272,19 @@ private final class Rig {
         #expect(limit.cancelled)
         #expect(rig.bridge.links.count == 3)
         #expect(pane.state == .reconnecting)
-        // The next link's snapshot is decided afresh: the surface still lacks the grid.
-        #expect(rig.links.count == 3)
+        // The answer comes back through the new link: taken out there.
+        surfaceTypes(rig, Self.answer(Self.inForce))
+        #expect(serverInput(rig).isEmpty)
+        surfaceTypes(rig, Self.answer(Self.inForce))
+        #expect(rig.link.sentBytes == Self.answer(Self.inForce))
     }
 
-    @Test func theAttemptTimeoutReleasesAHeldSnapshotAndDropsIt() throws {
-        let (rig, pane, _) = try paneAtAnotherGrid()
+    @Test func theAttemptTimeoutReleasesAHeldSnapshotAndItsAnswerIsTakenOut() throws {
+        let (rig, pane, id) = try paneAtAnotherGrid()
         let first = rig.link
         let call = heldSnapshot(rig)
+        rig.host.report(grid: Self.inForce, for: id)
+        #expect(rig.main.run(until: { queries(rig.bridge) == 1 }))
         let watchdog = try #require(rig.timers.watchdogs.first)
         rig.timers.fire(watchdog)
         #expect(!first.stopTimedOut)
@@ -1206,7 +1293,36 @@ private final class Rig {
         #expect(snapshots(rig.bridge) == 0)
         #expect(rig.timers.holdLimits.isEmpty)
         #expect(pane.state == .reconnecting)
-        #expect(rig.bridge.links[1] is InertLink)
+        #expect(isInert(rig.bridge.links[1]))
+        // Through the inert link (the retry's link is not there yet in this order) or
+        // the retry's: either way taken out.
+        rig.bridge.links[1].send(Self.answer(Self.inForce))
+        #expect(serverInput(rig).isEmpty)
+    }
+
+    /// A query asked and never written (another token, a stopped link) is withdrawn: no
+    /// answer is waited for, and nothing is taken out for it.
+    @Test func aQueryNeverWrittenIsWithdrawn() {
+        let inner = FakeLink(connection: RemoteConnection(id: UUID(), name: "n", host: "h", port: 1, token: "t"),
+                             session: "s")
+        let filter = SizeAnswerFilter { _ in }
+        let tokens = TokenBox()
+        let link = ObservedLink(inner, holdsSnapshots: true, answers: filter) { event in
+            if case .snapshotWaiting(let token) = event { tokens.add(token) }
+        }
+        link.onMessage = { _ in }
+        let call = BackgroundCall { inner.deliver(.snapshot([0x41])) }
+        #expect(waitUntil { link.isHoldingSnapshot && !tokens.all.isEmpty })
+        filter.queried()
+        #expect(!link.askSize(token: tokens.all[0] + 1))
+        #expect(filter.outstanding == 0)
+        link.stop()
+        #expect(call.wait())
+        filter.queried()
+        #expect(!link.askSize(token: tokens.all[0]))
+        #expect(filter.outstanding == 0)
+        link.send(Self.answer(Self.inForce))
+        #expect(inner.sentBytes == Self.answer(Self.inForce))
     }
 
     /// The link's own stop, from the thread its held callback waits for, releases the

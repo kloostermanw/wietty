@@ -226,6 +226,7 @@ struct RemoteSurfaceMeasurementTests {
         // the pane's `ObservedLink`, its snapshot hold and its grid are in the path).
         var panes: RemotePanes?
         var paneRef: RemoteSessionRef?
+        var shownPane: RemotePane?
         var surface: OpenSurface?
         if shift != nil {
             let suite = "step5-r1-\(UUID().uuidString)"
@@ -247,6 +248,7 @@ struct RemoteSurfaceMeasurementTests {
             id = try #require(pane.surfaceId)
             panes = made
             paneRef = ref
+            shownPane = pane
         } else {
             id = "r1-\(run)-\(variant.rawValue)-\(dirty ? "dirty" : "clean")"
             surface = try rig.open(id: id, link: link)
@@ -290,7 +292,23 @@ struct RemoteSurfaceMeasurementTests {
             _ = await waitUntil(5) { rig.host.size(id: id) == modelSize }
             try await Task.sleep(for: .milliseconds(300))
         }
+        let snapshotSent = now()
         link.deliver(.snapshot(snapshot))
+        if let pane = shownPane {
+            // The pane held the snapshot and asked its own surface its size meanwhile:
+            // none of that may reach the other Mac as input.
+            let live = await waitUntil(5) { pane.state == .live }
+            let heldMs = Double(now() - snapshotSent) / 1e6
+            let input = link.sentSoFar
+            // Under the 1 s bound: the terminal answered its size, the bound did not pass it.
+            report("""
+                \(prefix) held-show live=\(live ? "yes" : "NO") heldMs=\(String(format: "%.1f", heldMs)) \
+                inputToServer=\(input.count) bytes
+                """)
+            #expect(heldMs < RemotePane.snapshotHoldLimit * 1000)
+            #expect(live)
+            #expect(input.isEmpty)
+        }
         link.deliver(.data(Self.r1Queries))
         var after = try await answers(link)
         let gridAtAnswers = rig.host.size(id: id)
