@@ -1127,19 +1127,21 @@ Input typed while no link is live is dropped. A wrong token arrives as a lost co
 refuses the HTTP upgrade and the package cannot see why), so it is retried like one.
 
 **Ends.** The session ending on the other Mac keeps the bridge, the helper and the surface until the
-pane is hidden, so the last screen stays and libghostty draws no notice of its own. A refusal (the
+pane is hidden, so the last screen stays and libghostty draws no notice of its own. A helper that goes
+away after that stops the bridge and still keeps the surface, with its last screen. A refusal (the
 other Mac refused, runs an older or a newer Wietty, the connection was removed, this Mac could not make
-the surface or the bridge, or the helper went away) keeps nothing. What the pane draws in each state is in
+the surface or the bridge, or the helper went away before the session ended) keeps nothing: the bridge
+is stopped and the surface destroyed at once. What the pane draws in each state is in
 `docs/AsciiScreens/RemoteSurfacePane.md`.
 
 **A destroy and the next create.** A surface created in the main turn of another's destroy often gets
 the freed `ghostty_surface_t` address, and the messages the destroyed surface's IO thread had queued
 (a title, a bell, a background, a program's clipboard write) were then handled as the new surface's
-own: in the step 5 measurement 2 to 14 titles in 50 cycles, and a viewer's `OSC 52` write reaching an
-own pane's pasteboard in 2 to 10. `destroySurface` therefore ticks libghostty's mailbox right after the
-free, while no surface has that address, and libghostty drops them (0 in 300 cycles). As a second line,
-a viewer surface is created no sooner than a main turn queued after every viewer destroy
-(`ViewerSurfaceGate`), which on its own also measured 0.
+own: in the final runs of the step 5 measurement (R8, 50 cycles a run), 2 to 14 crossed titles, and a
+viewer's `OSC 52` write reaching an own pane's pasteboard in 2 to 10. `destroySurface` therefore ticks
+libghostty's mailbox right after the free, while no surface has that address, and libghostty drops them
+(0 in 18 runs, 900 cycles). As a second line, a viewer surface is created no sooner than a main turn
+queued after every viewer destroy (`ViewerSurfaceGate`), which on its own also measured 0 in 18 runs.
 
 ## Reading a terminal's output
 
@@ -1488,8 +1490,10 @@ a socket that then stays silent forever.
   badge travels as the surface's initial title and reaches only the host's own record and the view's
   accessibility label. It is still passed rather than dropped, so that the day the C API grows a setter
   the value is already there.
-- **A terminal on another Mac has no clickable links and no audible bell** in its pane. Links are not
-  opened for local panes either, and its bell reaches Notification Center through the control channel.
+- **A terminal on another Mac has no clickable links and no audible bell** in its pane. The host handles
+  no link action, for local panes either (whether libghostty opens a URL by itself when the host leaves
+  that action unhandled is not verified), and its bell reaches Notification Center through the control
+  channel.
 - **A terminal on another Mac keeps only the history this Mac's `scrollback-limit` allows** in its
   pane, whatever the other Mac holds (about 46,000 to 48,000 of 100,000 log lines with the default).
 - **A wrong token for a connection shows as a lost connection**, retried, rather than as a refusal: the
@@ -1498,6 +1502,20 @@ a socket that then stays silent forever.
   so there is no imposed grid to wait for; it then claims its grid, and the server's reflow follows.
 - **A size answer later than its 1 second reaches the other Mac as input.** See "A terminal on another
   Mac".
+- **A live link that goes silent shows no bar** until a send fails or TCP gives up: the other Mac asleep,
+  or its Wi-Fi gone without a close, looks like a quiet terminal. Nothing watches a live link; the 15
+  second timeout covers only an attempt that has not delivered its snapshot.
+- **A helper that never connects reads as "Connection lost. Reconnecting…"**, although the fault is on
+  this Mac: the pane sees no snapshot within 15 seconds and counts the link as lost, as for any other
+  attempt.
+- **A snapshot that takes longer than 15 seconds to arrive times out every attempt**, a long history
+  over a slow link for example, so such a pane never goes live.
+- **A grid the surface cannot take holds every snapshot for the full second.** Beyond the view's texture
+  bound the surface never reports the imposed grid, so the terminal is never asked and each snapshot
+  passes only at the 1 second bound, at the grid the surface has.
+- **A claim made while no real link is current is dropped.** From a link's end until the next attempt
+  resets the pane's count, and while a timed out link is retired, the pane's claims are never sent, not
+  even once a link is back.
 - **An exited shell leaves a notice on its surface.** libghostty draws "Process exited. Press any key to
   close the terminal." and its close request only arrives with that next key. The pane never shows it:
   once the session has ended, `LocalTerminalView` draws a stopped screen with Restart instead of the
