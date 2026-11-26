@@ -9,7 +9,10 @@ import WiettyShared
 /// then after 0.25 s, doubling to 5 s, for 2 minutes counted from the loss that left
 /// `connecting` or `live`. An attempt that would start after those 2 minutes is not
 /// made: the pane waits for the button. The first snapshot of a link makes the pane
-/// `live` and ends the count. The other ends are final: the session ended on the other
+/// `live`, but only a link that stayed live for 10 seconds (`backoff.resetAfter`)
+/// ends the count and the doubling: a link that delivers its snapshot and drops sooner
+/// (a flapping connection) continues both where they were, so it cannot reconnect at
+/// once forever. The other ends are final: the session ended on the other
 /// Mac, or the other Mac refused (too old, newer, or another refusal), and nothing is
 /// tried again from there.
 ///
@@ -40,11 +43,13 @@ struct RemoteReconnectPolicy: Equatable, Sendable {
 
     /// How long links are made again by themselves after a loss.
     static let automaticPhase: TimeInterval = 120
-    /// 0, 0.25, 0.5, 1, 2, 4, 5, 5, ...
-    static let backoff = ReconnectBackoff(initial: 0.25, cap: 5)
+    /// 0, 0.25, 0.5, 1, 2, 4, 5, 5, ...; a link live for 10 s starts the count over.
+    static let backoff = ReconnectBackoff(initial: 0.25, cap: 5, resetAfter: 10)
 
     static let tooOldText = "The other Mac runs an older Wietty. Update Wietty on that Mac."
     static let connectionRemovedText = "Connection removed"
+    /// A refusal whose message is empty once its control characters are gone.
+    static let refusedText = "The other Mac refused the connection."
 
     private(set) var state: State = .connecting
     /// When the current automatic phase started (the loss that left `connecting` or
@@ -52,6 +57,11 @@ struct RemoteReconnectPolicy: Equatable, Sendable {
     private var phaseStart: TimeInterval = 0
     /// Attempts made in the current automatic phase, which sets the next delay.
     private var attempts = 0
+    /// Whether an automatic phase has been started and not ended by a link that stayed
+    /// live for `backoff.resetAfter`.
+    private var phaseOpen = false
+    /// When the state last became `live`.
+    private var liveSince: TimeInterval = 0
 
     init() {}
 
@@ -74,17 +84,20 @@ struct RemoteReconnectPolicy: Equatable, Sendable {
         case .serverTooOld:
             state = .refused(Self.tooOldText)
         case .refused(_, let message):
-            state = .refused(Self.printable(message))
+            let text = Self.printable(message)
+            state = .refused(text.trimmingCharacters(in: .whitespaces).isEmpty ? Self.refusedText : text)
         }
         return .none
     }
 
-    /// The current link delivered its first snapshot.
-    mutating func snapshotDelivered() {
+    /// The current link delivered its first snapshot at `now`. The count and the
+    /// doubling are not reset here: a loss after the link stayed live for
+    /// `backoff.resetAfter` starts them over (`linkLost`).
+    mutating func snapshotDelivered(now: TimeInterval) {
         switch state {
         case .connecting, .reconnecting:
             state = .live
-            attempts = 0
+            liveSince = now
         case .live, .waiting, .ended, .refused:
             // In `waiting` no link is out, so nothing can have delivered.
             break
@@ -101,6 +114,7 @@ struct RemoteReconnectPolicy: Equatable, Sendable {
         case .waiting:
             state = .reconnecting
             phaseStart = now
+            phaseOpen = true
             // The press is the attempt at once; the next loss waits the first delay.
             attempts = 1
             return .attempt(after: 0)
@@ -123,9 +137,12 @@ struct RemoteReconnectPolicy: Equatable, Sendable {
 
     private mutating func linkLost(now: TimeInterval) -> Step {
         switch state {
-        case .connecting, .live:
-            phaseStart = now
-            attempts = 0
+        case .connecting:
+            startPhase(now)
+        case .live:
+            // A link that dropped sooner than `resetAfter` after its snapshot continues
+            // the phase it was made in.
+            if !phaseOpen || now - liveSince >= Self.backoff.resetAfter { startPhase(now) }
         case .reconnecting:
             break
         case .waiting, .ended, .refused:
@@ -140,6 +157,12 @@ struct RemoteReconnectPolicy: Equatable, Sendable {
         attempts += 1
         state = .reconnecting
         return .attempt(after: delay)
+    }
+
+    private mutating func startPhase(_ now: TimeInterval) {
+        phaseStart = now
+        attempts = 0
+        phaseOpen = true
     }
 
     /// A refusal's text as plain text: it comes from the network, so its control
