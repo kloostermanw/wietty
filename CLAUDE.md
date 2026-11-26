@@ -181,6 +181,23 @@ display asleep, libghostty cannot create a surface's display link and fails the 
 `error.OutOfMemory`, which once passed for a reload bug. In an ordinary test run the suite is
 counted and reported as skipped.
 
+### The remote surface check
+
+`RemoteSurfaceMeasurementTests` measures a terminal of another Mac shown in a libghostty surface, with
+a real `RemoteServer` on 127.0.0.1 and a throwaway token: a snapshot fed through the bridge and the
+helper to a surface its child left dirty, compared with a clean surface and with the model (R1);
+backpressure through the package's WebSocket client (R2); the cost of a show and of 100 shows and
+hides (R3); large snapshots through the helper (R4); the ends that stop the helper (R7); and fast hides
+and shows (R8). It prints lines starting with `STEP5`. Run it after changing the pin of libghostty,
+the bridge, the helper or the package's stream client:
+
+```sh
+scripts/remote-surface-check.sh [test name]
+```
+
+Quit Wietty first. It opens a window for several minutes and needs a display awake. In an ordinary
+test run the suite is counted and reported as skipped.
+
 ### The stream baseline
 
 `StreamBaselineTests` measures the terminal byte path from where `wietty-pty` stands, with the
