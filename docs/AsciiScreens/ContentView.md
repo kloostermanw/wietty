@@ -70,7 +70,8 @@ supervised process's log. The other two are pages: the app's own settings, which
 belongs to no workspace and so marks no row, and one workspace's own page, reached
 from that card's "Edit workspace…". `RightTerminalView` is only the seam. A local
 selection (or none at all) goes to `LocalTerminalView`, described next; a remote
-one to `RemoteTerminalView`, a SwiftTerm viewer over a socket to that Mac; a log
+one to `RemoteSurfacePane`, a libghostty surface fed from that Mac (see
+`RemoteSurfacePane.md`); a log
 to `ProcessLogView`, which is text this app already holds; settings to
 `SettingsView` (see `SettingsView.md`); a workspace to `WorkspaceSettingsView`
 (see `WorkspaceSettingsView.md`).
@@ -134,15 +135,15 @@ terminal and nothing here can tell that apart from a click.
 The gear toggles, so it is also a way out, and the only one when no local terminal is
 selected: a fresh install has no row to activate.
 
-Only the remote session on screen holds a socket. Its view carries an explicit
-`.id`, so switching sessions discards the view rather than reusing it, and
-`RemoteTerminalView.dismantleNSView` stops the connection. Without that id one
-pane position would keep the first session's connection while claiming to show
-the second, which the tabbed window never had to worry about because it keyed
-every tab. Coming back attaches again and the server paints the current screen,
-so what is lost is that viewer's scrollback and not the screen. A remote session
-that ends while it is on screen keeps its last output under a `[session ended]`
-banner, matching what this pane does for a local terminal whose command exited.
+Only the remote session on screen holds a connection and a surface. Its view carries
+an explicit `.id`, so switching sessions discards the view rather than reusing it: the
+old view's disappear closes its pane in `RemotePanes` and the new one's appear opens
+another. Without that id one pane position would keep the first session's pane while
+claiming to show the second. Coming back attaches again and the server paints the
+current screen, so what is lost is that viewer's scrollback and not the screen. A
+remote session that ends while it is on screen keeps its last screen under a bar that
+says so, matching what this pane does for a local terminal whose command exited. See
+`RemoteSurfacePane.md`.
 
 A connection removed, from the sidebar or from the settings panel, takes its
 terminal off the screen and puts the local one back, because the rows went with it

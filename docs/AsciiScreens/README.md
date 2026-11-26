@@ -114,22 +114,22 @@ the controller never redraws when a snapshot arrives on the socket.
 `UpdateAlertModifier` is a `ViewModifier` rather than a view, attached to the
 main window. See `UpdateAlertModifier.md`.
 
-## Three renderers draw terminals
+## Two renderers draw terminals
 
 | Renderer | View | Draws |
 | --- | --- | --- |
 | libghostty | `LocalTerminalView` → `SurfaceContainer` | a local terminal, in the main window's pane |
-| SwiftTerm | `RemoteTerminalView`, inside `RightTerminalView` | a session on another Mac, in the same pane |
+| libghostty | `RemoteSurfacePane` → `SurfaceContainer`, inside `RightTerminalView` | a session on another Mac, in the same pane |
 | xterm.js | `remote_index.html`, not a SwiftUI view | the browser client this app serves |
 
-`RightTerminalView` is the one place a libghostty surface, a SwiftTerm view, a
-plain text log, the settings form and a workspace's own page can appear, because
+`RightTerminalView` is the one place a libghostty surface (this Mac's terminal or
+another Mac's), a plain text log, the settings form and a workspace's own page can appear, because
 the pane holds one thing. It draws none of them itself: a local selection goes to
-`LocalTerminalView`, a remote one to `RemoteTerminalView`, a log to
+`LocalTerminalView`, a remote one to `RemoteSurfacePane`, a log to
 `ProcessLogView`, settings to `SettingsView`, a workspace page to
 `WorkspaceSettingsView`, and `PaneSelection` (not a view) says which. The remote branch
 carries an explicit `.id`, without which switching between two remote sessions
-would reuse one view and keep the first session's connection.
+would reuse one view and keep the first session's pane.
 
 `SurfaceContainer` is deliberately thin. libghostty creates a surface together
 with an `NSView` and cannot exist without one, so the view belongs to
@@ -166,7 +166,7 @@ Every view type, and where its layout is documented.
 | `NavBarView` | `NavBarView.swift` | `NavBarView.md`. What it says is `NavBarTitle.swift`, which is not a view |
 | `StatusBarView` | `StatusBarView.swift` | `StatusBarView.md`. What it says comes from `MCPServerStatus.swift`, `RunningProcessCounts.swift` and `AppMemory.swift`, none of which is a view |
 | `SidebarDivider` | `SidebarDivider.swift` | `ContentView.md`, under "Who gets the surplus, and where the divider is". Its arithmetic is `SidebarWidth.swift`, which is not a view |
-| `RemoteTerminalView` | `RemoteTerminalView.swift` | `ContentView.md`, under "What the pane shows" |
+| `RemoteSurfacePane` | `RemoteSurfacePane.swift` | `RemoteSurfacePane.md`. What it draws for each state is `RemotePaneLayout`, in the same file; its pane is `RemotePane.swift`, which is not a view |
 | `SettingsView`, `AgentRow`, `GroupRow`, `PromptTemplateRow`, `RemoteConnectionRow` | `SettingsView.swift` | `SettingsView.md`. Drawn in the pane, and reached through `PaneRouter.swift` and `SettingsCommand` (in `WiettyApp.swift`), neither of which is a view |
 | `PromptTemplatePickerView` | `PromptTemplatePickerView.swift` | `PromptTemplatePickerView.md`. A sheet over the main window, opened by ⌘P and `PromptTemplatesCommand` (in `WiettyApp.swift`), whose flag is `PromptTemplatePresentation.swift`; neither is a view |
 | `WorkspaceSettingsView` | `WorkspaceSettingsView.swift` | `WorkspaceSettingsView.md`. Drawn in the same pane, reached from a card's "Edit workspace…" |

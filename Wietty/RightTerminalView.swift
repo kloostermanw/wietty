@@ -6,8 +6,8 @@ import WiettyShared
 ///
 /// Five things can be drawn here and they are not interchangeable. A local
 /// terminal is a libghostty surface the app owns and keeps alive for the row's
-/// whole life (`LocalTerminalView`). A remote one is a SwiftTerm view over a socket
-/// to another Mac (`RemoteTerminalView`) that exists only while it is on screen. A
+/// whole life (`LocalTerminalView`). A remote one is a libghostty surface fed from
+/// another Mac (`RemoteSurfacePane`) that exists only while it is on screen. A
 /// process log is text this app already holds (`ProcessLogView`). Settings is a
 /// form (`SettingsView`), here rather than in a window of its own, and one
 /// workspace's own page (`WorkspaceSettingsView`) is there beside it. This view is
@@ -99,22 +99,31 @@ struct RightTerminalView: View {
     }
 
     @ViewBuilder private func remote(_ session: RemoteSessionRef) -> some View {
-        if let connection = remoteConnections.connections
-            .first(where: { $0.id == session.connectionId }) {
-            RemoteTerminalView(remoteConnection: connection, sessionId: session.sessionId)
-                // Load bearing. `RemoteTerminalView` opens its connection in
-                // `makeNSView` and its `updateNSView` does nothing on purpose,
-                // because the tab bar keyed every tab's view by tab id and a changed
-                // session always meant a new view. One pane position does not get
-                // that for free: without an id of its own, switching from one remote
-                // session to another would reuse this view and keep the first
-                // session's connection while claiming to show the second. The id is
-                // also what detaches, since discarding the view runs
-                // `dismantleNSView`, which stops the connection.
+        if let panes = terminals.remotePanes,
+           remoteConnections.connections.contains(where: { $0.id == session.connectionId }) {
+            RemoteSurfacePane(panes: panes, session: session)
+                // Load bearing. The pane opens its session in `onAppear` and closes
+                // it in `onDisappear`, and one pane position does not get a new view
+                // for a new session for free: without an id of its own, switching
+                // from one remote session to another would keep this view, and with
+                // it the first session's pane, while claiming to show the second.
+                // With the id the old view disappears (closing its pane) and a new
+                // one appears (opening the new session's).
                 .id(session)
                 .frame(minWidth: SidebarWidth.paneMinimum,
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)
+        } else if terminals.remotePanes == nil {
+            // No surface host or no helper this launch: no terminal, local or
+            // remote, can be shown, and the reason is the stack's.
+            ContentUnavailableView {
+                Label("The internal terminal is unavailable", systemImage: "bolt.slash")
+            } description: {
+                Text(terminals.setupError ?? "")
+            }
+            .frame(minWidth: SidebarWidth.paneMinimum,
+                   minHeight: SidebarWidth.paneMinimumHeight,
+                   maxHeight: .infinity)
         } else {
             // The connection was removed while its terminal was on screen. Same
             // wording the tabbed window uses, because it is the same situation.

@@ -3,7 +3,7 @@ import Foundation
 import WiettyCore
 
 /// Tears every terminal down when the app quits, because nothing else will, and
-/// stops the local socket server.
+/// stops the local socket server. The panes of terminals on other Macs go first.
 ///
 /// A PTY the app spawned cannot outlive it usefully, and an object still alive at
 /// exit gets no `deinit`, so without this every pane's bridge socket and the server's
@@ -29,11 +29,18 @@ final class TerminalQuitTeardown {
 
     /// - Parameter stack: held weakly, so an observer that outlives this cannot
     ///   resurrect the stack and the terminals hanging off it.
-    init(stack: GhosttyStack) {
+    /// - Parameter remotePanes: the panes of terminals on other Macs, held weakly for
+    ///   the same reason. Closed first, while the surface host is certain to be
+    ///   whole: each close stops its link and bridge (the helper exits as its socket
+    ///   closes) and destroys its viewer surface.
+    init(stack: GhosttyStack, remotePanes: RemotePanes? = nil) {
         token = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
-        ) { [weak stack] _ in
-            MainActor.assumeIsolated { stack?.shutDown() }
+        ) { [weak stack, weak remotePanes] _ in
+            MainActor.assumeIsolated {
+                remotePanes?.closeAll()
+                stack?.shutDown()
+            }
         }
     }
 
