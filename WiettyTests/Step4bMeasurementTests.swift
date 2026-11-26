@@ -49,6 +49,11 @@ struct Step4bMeasurementTests {
     /// about 55 to 75 ms, one 50 ms hold, with Y's delay no longer growing with the
     /// burst (before: Y's max 36 ms at 10,000 lines and 170 to 176 ms at 100,000). A
     /// claim that is replaced while held is answered without a reflow of its own.
+    ///
+    /// Under the sustained flood of claims at 100,000 lines the other sessions' p95
+    /// delay is about 20 ms where it was about 10 ms, the same as a paced window drag,
+    /// because the hub now does 20 longer reflows a second instead of over a hundred
+    /// short ones. The open burst went from about 170 ms to about 25 ms.
     @Test func aClaimFlood() throws {
         let cases: [(label: String, history: Int, scrollback: Int)] = [
             ("small300", 300, TerminalScrollback.defaultLines),

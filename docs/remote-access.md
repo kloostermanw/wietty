@@ -272,8 +272,14 @@ it the child. Every other message (the `hello`, `resize`, `snapshot`, `repaint`,
 connection if the client reads nothing for 5 seconds while such a message is
 being written. What restarts the deadline is the client reading, so a pane that
 reads slowly but steadily keeps its connection however long a snapshot takes.
-The rule bounds a client that has stopped, not one that reads very slowly, and
-several stopped panes cost 5 seconds each on the hub's delivery queue. A
+The rule bounds a client that has stopped, not one that reads very slowly. The
+attach (the `resize` and the `snapshot`) is written by the connection's own
+thread, not by the hub's delivery queue, and the terminal's output waits for it.
+A pane stopped at its snapshot therefore costs the delivery queue only the format
+of the snapshot, and costs its own terminal (its queued viewers included) up to 5
+seconds of output after it last read, per attach. What the delivery queue still
+writes to a local viewer is a `resize`, a claim's answer or `ended` sent to a
+viewer that is idle, and several stopped panes cost 5 seconds each there. A
 frame cut off this way is never completed: the client sees the connection lost
 in the middle of a frame, never a corrupt stream, and has to connect again. This
 is what keeps a pane that stopped reading from parking the hub's delivery queue,
@@ -363,7 +369,9 @@ true and which carries the grid in force at that moment, behind the output the
 hub accepted before it; such a claim is not applied (no resize, no message of
 its own to the other viewers). Then the last claim is handled
 as above. A burst of claims therefore costs at most two reflows, and the claimant
-still gets exactly one answer per claim, in order. A viewer that disconnects
+still gets exactly one answer per claim, in order. A held claim is carried out when
+its time comes, so it can be applied after a claim another viewer made later; only
+the tail of a burst is exposed, for at most 50 ms. A viewer that disconnects
 meanwhile gets nothing for its held claims. A client should still limit itself:
 a claim that is held is answered up to 50 ms later, and an answer to a replaced
 claim names a grid other than the one claimed.

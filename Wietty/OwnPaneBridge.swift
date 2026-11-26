@@ -8,8 +8,8 @@ import WiettyShared
 /// The first retry is at once, then after `initial`, doubling up to `cap`. The count
 /// starts over once a link has stayed up for `resetAfter`. A pane that is still
 /// stalled is dropped again by the server within its write deadline, so without the
-/// growing wait it would reconnect in a tight loop, each time costing the hub's
-/// queue a snapshot it cannot deliver.
+/// growing wait it would reconnect in a tight loop, each time holding its own
+/// terminal's output until the server drops it again.
 struct ReconnectBackoff: Sendable {
     var initial: TimeInterval = 0.25
     var cap: TimeInterval = 5
