@@ -58,6 +58,7 @@ final class RemoteSocketLink: TerminalStreamLink, @unchecked Sendable {
     private var phase = Phase.idle
     private var messageHandler: (@Sendable (StreamMessage) -> Void)?
     private var endHandler: (@Sendable (TerminalEndReason) -> Void)?
+    private var arrivalCount = 0
 
     /// Held for each callback; `stop()` takes it to wait for one in progress.
     private let callbackLock = NSLock()
@@ -89,6 +90,10 @@ final class RemoteSocketLink: TerminalStreamLink, @unchecked Sendable {
     /// Whether the link has started and neither ended nor stopped.
     var isLive: Bool { lock.withLock { phase == .live } }
 
+    /// How many messages the package has handed to the link, delivered or not. For
+    /// tests: it shows whether the package read on while a callback was blocked.
+    var arrivals: Int { lock.withLock { arrivalCount } }
+
     /// Opens the socket and returns at once. Does nothing when started already, ended
     /// or stopped.
     func start() {
@@ -117,8 +122,11 @@ final class RemoteSocketLink: TerminalStreamLink, @unchecked Sendable {
         callbackLock.unlock()
     }
 
-    /// Input, byte exact; the package splits it into `data` messages of at most 64 KiB.
-    /// Dropped before `start()` and after an end or a stop. Never waits.
+    /// Input for the remote terminal. Once the server's hello has been accepted it goes
+    /// out as given, split by the package into `data` messages of at most 64 KiB. Input
+    /// sent between `start()` and the hello is held by the package, up to 64 KiB in all,
+    /// the oldest bytes dropped first, so a paste made in that window can lose its
+    /// start. Dropped before `start()` and after an end or a stop. Never waits.
     func send(_ bytes: [UInt8]) {
         guard isLive else { return }
         // A stop that lands here is caught by the package, which drops writes after
@@ -133,24 +141,32 @@ final class RemoteSocketLink: TerminalStreamLink, @unchecked Sendable {
         connection.claim(cols: cols, rows: rows)
     }
 
-    /// Returns once every callback queued so far has run. For tests; never call it on
-    /// the link's queue.
+    /// For tests only: returns once every block already queued on the link's queue when
+    /// it is called has run, so every callback the package had queued by then has run
+    /// or been dropped. It does not wait for frames still in URLSession or on the
+    /// socket, nor for callbacks the package queues after it. Never call it on the
+    /// link's queue: it would wait for itself.
     func waitForCallbacks() {
         queue.sync {}
     }
 
-    // MARK: On the link's queue
+    // MARK: From the package
 
-    /// Calls `onMessage`, under the callback lock, unless the link is over.
-    private func deliver(_ message: StreamMessage) {
+    /// Calls `onMessage`, under the callback lock, unless the link is over. The package's
+    /// `onMessage` calls this on the link's queue. Not private so that a test can hand
+    /// the link a message after `stop()`, which the package itself would drop, and so
+    /// test the link's own guard.
+    func deliver(_ message: StreamMessage) {
+        lock.withLock { arrivalCount += 1 }
         callbackLock.lock()
         defer { callbackLock.unlock() }
         guard let handler = lock.withLock({ phase == .live ? messageHandler : nil }) else { return }
         handler(message)
     }
 
-    /// Ends the link for `reason`, once, unless it was stopped.
-    private func end(_ reason: TerminalEndReason) {
+    /// Ends the link for `reason`, once, unless it was stopped. The package's `onEnded`
+    /// calls this on the link's queue. Not private for the same reason as `deliver`.
+    func end(_ reason: TerminalEndReason) {
         callbackLock.lock()
         defer { callbackLock.unlock() }
         let handler: (@Sendable (TerminalEndReason) -> Void)? = lock.withLock {

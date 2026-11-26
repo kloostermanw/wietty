@@ -301,10 +301,36 @@ private final class HubState: @unchecked Sendable {
         #expect(log.ends == [.sessionEnded])
         #expect(log.events.last == "ended")
         #expect(log.dataBytes == Array("LAST-WORDS".utf8))
-        // After the end, input is dropped.
+        // After the end, input and claims are dropped, and a second end, should the
+        // package hand one over, fires nothing.
         link.send([0x01])
         link.claim(cols: 100, rows: 30)
+        #expect(throughTheSeam { link.end(.connectionLost) })
         link.waitForCallbacks()
+        #expect(server.inputs.isEmpty)
+        #expect(server.claims.isEmpty)
+        #expect(log.ends == [.sessionEnded])
+    }
+
+    /// A link is used once: ended, it does not start again.
+    @Test func anEndedLinkDoesNotStartAgain() async throws {
+        let server = try await LinkServer.start()
+        defer { server.stop() }
+        try server.add("s1")
+        let log = LinkLog()
+        let link = started(server, log)
+        defer { link.stop() }
+        #expect(waitUntil(within: 10) { log.snapshotIndex != nil })
+        server.end("s1")
+        #expect(waitUntil(within: 10) { !log.ends.isEmpty })
+        try server.add("s1")
+        link.start()
+        #expect(!link.isLive)
+        // Through the seam, a message handed to the ended link is not delivered either.
+        let delivered = log.messages.count
+        #expect(throughTheSeam { link.deliver(.data([0x01])) })
+        link.waitForCallbacks()
+        #expect(log.messages.count == delivered)
         #expect(log.ends == [.sessionEnded])
     }
 
@@ -356,13 +382,22 @@ private final class HubState: @unchecked Sendable {
         #expect(log.messages.isEmpty)
     }
 
-    /// While `onMessage` has not returned, the next message is not delivered: the next
-    /// one starts only after the test released the first, and every callback exits
-    /// before the next enters.
-    @Test func aBlockingOnMessageHoldsBackTheNextMessage() async throws {
+    /// While `onMessage` has not returned, the package hands the link nothing more: the
+    /// next frame stays unread. The positive sign that the next messages were sent while
+    /// the first callback was blocked is a second, unblocked link on the same session
+    /// receiving the live data written meanwhile (the attach's snapshot was sent before
+    /// that). A link that handed each message to another queue and returned would let
+    /// the package read on, and `arrivals` would pass one. What this cannot prove is
+    /// that the frames had reached this client's socket at the moment of the check, as
+    /// opposed to the sibling's: the bounded wait below gives them that room.
+    @Test func aBlockingOnMessageLeavesTheNextFrameUnread() async throws {
         let server = try await LinkServer.start()
         defer { server.stop() }
         try server.add("s1")
+        let siblingLog = LinkLog()
+        let sibling = started(server, siblingLog)
+        defer { sibling.stop() }
+        #expect(waitUntil(within: 10) { siblingLog.snapshotIndex != nil })
         let log = LinkLog()
         let gate = DispatchSemaphore(value: 0)
         log.block(on: gate)
@@ -371,6 +406,10 @@ private final class HubState: @unchecked Sendable {
         #expect(waitUntil(within: 10) { log.inside == 1 })
         // Live data behind the attach's messages, all held back by the first callback.
         server.write("s1", "HELD-BACK")
+        #expect(waitUntil(within: 10) { siblingLog.dataBytes == Array("HELD-BACK".utf8) })
+        // Room for a link that does not hold the package back to be handed the next.
+        #expect(!waitUntil(within: 0.5) { link.arrivals > 1 })
+        #expect(link.arrivals == 1)
         log.note("release")
         log.unblock()
         gate.signal()
@@ -414,6 +453,10 @@ private final class HubState: @unchecked Sendable {
         gate.signal()
         #expect(stopping.wait(10))
         link.waitForCallbacks()
+        // The package drops what it still had for a stopped stream; through the seam,
+        // a message and an end that reach the link after the stop anyway are not passed on.
+        #expect(throughTheSeam { link.deliver(.data(Array("LATE".utf8))); link.end(.connectionLost) })
+        link.waitForCallbacks()
         let events = log.events
         let exited = try #require(events.firstIndex(of: "exit 0"))
         let returned = try #require(events.firstIndex(of: "stop returned"))
@@ -437,9 +480,16 @@ private final class HubState: @unchecked Sendable {
             log.note("stopped")
         })
         link.start()
-        #expect(waitUntil(within: 10) { log.index(of: "stopped") != nil })
+        // Bounded: a `stop()` that waits for its own callback deadlocks the link's queue,
+        // and then the queue must not be waited on.
+        guard waitUntil(within: 10, { log.index(of: "stopped") != nil }) else {
+            Issue.record("stop() from inside a callback did not return")
+            return
+        }
         server.write("s1", "AFTER-STOP")
         server.end("s1")
+        link.waitForCallbacks()
+        #expect(throughTheSeam { link.deliver(.data(Array("LATE".utf8))); link.end(.sessionEnded) })
         link.waitForCallbacks()
         #expect(log.events == ["enter 0", "stopping", "stopped", "exit 0"])
         #expect(log.messages.count == 1)
@@ -447,7 +497,8 @@ private final class HubState: @unchecked Sendable {
     }
 
     /// Stopped, the link fires no `onEnded`: not for the session ending, not for the
-    /// server going away, and not for its own close.
+    /// server going away, and not for an end that reaches it after the stop anyway (the
+    /// package's own drop is bypassed through the seam, so the link's guard is tested).
     @Test func noOnEndedAfterStop() async throws {
         let server = try await LinkServer.start()
         defer { server.stop() }
@@ -455,14 +506,37 @@ private final class HubState: @unchecked Sendable {
         let log = LinkLog()
         let link = started(server, log)
         #expect(waitUntil(within: 10) { log.snapshotIndex != nil })
-        link.stop()
+        let stopping = BackgroundCall { link.stop() }
+        #expect(stopping.wait(10))
         let delivered = log.messages.count
         server.end("s1")
         server.stop()
+        #expect(throughTheSeam { link.end(.sessionEnded); link.end(.connectionLost) })
         link.waitForCallbacks()
         #expect(log.ends.isEmpty)
         #expect(log.messages.count == delivered)
         link.stop()   // idempotent
+    }
+
+    /// Live, the link ends once, however many ends the package hands it.
+    @Test func aLiveLinkEndsOnce() async throws {
+        let server = try await LinkServer.start()
+        defer { server.stop() }
+        try server.add("s1")
+        let log = LinkLog()
+        let link = started(server, log)
+        defer { link.stop() }
+        #expect(waitUntil(within: 10) { log.snapshotIndex != nil })
+        let delivered = log.messages.count
+        #expect(throughTheSeam {
+            link.end(.connectionLost)
+            link.end(.sessionEnded)
+            link.deliver(.data([0x01]))
+        })
+        link.waitForCallbacks()
+        #expect(log.ends == [.connectionLost])
+        #expect(log.messages.count == delivered)
+        #expect(!link.isLive)
     }
 
     /// A link is used once: stopped, it does not start again.
@@ -477,6 +551,14 @@ private final class HubState: @unchecked Sendable {
         link.start()
         #expect(!link.isLive)
     }
+}
+
+/// Calls the link's entry points from the package (`deliver`, `end`) on a thread of its
+/// own, as the package would from the link's queue, and says whether they returned
+/// within five seconds. Bounded because a link whose guard is broken may run a callback
+/// that calls `stop()`, which then waits for the callback it is in.
+private func throughTheSeam(_ body: @escaping @Sendable () -> Void) -> Bool {
+    BackgroundCall(body).wait(5)
 }
 
 /// A loopback port that was bound and listening, and is closed now.
