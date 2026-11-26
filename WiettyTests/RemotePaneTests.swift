@@ -864,6 +864,27 @@ private final class Rig {
         #expect(rig.bridge.stops == 1)
     }
 
+    /// At quit a view may still appear after `closeAll`: its open gets a pane that
+    /// makes nothing, is not kept, and whose close is nothing.
+    @Test func nothingOpensAfterCloseAll() {
+        let rig = Rig()
+        rig.panes.closeAll()
+        let late = rig.panes.open(rig.ref)
+        rig.main.drain()
+        #expect(rig.panes.count == 0)
+        #expect(rig.panes.opens(of: rig.ref) == 0)
+        #expect(rig.host.created.isEmpty)
+        #expect(late.surfaceId == nil)
+        #expect(late.state == .connecting)
+        late.reconnectPressed()
+        rig.panes.close(rig.ref)
+        rig.main.drain()
+        #expect(rig.host.created.isEmpty)
+        #expect(rig.host.destroyed.isEmpty)
+        #expect(rig.bridges.isEmpty)
+        #expect(rig.links.isEmpty)
+    }
+
     // MARK: The registry and the turn between a destroy and a create
 
     @Test func openingTheSameSessionTwiceGivesTheSamePane() {

@@ -34,9 +34,9 @@ import WiettyCore
 ///   backgrounds (`OSC 11`) and clipboard writes (`OSC 52`) of an old surface reach
 ///   its successor.
 /// - PANE: `RemoteSurfacePane` in a window over `RemotePanes` as the app builds them: a
-///   show, a hide and a second show, the server stopped and back on the same port, the
-///   session ended on the server and the last hide, with the state and where the
-///   surface's container sits at each step.
+///   show, a hide and a second show, a user action, the server stopped and back on the
+///   same port, a change of session, the session ended on the server and the last hide,
+///   with the state, the claims and where the surface's container sits at each step.
 ///
 /// **Not part of the normal suite.** It needs a window, a Metal device and minutes. It
 /// runs only with `WIETTY_REMOTE_SURFACE_CHECK=1` in the test host's environment; see
@@ -701,10 +701,16 @@ struct RemoteSurfaceMeasurementTests {
 
     /// `RemoteSurfacePane` in a window, over `RemotePanes` built as the app builds them
     /// (`RemotePane.Dependencies.app`) on this rig's host and a real `RemoteServer` on
-    /// 127.0.0.1: a show, a hide and a second show of the same session, the server
-    /// going away and coming back on the same port, the session ending on the server,
-    /// and the last hide. Prints `STEP5 PANE` lines with the state and the pane's
-    /// layout (whether the bar takes the top of the pane) at each step.
+    /// 127.0.0.1: a show, a hide and a second show of the same session, a user action
+    /// that makes the pane own the grid, the server going away and coming back on the
+    /// same port, a change of session, the session ending on the server, and the last
+    /// hide. Prints `STEP5 PANE` lines with the state and the pane's layout at each step.
+    ///
+    /// Asserted: the bar is drawn over the surface (the container keeps the whole pane,
+    /// the pane's own grid does not move, and a point in the bar does not hit the
+    /// surface); across the drop and the return no claim reaches the server but the one
+    /// the lost link rule makes, for the same grid; a reconnect keeps the surface; a
+    /// session change destroys the old surface and leaves exactly one.
     @Test func theSwiftUIPaneShowsReconnectsAndEnds() async throws {
         let suite = "test.step5.pane.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -714,7 +720,9 @@ struct RemoteSurfaceMeasurementTests {
         let streams = StreamRig()
         defer { streams.hub.stop() }
         try streams.add("pane", cols: 100, rows: 30, scrollback: 1_000)
+        try streams.add("pane-b", cols: 100, rows: 30, scrollback: 1_000)
         streams.write("pane", Array("STEP5-PANE-MARKER\r\n".utf8))
+        streams.write("pane-b", Array("STEP5-PANE-B\r\n".utf8))
         var server = RemoteServer(store: projects, streamer: streams.hub, token: token, host: "127.0.0.1", port: 0)
         await server.start()
         #expect(await waitUntil(10) { server.boundPort != nil })
@@ -730,34 +738,55 @@ struct RemoteSurfaceMeasurementTests {
         let panes = RemotePanes(host: rig.host, helperPath: rig.helper, connections: connections)
         defer { panes.closeAll() }
         let ref = RemoteSessionRef(connectionId: connection.id, sessionId: "pane")
-        let shown = PaneShown()
-        let hosting = NSHostingView(rootView: PaneProbe(shown: shown, panes: panes, session: ref))
+        let refB = RemoteSessionRef(connectionId: connection.id, sessionId: "pane-b")
+        let shown = PaneShown(session: ref)
+        let hosting = NSHostingView(rootView: PaneProbe(shown: shown, panes: panes))
         rig.window.contentView = hosting
+        var seenIds: [String] = []
 
+        func current() -> RemotePane? { panes.pane(for: shown.session) }
+        func surface() -> GhosttySurfaceView? { current()?.surfaceView as? GhosttySurfaceView }
+        func container() -> SurfaceContainerView? { surface()?.superview as? SurfaceContainerView }
+        func containerSize() -> CGSize? {
+            hosting.layoutSubtreeIfNeeded()
+            return container()?.bounds.size
+        }
         func layout() -> String {
-            guard let pane = panes.pane(for: ref), let view = pane.surfaceView,
-                  let container = view.superview as? SurfaceContainerView else { return "no-surface" }
+            guard let container = container() else { return "no-surface" }
             hosting.layoutSubtreeIfNeeded()
             let frame = container.convert(container.bounds, to: hosting)
             let top = hosting.isFlipped ? frame.minY : hosting.bounds.height - frame.maxY
-            return "containerTop=\(Int(top)) containerHeight=\(Int(container.bounds.height)) paneHeight=\(Int(hosting.bounds.height))"
+            let grid = surface()?.ownGrid.map { "\($0.cols)x\($0.rows)" } ?? "none"
+            return "containerTop=\(Int(top)) containerHeight=\(Int(container.bounds.height)) "
+                + "paneHeight=\(Int(hosting.bounds.height)) ownGrid=\(grid) barHitsSurface=\(barHitsSurface())"
+        }
+        /// Whether a point in the middle of the bar's strip hits the surface.
+        func barHitsSurface() -> Bool {
+            guard let view = surface() else { return false }
+            let y = hosting.isFlipped ? 8 : hosting.bounds.height - 8
+            let point = hosting.convert(NSPoint(x: hosting.bounds.midX, y: y), to: hosting.superview)
+            guard let hit = hosting.hitTest(point) else { return false }
+            return hit === view || hit.isDescendant(of: view)
         }
         func visible(_ marker: String) -> Bool {
-            guard let id = panes.pane(for: ref)?.surfaceId else { return false }
-            return (rig.host.readText(id: id, maxLines: 30) ?? []).contains { $0.contains(marker) }
+            guard let id = current()?.surfaceId else { return false }
+            if !seenIds.contains(id) { seenIds.append(id) }
+            // More rows than any grid here (the claim makes it 40 rows), so the read
+            // reaches the top of the screen.
+            return (rig.host.readText(id: id, maxLines: 100) ?? []).contains { $0.contains(marker) }
         }
         func step(_ name: String, _ ok: Bool) {
-            let pane = panes.pane(for: ref)
+            let pane = current()
             let state = pane.map { "\($0.state)" } ?? "closed"
             report("STEP5 PANE \(name) ok=\(ok ? "yes" : "NO") state=\(state) "
-                + "surface=\(pane?.surfaceId ?? "none") panes=\(panes.count) \(layout())")
+                + "surface=\(pane?.surfaceId ?? "none") panes=\(panes.count) claims=\(streams.claims.count) \(layout())")
             #expect(ok, "\(name)")
         }
 
         // Show.
-        let first = await waitUntil(20) { panes.pane(for: ref)?.state == .live && visible("STEP5-PANE-MARKER") }
+        let first = await waitUntil(20) { current()?.state == .live && visible("STEP5-PANE-MARKER") }
         step("show", first)
-        let firstId = try #require(panes.pane(for: ref)?.surfaceId)
+        let firstId = try #require(current()?.surfaceId)
 
         // Hide: the pane closes and its surface goes.
         shown.on = false
@@ -767,30 +796,63 @@ struct RemoteSurfaceMeasurementTests {
         // Show the same session again: a new pane, a new surface, a new attach.
         shown.on = true
         let again = await waitUntil(20) {
-            panes.pane(for: ref)?.state == .live && visible("STEP5-PANE-MARKER")
-                && panes.pane(for: ref)?.surfaceId != firstId
+            current()?.state == .live && visible("STEP5-PANE-MARKER") && current()?.surfaceId != firstId
         }
         step("show-again", again)
+        let liveId = try #require(current()?.surfaceId)
 
-        // The server goes away: the link is lost, the bar comes.
+        // A user action: the pane claims its own grid and owns it.
+        let fullSize = try #require(containerSize())
+        let ownGrid = try #require(surface()?.ownGrid)
+        surface()?.onUserAction?()
+        let claimed = await waitUntil(10) { streams.claims.count == 1 }
+        step("user-action", claimed && streams.claims.last == ownGrid)
+        try await Task.sleep(for: .milliseconds(500))
+        let claimsBefore = streams.claims.count
+        #expect(claimsBefore == 1)
+
+        // The server goes away: the link is lost, the bar comes over the surface.
         server.stop()
-        let lost = await waitUntil(10) { panes.pane(for: ref)?.state == .reconnecting }
-        step("server-stopped", lost)
+        let lost = await waitUntil(10) { current()?.state == .reconnecting }
+        let lostLayoutSame = containerSize() == fullSize && surface()?.ownGrid == ownGrid && !barHitsSurface()
+        step("server-stopped", lost && lostLayoutSame)
 
-        // It comes back on the same port: the pane reconnects by itself, the bar goes.
+        // It comes back on the same port: the pane reconnects by itself on the same
+        // surface, the bar goes, and the one claim of the lost link rule is the only one.
         server = RemoteServer(store: projects, streamer: streams.hub, token: token, host: "127.0.0.1", port: port)
         await server.start()
         streams.write("pane", Array("STEP5-PANE-BACK\r\n".utf8))
-        let back = await waitUntil(30) { panes.pane(for: ref)?.state == .live && visible("STEP5-PANE-BACK") }
-        step("server-back", back)
+        let back = await waitUntil(30) { current()?.state == .live && visible("STEP5-PANE-BACK") }
+        try await Task.sleep(for: .milliseconds(1_000))
+        // `onClaim` runs only for a grid other than the one in force, so a claim of
+        // the unchanged grid (the lost link rule's) resizes nothing and is not logged:
+        // any entry here is a resize the other Mac would see.
+        let newClaims = Array(streams.claims.dropFirst(claimsBefore))
+        let backText = lastLines(rig.host.readText(id: liveId, maxLines: 100) ?? [], 4)
+        report("STEP5 PANE server-back-detail back=\(back) sameSurface=\(current()?.surfaceId == liveId) "
+            + "resizesAcrossDrop=\(newClaims.map { "\($0.cols)x\($0.rows)" }) text=\(backText)")
+        step("server-back", back && current()?.surfaceId == liveId && containerSize() == fullSize
+             && newClaims.isEmpty)
 
-        // The session ends on the server: the bar says so and the surface stays.
-        streams.end("pane")
-        let ended = await waitUntil(10) { panes.pane(for: ref)?.state == .ended }
-        step("session-ended", ended && panes.pane(for: ref)?.surfaceView != nil)
+        // A change of session in the same view: the old surface goes, a new one comes,
+        // and exactly one surface of this test is alive.
+        shown.session = refB
+        let changed = await waitUntil(20) {
+            current()?.state == .live && visible("STEP5-PANE-B") && rig.host.view(id: liveId) == nil
+        }
+        let alive = seenIds.filter { rig.host.view(id: $0) != nil }
+        report("STEP5 PANE surfaces-alive \(alive)")
+        step("session-change", changed && panes.count == 1 && panes.pane(for: ref) == nil
+             && alive.count == 1 && alive.first == current()?.surfaceId)
+
+        // The session ends on the server: the bar says so over the kept surface.
+        streams.end("pane-b")
+        let ended = await waitUntil(10) { current()?.state == .ended }
+        step("session-ended", ended && current()?.surfaceView != nil && containerSize() == fullSize
+             && !barHitsSurface())
 
         // The last hide.
-        let lastId = panes.pane(for: ref)?.surfaceId
+        let lastId = current()?.surfaceId
         shown.on = false
         let gone = await waitUntil(5) { panes.count == 0 && lastId.map { rig.host.view(id: $0) == nil } ?? false }
         step("last-hide", gone)
@@ -1419,6 +1481,9 @@ private final class StreamRig: @unchecked Sendable {
     private let lock = NSLock()
     private var models: [String: GhosttyVtScreenModel] = [:]
     private var snapshotCounts: [String: Int] = [:]
+    private var claimLog: [TerminalSize] = []
+    /// Every claim the hub applied, in order.
+    var claims: [TerminalSize] { lock.withLock { claimLog } }
 
     init() {
         hub.onIngest = { [weak self] session, bytes in self?.model(session)?.write(bytes) }
@@ -1430,7 +1495,11 @@ private final class StreamRig: @unchecked Sendable {
         }
         hub.onRepaint = { [weak self] session in self?.model(session)?.repaintFrame() }
         hub.onAlternateScreen = { [weak self] session in self?.model(session)?.isAlternateScreen ?? false }
-        hub.onClaim = { [weak self] session, size in self?.model(session)?.resize(to: size) }
+        hub.onClaim = { [weak self] session, size in
+            guard let self else { return }
+            self.lock.withLock { self.claimLog.append(size) }
+            self.model(session)?.resize(to: size)
+        }
         hub.onSessionCensus = { [weak self] in
             guard let self else { return .unknown }
             return .sessions(self.lock.withLock { Set(self.models.keys) })
@@ -1892,22 +1961,24 @@ private func offMain<T: Sendable>(_ body: @escaping @Sendable () throws -> T) as
 
 // MARK: - The SwiftUI pane
 
-/// Whether the probe shows the pane.
+/// Whether the probe shows the pane, and which session.
 @MainActor @Observable
 private final class PaneShown {
     var on = true
+    var session: RemoteSessionRef
+
+    init(session: RemoteSessionRef) { self.session = session }
 }
 
 /// The pane, as `RightTerminalView` puts it: keyed by its session, and gone when hidden.
 private struct PaneProbe: View {
     let shown: PaneShown
     let panes: RemotePanes
-    let session: RemoteSessionRef
 
     var body: some View {
         if shown.on {
-            RemoteSurfacePane(panes: panes, session: session)
-                .id(session)
+            RemoteSurfacePane(panes: panes, session: shown.session)
+                .id(shown.session)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             Color.clear

@@ -26,36 +26,46 @@ placeholder instead (see `ContentView.md`). A stack with no surface host or no h
 shows the stack's setup error, as the own pane does.
 
 At quit `TerminalQuitTeardown` closes every remote pane (each stops its link and
-bridge and destroys its surface) and then shuts down the stack's own terminals.
+bridge and destroys its surface) and then shuts down the stack's own terminals. After
+that the registry opens nothing: a view that appears that late gets a pane that is
+already closed and makes no surface.
 
 ## Layout
 
-Top to bottom: a bar while the link is down or the session is over, then the surface
-in the same `SurfaceContainer` the own pane uses. The surface is pinned to the top
-left, has the size of the grid in force when another viewer holds it, and sits in a
-margin painted in the terminal's background colour (see "The local terminal in the
-pane" in `ContentView.md`). The bar is drawn in the window status bar's style (caption
-text on the bar material, a divider under it) and takes the top 23 points of the pane,
-so the surface below it is that much shorter while it shows.
+The surface fills the pane, in the same `SurfaceContainer` the own pane uses. It is
+pinned to the top left, has the size of the grid in force when another viewer holds
+it, and sits in a margin painted in the terminal's background colour (see "The local
+terminal in the pane" in `ContentView.md`). While the link is down or the session is
+over, a bar is drawn over the top of the surface, in the window status bar's style
+(caption text on the bar material, a divider under it). It covers the top of the first
+row while it shows.
+
+Over, never above: the container keeps the whole pane whether the bar shows or not.
+A bar above it would make the pane shorter, so a pane that owns the grid would claim a
+smaller grid when the link came back (the server's resize arrives before its snapshot,
+while the bar is still there) and the full one when the bar went, two resizes on the
+other Mac for a line of text; a key typed while reconnecting would claim the small grid
+too; and for a pane showing a grid another viewer imposed, the bar would cut off its
+bottom rows.
 
 ```
 connecting, live                          reconnecting
 ┌────────────────────────────────┐        ┌────────────────────────────────┐
-│$ ls                            │        │Connection lost. Reconnecting…  │
-│README.md  docs/                │        │               [Reconnect now]  │  the bar
+│$ ls                            │        │Connection lost. Reconnecting…  │  the bar, over
+│README.md  docs/                │        │               [Reconnect now]  │  the first row
 │$ _                             │        ├────────────────────────────────┤
-│                                │        │$ ls                            │
 │                                │        │README.md  docs/                │
 │                                │        │$ _                             │
+│                                │        │                                │
 └────────────────────────────────┘        └────────────────────────────────┘
 
 waiting                                   ended
 ┌────────────────────────────────┐        ┌────────────────────────────────┐
 │Connection lost.   [Reconnect]  │        │This terminal has ended on the  │
 ├────────────────────────────────┤        │other Mac.                      │  no button
-│$ ls                            │        ├────────────────────────────────┤
-│README.md  docs/                │        │$ ls                            │  the last
-│$ _                             │        │README.md  docs/                │  screen, kept
+│README.md  docs/                │        ├────────────────────────────────┤
+│$ _                             │        │README.md  docs/                │  the last
+│                                │        │$ _                             │  screen, kept
 └────────────────────────────────┘        └────────────────────────────────┘
 
 refused
@@ -70,22 +80,22 @@ refused
 └────────────────────────────────┘
 ```
 
-(In the window the bar's text and its button are on one line; they are drawn on two
-above only for width.)
+(In the window the bar's text and its button are on one line, 23 points high, over
+part of the first row; they are drawn on two lines above only for width.)
 
 ## What each state draws
 
 `RemotePaneLayout` derives it from the pane's state, and `RemoteSurfacePaneTests`
 asserts it.
 
-| state | bar | button | below the bar |
+| state | bar, over the surface | button | the pane |
 | --- | --- | --- | --- |
 | `connecting` | none | none | the surface (none for one main turn, while it is made) |
 | `live` | none | none | the surface |
 | `reconnecting` | "Connection lost. Reconnecting…" | "Reconnect now" | the surface |
 | `waiting` | "Connection lost." | "Reconnect" | the surface |
 | `ended` | "This terminal has ended on the other Mac." | none | the surface, with its last screen |
-| `refused(message)` | none | none | a `ContentUnavailableView`, "Cannot show this terminal" and the message, filling the pane |
+| `refused(message)` | none | none | a `ContentUnavailableView`, "Cannot show this terminal" and the message |
 
 Both buttons call `RemotePane.reconnectPressed()`: in `reconnecting` it makes an
 attempt now, in `waiting` an attempt now and a new two minutes of automatic attempts.

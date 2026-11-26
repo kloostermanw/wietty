@@ -8,7 +8,8 @@ import WiettyShared
 /// connection: a bar above the surface or not, its text and its button, and the
 /// surface or a message that fills the pane.
 struct RemotePaneLayout: Equatable {
-    /// The line above the surface while the link is down or the session is over.
+    /// The line over the top of the surface while the link is down or the session is
+    /// over. Drawn over it, so it never changes the surface's size.
     struct Bar: Equatable {
         let text: String
         /// The button's title, nil for none. Whatever it says, it calls
@@ -70,6 +71,11 @@ struct RemotePaneLayout: Equatable {
 /// pane's size by the container and passes it to the pane's grid, as an own pane's
 /// does.
 ///
+/// The bar is drawn over the top of the surface, not above it: the surface's
+/// container always has the whole pane, so a bar that comes and goes changes neither
+/// the grid this pane claims when it owns it nor what is visible of a grid imposed on
+/// it. The bar covers the top of the first row while it shows.
+///
 /// The bar comes and goes with the state, with no animation: a link that keeps
 /// dropping switches between `live` and `reconnecting`, and an animated bar would
 /// make that worse to look at.
@@ -83,10 +89,7 @@ struct RemoteSurfacePane: View {
 
     var body: some View {
         let layout = RemotePaneLayout(state: pane?.state)
-        VStack(spacing: 0) {
-            if let bar = layout.bar {
-                RemotePaneBar(bar: bar) { pane?.reconnectPressed() }
-            }
+        Group {
             switch layout.content {
             case .surface:
                 // Nil for one main turn after the open (the owner creates the
@@ -104,6 +107,14 @@ struct RemoteSurfacePane: View {
                 }
             }
         }
+        // Over the surface, never above it: the container keeps the whole pane, so
+        // the bar changes neither the grid this pane would claim nor how much of an
+        // imposed grid is visible. It covers the top of the first row while shown.
+        .overlay(alignment: .top) {
+            if let bar = layout.bar {
+                RemotePaneBar(bar: bar) { pane?.reconnectPressed() }
+            }
+        }
         .transaction { $0.animation = nil }
         .onAppear {
             guard pane == nil else { return }
@@ -117,7 +128,7 @@ struct RemoteSurfacePane: View {
     }
 }
 
-/// The line above a remote pane's surface, in the style of the window's status bar:
+/// The line over the top of a remote pane's surface, in the style of the window's status bar:
 /// caption text on the bar material, a divider under it.
 private struct RemotePaneBar: View {
     let bar: RemotePaneLayout.Bar
