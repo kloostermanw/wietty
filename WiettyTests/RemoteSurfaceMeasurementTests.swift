@@ -28,8 +28,10 @@ import WiettyCore
 /// - R7: what the surface shows and does when the bridge stops after the session ended,
 ///   and when it is kept with no link.
 /// - R8: 50 destroy and create cycles, with an id per creation, the create in the
-///   destroy's main turn, on the next turn, or once the old helper has exited: which
-///   late titles and backgrounds (`OSC 11`) of an old surface reach its successor.
+///   destroy's main turn (with and without the host's drain on destroy) or on the next
+///   turn, own surfaces after own ones and after viewers: which late titles,
+///   backgrounds (`OSC 11`) and clipboard writes (`OSC 52`) of an old surface reach
+///   its successor.
 ///
 /// **Not part of the normal suite.** It needs a window, a Metal device and minutes. It
 /// runs only with `WIETTY_REMOTE_SURFACE_CHECK=1` in the test host's environment; see
@@ -595,6 +597,9 @@ struct RemoteSurfaceMeasurementTests {
         #expect(rig.events.titles.contains { $0.id == "own" && $0.title == "a title" })
         #expect(rig.events.all.contains { $0.id == "own" && $0.kind == "bell" })
         #expect(rig.events.all.contains { $0.id == "own" && $0.kind == "notification" })
+        // Its helper gone while the surface lives, a key asks libghostty to close it,
+        // and the request reaches the host's owner by the next main turn.
+        #expect(await closeRequestAfterHelperExit(rig, surface: own) == 1)
         own.close()
 
         // A terminal on another Mac.
@@ -616,7 +621,13 @@ struct RemoteSurfaceMeasurementTests {
         #expect(pasteboard.string(forType: .string) == "on this Mac")
         #expect(rig.events.all.filter { $0.id == id && ["title", "bell", "notification", "close", "input"].contains($0.kind) }.isEmpty)
 
+        #expect(rig.host.viewerClipboardAccess.map { GhosttySurfaceHost.isClosed(read: $0.read, write: $0.write) } == true)
         rig.host.reloadConfig()
+        #expect(rig.host.viewerClipboardAccess.map { GhosttySurfaceHost.isClosed(read: $0.read, write: $0.write) } == true)
+        // The overlay file of this process is gone once loaded, at start and on reload.
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: NSTemporaryDirectory()))?
+            .filter { $0.hasPrefix("wietty-viewer-surface-\(getpid())-") } ?? []
+        #expect(leftovers.isEmpty, "left behind: \(leftovers)")
         #expect(await deliver(osc52Write("after a reload"), to: link, id: id))
         #expect(pasteboard.changeCount == changeCount)
 
@@ -654,28 +665,72 @@ struct RemoteSurfaceMeasurementTests {
         view.selectAll(nil)
         view.copy(nil)
         #expect(pasteboard.string(forType: .string)?.contains("copied by the user") == true)
+
+        // A close request of the viewer reaches no owner.
+        #expect(await closeRequestAfterHelperExit(rig, surface: viewer) == 0)
+    }
+
+    /// Stops the bridge of `surface`, so its helper exits while the surface lives,
+    /// waits until libghostty shows that, presses a key, and returns how many close
+    /// requests reached the host's owner for it by the next main turn. libghostty asks
+    /// for the close inside the key's handling and the host hops it to the main queue,
+    /// so the turn after the key is late enough; the own surface's 1 shows it.
+    private func closeRequestAfterHelperExit(_ rig: SurfaceRig, surface: OpenSurface) async -> Int {
+        surface.bridge.stop()
+        let exited = await waitUntil(10) {
+            (rig.host.readText(id: surface.id, maxLines: 40) ?? []).contains { $0.contains("Press any key") }
+        }
+        #expect(exited, "the surface never showed its child's exit")
+        guard let view = rig.host.view(id: surface.id) as? GhosttySurfaceView else { return -1 }
+        rig.window.makeFirstResponder(view)
+        let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                   timestamp: ProcessInfo.processInfo.systemUptime,
+                                   windowNumber: rig.window.windowNumber, context: nil, characters: "a",
+                                   charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)!
+        view.keyDown(with: key)
+        await nextMainTurn()
+        return rig.events.closes(surface.id)
     }
 
     // MARK: R8. Fast hide and show
 
     /// When the next surface is created after its predecessor was destroyed.
     enum R8Timing: String, CaseIterable {
-        /// Destroy and create in one main turn.
+        /// Destroy and create in one main turn, with the host's drain on destroy
+        /// turned off (`drainsOnDestroy`): what the host did before it drained.
+        case sameTurnNoDrain = "same-turn-no-drain"
+        /// Destroy and create in one main turn, as the host does it: it drains
+        /// libghostty's mailbox right after the free.
         case sameTurn = "same-turn"
         /// The create on the main queue turn after the destroy's: everything queued on
         /// the main queue before it (wakeups, action hops) runs first.
         case nextTurn = "one-turn-between"
-        /// The create once the old helper process has exited, which closes its end of
-        /// the bridge's socket.
-        case helperExited = "after-helper-exit"
+    }
+
+    /// Which surfaces follow which.
+    enum R8Mix: String, CaseIterable {
+        /// Every generation a surface of this Mac's own terminal (`createSurface`).
+        case ownAfterOwn = "own-after-own"
+        /// Even generations viewers (`createViewerSurface`) whose program also writes the
+        /// clipboard (`OSC 52`) every 2 ms, odd ones own surfaces: a viewer's late
+        /// clipboard write, title or bell would reach an own surface, which runs under
+        /// the app's configuration with the clipboard open and reports titles.
+        case ownAfterViewer = "own-after-viewer"
     }
 
     @Test func r8FastHideAndShow() async throws {
-        let rig = try await SurfaceRig.make(width: 1000, height: 700, container: true)
-        defer { rig.close() }
-        for timing in R8Timing.allCases {
-            for run in 1...Self.runs {
-                try await r8(rig, run: run, timing: timing)
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("eu.kloosterman.wietty.step5.r8.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let rig = try await SurfaceRig.make(width: 1000, height: 700, container: true, pasteboard: pasteboard)
+        defer {
+            rig.host.drainsOnDestroy = true
+            rig.close()
+        }
+        for mix in R8Mix.allCases {
+            for timing in R8Timing.allCases {
+                for run in 1...Self.runs {
+                    try await r8(rig, pasteboard: pasteboard, run: run, timing: timing, mix: mix)
+                }
             }
         }
     }
@@ -694,11 +749,18 @@ struct RemoteSurfaceMeasurementTests {
         return green == r8BackgroundMarker ? red : -1
     }
 
-    private func r8(_ rig: SurfaceRig, run: Int, timing: R8Timing) async throws {
-        let prefix = "STEP5 R8 timing=\(timing.rawValue) run=\(run)"
+    private func r8(_ rig: SurfaceRig, pasteboard: NSPasteboard, run: Int, timing: R8Timing,
+                    mix: R8Mix) async throws {
+        let prefix = "STEP5 R8 mix=\(mix.rawValue) timing=\(timing.rawValue) run=\(run)"
         let before = Census.take()
         rig.events.reset()
-        func idFor(_ generation: Int) -> String { "r8-\(timing.rawValue)-\(run)-\(generation)" }
+        rig.host.drainsOnDestroy = timing != .sameTurnNoDrain
+        defer { rig.host.drainsOnDestroy = true }
+        pasteboard.clearContents()
+        pasteboard.setString("on this Mac", forType: .string)
+        let changeCount = pasteboard.changeCount
+        func idFor(_ generation: Int) -> String { "r8-\(mix.rawValue)-\(timing.rawValue)-\(run)-\(generation)" }
+        func isViewer(_ generation: Int) -> Bool { mix == .ownAfterViewer && generation % 2 == 0 }
         let cycles = 50
         var generationSince: [UInt64] = []
         var handles: [UInt] = []
@@ -708,17 +770,24 @@ struct RemoteSurfaceMeasurementTests {
         func open(_ generation: Int) throws -> OpenSurface {
             let link = ScriptedLink()
             // As a remote program would: a background (`OSC 11`) and a title every 2 ms
-            // and a bell every 20 ms, each naming the generation that sent it. The
-            // background's red byte is the generation, its green byte the marker.
+            // and a bell every 20 ms, each naming the generation that sent it, and for a
+            // viewer a clipboard write (`OSC 52`) naming it too. The background's red
+            // byte is the generation, its green byte the marker.
             let background = String(format: "rgb:%02x/%02x/%02x", generation, Self.r8BackgroundMarker, run)
+            let clipboard = isViewer(generation)
+                ? "\u{1B}]52;c;\(Data("written by g\(generation)".utf8).base64EncodedString())\u{07}" : ""
             link.generate(everyMilliseconds: 2) { tick in
                 let bell = tick % 10 == 0 ? "\u{07}" : ""
-                return .data(Array("\u{1B}]11;\(background)\u{07}\u{1B}]2;g\(generation)-\(tick)\u{07}\(bell)line \(tick)\r\n".utf8))
+                return .data(Array("\u{1B}]11;\(background)\u{07}\(clipboard)\u{1B}]2;g\(generation)-\(tick)\u{07}\(bell)line \(tick)\r\n".utf8))
             }
-            let surface = try rig.open(id: idFor(generation), link: link, imposeOnResize: false)
+            let surface = try rig.open(id: idFor(generation), link: link, imposeOnResize: false,
+                                       viewer: isViewer(generation))
             generationSince.append(now())
             handles.append(handle(idFor(generation)))
             return surface
+        }
+        func heldBackground(_ generation: Int) -> Int? {
+            Self.r8Generation(of: (rig.host.view(id: idFor(generation)) as? GhosttySurfaceView)?.programBackground)
         }
 
         // Which generation's background the host holds for the surface shown now,
@@ -737,49 +806,23 @@ struct RemoteSurfaceMeasurementTests {
         var current = try open(0)
         backgrounds.shown(generation: 0, at: generationSince[0])
         var destroyed: [(id: String, generation: Int, at: UInt64)] = []
-        // The background each surface held when it was destroyed: its own, an older
-        // generation's, none, or a colour this measurement did not set.
-        var heldAtDestroy = (own: 0, older: 0, none: 0, foreign: 0)
-        var exitWaits: [UInt64] = []
-        var exitsNotSeen = 0
-        var helpersAliveBeforeClose = 0
+        var notLive = 0
         for generation in 1...cycles {
-            // Live: a title of this generation seen.
-            let liveId = idFor(generation - 1)
-            _ = await waitUntil(2) {
-                rig.events.titles.contains { $0.id == liveId && $0.title.hasPrefix("g\(generation - 1)-") }
-            }
-            let view = rig.host.view(id: liveId) as? GhosttySurfaceView
-            switch Self.r8Generation(of: view?.programBackground) {
-            case nil: heldAtDestroy.none += 1
-            case -1: heldAtDestroy.foreign += 1
-            case generation - 1: heldAtDestroy.own += 1
-            default: heldAtDestroy.older += 1
-            }
-            let helper = current.bridge.helperDescriptor.flatMap(peerPid(of:))
-            if let helper, !processGone(helper) { helpersAliveBeforeClose += 1 }
+            // Live: the host holds this generation's own background (a viewer reports
+            // no title, so the background is the sign for both kinds).
+            if !(await waitUntil(2) { heldBackground(generation - 1) == generation - 1 }) { notLive += 1 }
             // Hide (bridge first, as the host does), then show, at the time measured.
             current.close()
-            destroyed.append((liveId, generation - 1, now()))
+            destroyed.append((idFor(generation - 1), generation - 1, now()))
             switch timing {
-            case .sameTurn:
+            case .sameTurnNoDrain, .sameTurn:
                 current = try open(generation)
             case .nextTurn:
                 current = try await onNextMainTurn { try open(generation) }
-            case .helperExited:
-                let start = now()
-                if let helper, await waitForExit(of: helper, seconds: 5) {
-                    exitWaits.append(now() - start)
-                } else {
-                    exitsNotSeen += 1
-                }
-                current = try open(generation)
             }
             backgrounds.shown(generation: generation, at: generationSince[generation])
         }
-        _ = await waitUntil(2) {
-            rig.events.titles.contains { $0.id == idFor(cycles) && $0.title.hasPrefix("g\(cycles)-") }
-        }
+        _ = await waitUntil(2) { heldBackground(cycles) == cycles }
         try await Task.sleep(for: .milliseconds(500))
         current.close()
         destroyed.append((idFor(cycles), cycles, now()))
@@ -812,6 +855,9 @@ struct RemoteSurfaceMeasurementTests {
                 crossSamples.append("\(title.id)<-\(title.title)(msAfterCreation=\(age),sameHandleAsSender=\(reused))")
             }
         }
+        // Every clipboard write of this run is a viewer's, which its own surface refuses:
+        // any change of the pasteboard is a write that reached another surface.
+        let pasteboardWrites = pasteboard.changeCount - changeCount
         let reusedHandles = (1..<handles.count).filter { handles[$0] == handles[$0 - 1] }.count
         report("""
             \(prefix) crossTitleSamples=\(crossSamples.joined(separator: ",")) \
@@ -820,22 +866,21 @@ struct RemoteSurfaceMeasurementTests {
             crossTitlesOnAReusedAddress=\(crossOnReusedAddress)
             """)
         report("\(prefix) titlesNotFromTheStream=\(foreign.count) samples=\(foreign.prefix(4).joined(separator: ","))")
-        if timing == .helperExited {
-            report("""
-                \(prefix) helpersAliveBeforeClose=\(helpersAliveBeforeClose)/\(cycles) \
-                helperExitWait[\(summary(exitWaits))] exitsNotSeen=\(exitsNotSeen)
-                """)
-        }
         let kinds = Dictionary(grouping: events.all, by: \.kind).mapValues(\.count)
             .sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
         report("""
-            \(prefix) cycles=\(cycles) events[\(kinds)] lateForDestroyedIds=\(late) \
+            \(prefix) cycles=\(cycles) notLive=\(notLive) events[\(kinds)] lateForDestroyedIds=\(late) \
             crossTitles=\(crossTitles) cyclesWithCrossTitle=\(cyclesWithCrossedTitle.count) \
             backgroundSamples=\(backgrounds.samples) crossBackgroundSamples=\(backgrounds.crossed) \
             cyclesWithCrossBackground=\(backgrounds.cyclesCrossed.count) foreignBackgrounds=\(backgrounds.foreign) \
-            heldAtDestroy[own=\(heldAtDestroy.own),older=\(heldAtDestroy.older),none=\(heldAtDestroy.none),foreign=\(heldAtDestroy.foreign)] \
+            crossClipboardWrites=\(pasteboardWrites) pasteboardNow=\((pasteboard.string(forType: .string) ?? "nil").debugDescription) \
             after2s[\(Census.take().describe(against: before))]
             """)
+        if timing != .sameTurnNoDrain {
+            #expect(crossTitles == 0)
+            #expect(backgrounds.crossed == 0)
+            #expect(pasteboardWrites == 0)
+        }
     }
 }
 
@@ -885,6 +930,14 @@ private final class R8BackgroundSamples {
     }
 }
 
+/// Returns once a block enqueued on the main queue now has run.
+@MainActor
+private func nextMainTurn() async {
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        DispatchQueue.main.async { continuation.resume() }
+    }
+}
+
 /// Runs `body` on the main queue turn after this one, and returns what it returned.
 @MainActor
 private func onNextMainTurn(_ body: @escaping @MainActor () throws -> OpenSurface) async throws -> OpenSurface {
@@ -897,50 +950,6 @@ private func onNextMainTurn(_ body: @escaping @MainActor () throws -> OpenSurfac
         }
     }
     return try box.result!.get()
-}
-
-/// The process at the other end of a Unix domain socket.
-private func peerPid(of descriptor: Int32) -> pid_t? {
-    var pid: pid_t = 0
-    var length = socklen_t(MemoryLayout<pid_t>.size)
-    guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &pid, &length) == 0, pid > 0 else { return nil }
-    return pid
-}
-
-/// Whether `pid` has exited (a zombie counts) within `seconds`. Watched by the kernel's
-/// exit event, and checked once after the watch is in place, for an exit before it.
-/// Whether `pid` is no longer running: gone, or a zombie.
-private func processGone(_ pid: pid_t) -> Bool {
-    var info = proc_bsdinfo()
-    let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return true }
-    return info.pbi_status == UInt32(SZOMB)
-}
-
-@MainActor
-private func waitForExit(of pid: pid_t, seconds: Double) async -> Bool {
-    let gone: @Sendable () -> Bool = { processGone(pid) }
-    final class Once: @unchecked Sendable {
-        private let lock = NSLock()
-        private var continuation: CheckedContinuation<Bool, Never>?
-        init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
-        func finish(_ value: Bool) {
-            let taken: CheckedContinuation<Bool, Never>? = lock.withLock {
-                defer { continuation = nil }
-                return continuation
-            }
-            taken?.resume(returning: value)
-        }
-    }
-    let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
-    defer { source.cancel() }
-    return await withCheckedContinuation { continuation in
-        let once = Once(continuation)
-        source.setEventHandler { once.finish(true) }
-        source.resume()
-        if gone() { once.finish(true) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { once.finish(gone()) }
-    }
 }
 
 // MARK: - Gate
