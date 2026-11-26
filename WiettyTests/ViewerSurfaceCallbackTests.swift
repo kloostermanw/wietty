@@ -57,4 +57,41 @@ import Testing
         #expect(access.read == "deny")
         #expect(access.write == "deny")
     }
+
+    /// Every action the host takes from libghostty, mapped to its callback and passed
+    /// on or not, for a viewer and for this Mac's own terminal: what `apply` decides.
+    @Test func everyActionIsMappedAndDecidedAsExpected() {
+        typealias Event = GhosttySurfaceHost.SurfaceEvent
+        let table: [(Event, Callback, viewerKeeps: Bool)] = [
+            (.render, .render, true),
+            (.cellSize, .cellSize, true),
+            (.background(r: 1, g: 2, b: 3), .background, true),
+            (.title("t"), .title, false),
+            (.bell, .bell, false),
+            (.notification(title: "t", body: "b"), .desktopNotification, false),
+        ]
+        for (event, callback, viewerKeeps) in table {
+            #expect(GhosttySurfaceHost.callback(for: event) == callback)
+            #expect(GhosttySurfaceHost.passesOn(GhosttySurfaceHost.callback(for: event), viewer: true) == viewerKeeps)
+            #expect(GhosttySurfaceHost.passesOn(GhosttySurfaceHost.callback(for: event), viewer: false))
+        }
+    }
+
+    /// Only a configuration that resolves both keys to `deny` counts as closed.
+    @Test func onlyDenyOnBothKeysIsClosed() {
+        #expect(GhosttySurfaceHost.isClosed(read: "deny", write: "deny"))
+        for (read, write) in [("ask", "deny"), ("deny", "allow"), ("allow", "allow"),
+                              (nil, "deny"), ("deny", nil), (nil, nil)] as [(String?, String?)] {
+            #expect(!GhosttySurfaceHost.isClosed(read: read, write: write))
+        }
+    }
+
+    /// A path libghostty cannot read sets nothing, which is not closed: why the host
+    /// checks the configuration it built rather than the file it wrote.
+    @MainActor
+    @Test func aConfigurationWhoseFileWasNotReadIsNotClosed() {
+        let missing = TestScratch.root.appendingPathComponent("wietty-viewer-missing-\(UUID().uuidString).cfg")
+        let access = GhosttySurfaceHost.clipboardAccess(loading: missing)
+        #expect(!GhosttySurfaceHost.isClosed(read: access.read, write: access.write))
+    }
 }
