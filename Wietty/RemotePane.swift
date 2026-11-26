@@ -529,6 +529,8 @@ final class RemotePanes {
     private let dependencies: RemotePane.Dependencies
     private let gate: ViewerSurfaceGate
     private var panes: [RemoteSessionRef: (pane: RemotePane, opens: Int)] = [:]
+    /// Set by `closeAll`; every later `open` is inert.
+    private var closedAll = false
 
     init(dependencies: RemotePane.Dependencies) {
         self.dependencies = dependencies
@@ -546,8 +548,16 @@ final class RemotePanes {
     /// The pane of `ref`, made and started if it is not open. Counted: a view that
     /// appears for a ref still open (SwiftUI may run a new view's appear before the old
     /// one's disappear) gets the same pane, and it stays until each open is closed.
+    ///
+    /// After `closeAll` (quit) nothing opens: a view that appears that late gets a pane
+    /// that is closed already, is not kept, makes nothing and whose close is nothing.
     @discardableResult
     func open(_ ref: RemoteSessionRef) -> RemotePane {
+        if closedAll {
+            let inert = RemotePane(ref: ref, dependencies: dependencies, gate: gate)
+            inert.close()
+            return inert
+        }
         if let entry = panes[ref] {
             panes[ref] = (entry.pane, entry.opens + 1)
             return entry.pane
@@ -577,8 +587,9 @@ final class RemotePanes {
         }
     }
 
-    /// Closes every pane, whatever its count. For quit.
+    /// Closes every pane, whatever its count, and refuses every later `open`. For quit.
     func closeAll() {
+        closedAll = true
         let all = panes.values.map(\.pane)
         panes = [:]
         for pane in all { pane.close() }

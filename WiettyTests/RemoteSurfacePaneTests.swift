@@ -54,6 +54,18 @@ import Testing
         }
     }
 
+    /// The bar is drawn over the surface: every state with a bar has the same content
+    /// as `live`, so nothing of what fills the pane depends on the bar. (That the
+    /// container keeps the pane's whole size is measured by the gated
+    /// `RemoteSurfaceMeasurementTests.theSwiftUIPaneShowsReconnectsAndEnds`.)
+    @Test func theBarNeverChangesWhatFillsThePane() {
+        for state in [RemoteReconnectPolicy.State.reconnecting, .waiting, .ended] {
+            let layout = Layout(state: state)
+            #expect(layout.bar != nil)
+            #expect(layout.content == Layout(state: .live).content)
+        }
+    }
+
     /// Before the registry has handed the view its pane (the first body, before
     /// `onAppear`), the pane is drawn as connecting: no bar, nothing in the surface's
     /// place yet.

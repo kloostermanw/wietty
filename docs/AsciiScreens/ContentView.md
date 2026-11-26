@@ -141,9 +141,11 @@ old view's disappear closes its pane in `RemotePanes` and the new one's appear o
 another. Without that id one pane position would keep the first session's pane while
 claiming to show the second. Coming back attaches again and the server paints the
 current screen, so what is lost is that viewer's scrollback and not the screen. A
-remote session that ends while it is on screen keeps its last screen under a bar that
-says so, matching what this pane does for a local terminal whose command exited. See
-`RemoteSurfacePane.md`.
+remote session that ends while it is on screen keeps its last screen, with a bar over
+its top saying so and no button. That differs from a local terminal whose command
+exited, which hides its last screen behind the stopped screen with Restart (below):
+the session belongs to the other Mac, and clicking its row there asks that Mac for a
+new one. See `RemoteSurfacePane.md`.
 
 A connection removed, from the sidebar or from the settings panel, takes its
 terminal off the screen and puts the local one back, because the rows went with it
