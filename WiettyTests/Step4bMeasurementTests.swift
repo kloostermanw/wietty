@@ -9,8 +9,8 @@ import WiettyCore
 /// phase 3 step 4b of issue #84: the hub's one delivery queue under a claim flood (A),
 /// the session and model locks under an output flood with claims and resyncs (B), a
 /// local attach whose snapshot is written from the delivery queue (C), and a client of
-/// the package that may lose `ended` or `error` to the close the route sends right after
-/// it (D).
+/// the package that lost `ended` to the close the route used to send right after it (D;
+/// the route now leaves the close to the client, and D confirms the end reason is right).
 ///
 /// A measurement, not a test: it asserts only what it needs to stay meaningful, and
 /// prints lines starting with `STEP4B`. Every measurement runs three times and prints
@@ -40,8 +40,15 @@ struct Step4bMeasurementTests {
     /// 16 byte line every 2 ms to a queued viewer of its own. Y's delay is from just
     /// before `write` to its viewer's sink. Phases: no claims; one claim per 50 ms (the
     /// pane's own limit, a window drag); a closed loop that claims again from the sink
-    /// the moment the last claim is answered (the most the hub accepts without a
-    /// backlog); a burst of 20 claims sent at once (an open loop client).
+    /// the moment the last claim is answered; a burst of 20 claims sent at once (an open
+    /// loop client).
+    ///
+    /// Since step 4b (Q1) the hub holds a viewer's claims to one per 50 ms, so the closed
+    /// loop is paced by the hold and reports about 20 claims per second (before: 113 to
+    /// 131 at 100,000 lines, up to 21,000 at 300 lines), and a burst of 20 drains in
+    /// about 55 to 75 ms, one 50 ms hold, with Y's delay no longer growing with the
+    /// burst (before: Y's max 36 ms at 10,000 lines and 170 to 176 ms at 100,000). A
+    /// claim that is replaced while held is answered without a reflow of its own.
     @Test func aClaimFlood() throws {
         let cases: [(label: String, history: Int, scrollback: Int)] = [
             ("small300", 300, TerminalScrollback.defaultLines),
@@ -241,6 +248,11 @@ struct Step4bMeasurementTests {
     /// progress deadline ends it). Measured: Y's delay as in A, how long a probe that
     /// waits for the delivery queue (`waitForPendingDeliveries`) was held at most, and
     /// from the hello written to the snapshot read whole.
+    ///
+    /// Since Q2 the probe is held only for the format (about 5 to 11 ms at 10,000 lines,
+    /// 45 to 50 ms at 100,000) whatever the reader does; before, a slow, stalled or
+    /// stopped reader held it for 3 s, 4.5 s and 5 s. The reader's own time to the
+    /// snapshot is unchanged.
     @Test func cLocalAttach() throws {
         let cases: [(label: String, history: Int, scrollback: Int, readers: [Reader])] = [
             ("small300", 300, TerminalScrollback.defaultLines, [.fast, .slow, .stalled]),
@@ -326,7 +338,8 @@ struct Step4bMeasurementTests {
     ///
     /// - `ended-*`: attached, the snapshot received, then the client sends input (or a
     ///   claim, or nothing) every millisecond, and after 2 to 20 ms the session ends
-    ///   (`endViewers`). The route writes `ended` and returns, which closes.
+    ///   (`endViewers`). The route writes `ended` and, since step 4b, leaves the close to
+    ///   the client (before, it returned and so closed at once).
     /// - `refused-protocol`, `refused-session`: the attach URL is rewritten to name
     ///   protocol 3, or no session; the client sends input from the moment it starts
     ///   (the client holds it until a hello, which never comes).
