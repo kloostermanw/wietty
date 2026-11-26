@@ -56,6 +56,12 @@ extension TerminalBridge: ViewerBridging {}
 /// time, nothing behind the snapshot overtakes it. The owner is told through `observe`
 /// (`.snapshotWaiting`) and answers with `releaseSnapshot(token:pass:)`.
 ///
+/// While it holds, the owner may have it ask the surface its size (`askSize(token:)`):
+/// the held callback, on the link's thread, hands the bridge's handler a `data` message
+/// with `CSI 18 t`, which the bridge writes to the helper like any output, and goes on
+/// holding. The surface's answer comes back as input, which `send` passes through the
+/// pane's `SizeAnswerFilter` before anything reaches the other Mac.
+///
 /// Only the snapshot is held. A `resize` during live output is passed on as it comes,
 /// with nothing held behind it: an owner dragging its window would otherwise stall its
 /// own output on every step.
@@ -82,20 +88,25 @@ final class ObservedLink: TerminalStreamLink, @unchecked Sendable {
     private var messageHandler: (@Sendable (StreamMessage) -> Void)?
     private var endHandler: (@Sendable (TerminalEndReason) -> Void)?
     private var snapshotSeen = false
+    private let answers: SizeAnswerFilter?
     // The hold, under `lock`.
+    private enum Command { case query, release(pass: Bool) }
     private var stopped = false
     private var holdToken = 0
     private var held: (token: Int, wake: DispatchSemaphore)?
-    private var heldPasses = false
+    private var commands: [Command] = []
 
     /// - Parameter holdsSnapshots: hold every snapshot until the owner releases it.
+    /// - Parameter answers: the pane's filter, through which every byte from the helper
+    ///   passes on its way to the other Mac, and which `askSize` arms.
     /// - Parameter observe: called on the link's thread, after the bridge's handler
     ///   (before it, for `.snapshotWaiting`), and must return at once (hop, never wait
     ///   on the main thread).
-    init(_ inner: any TerminalStreamLink, holdsSnapshots: Bool = false,
+    init(_ inner: any TerminalStreamLink, holdsSnapshots: Bool = false, answers: SizeAnswerFilter? = nil,
          observe: @escaping @Sendable (Event) -> Void) {
         self.inner = inner
         self.holdsSnapshots = holdsSnapshots
+        self.answers = answers
         self.observe = observe
     }
 
@@ -106,7 +117,7 @@ final class ObservedLink: TerminalStreamLink, @unchecked Sendable {
             inner.onMessage = newValue.map { handler -> @Sendable (StreamMessage) -> Void in
                 { [weak self] message in
                     if case .snapshot = message, let self, self.holdsSnapshots {
-                        guard self.hold() else { return }
+                        guard self.hold(handler) else { return }
                     }
                     handler(message)
                     self?.observed(message)
@@ -121,31 +132,64 @@ final class ObservedLink: TerminalStreamLink, @unchecked Sendable {
     /// Releases the snapshot held under `token`: passed on to the bridge when `pass`,
     /// else dropped. Nothing for another token, or when none is held. Never blocks.
     func releaseSnapshot(token: Int, pass: Bool) {
+        command(.release(pass: pass), token: token)
+    }
+
+    /// Has the held callback write `CSI 18 t` to the surface, and go on holding. The
+    /// caller has armed the filter (`SizeAnswerFilter.queried()`) first; a query that is
+    /// never written (another token, nothing held, the link stopped first) is withdrawn
+    /// from it here or at the stop. Whether it was queued. Never blocks.
+    @discardableResult
+    func askSize(token: Int) -> Bool {
+        let queued = command(.query, token: token)
+        if !queued { _ = answers?.withdrawn() }
+        return queued
+    }
+
+    @discardableResult
+    private func command(_ command: Command, token: Int) -> Bool {
         let wake = lock.withLock { () -> DispatchSemaphore? in
-            guard let held, held.token == token else { return nil }
-            self.held = nil
-            heldPasses = pass
+            guard !stopped, let held, held.token == token else { return nil }
+            commands.append(command)
             return held.wake
         }
         wake?.signal()
+        return wake != nil
     }
 
-    /// On the link's thread: blocks until the owner releases the snapshot or the link is
-    /// stopped. Whether to pass it on.
-    private func hold() -> Bool {
+    /// On the link's thread: holds until the owner releases the snapshot or the link is
+    /// stopped, writing each size query it is asked for. Whether to pass it on.
+    private func hold(_ handler: @Sendable (StreamMessage) -> Void) -> Bool {
         let (token, wake) = lock.withLock { () -> (Int, DispatchSemaphore?) in
             guard !stopped else { return (0, nil) }
             holdToken += 1
             let wake = DispatchSemaphore(value: 0)
             held = (holdToken, wake)
-            heldPasses = false
+            commands = []
             return (holdToken, wake)
         }
         guard let wake else { return false }
         observe(.snapshotWaiting(token: token))
-        wake.wait()
-        // A stop after the release still drops it.
-        return lock.withLock { heldPasses && !stopped }
+        while true {
+            wake.wait()
+            let next = lock.withLock { () -> Command? in
+                guard !stopped, !commands.isEmpty else { return nil }
+                return commands.removeFirst()
+            }
+            switch next {
+            case nil:
+                // Stopped: what `stop()` took off the queue it withdrew.
+                if lock.withLock({ stopped }) { return false }
+            case .query?:
+                // As output from the other Mac: the bridge writes it to the helper.
+                handler(.data(SizeAnswerScanner.query))
+            case .release(let pass)?:
+                return lock.withLock {
+                    held = nil
+                    return pass && !stopped
+                }
+            }
+        }
     }
 
     var onEnded: (@Sendable (TerminalEndReason) -> Void)? {
@@ -166,17 +210,25 @@ final class ObservedLink: TerminalStreamLink, @unchecked Sendable {
     /// Releases and drops a held snapshot, then stops the inner link (which waits for a
     /// running callback; the held one returns at once now).
     func stop() {
-        let wake = lock.withLock { () -> DispatchSemaphore? in
+        let (wake, unwritten) = lock.withLock { () -> (DispatchSemaphore?, Int) in
             stopped = true
-            heldPasses = false
+            let queries = commands.filter { if case .query = $0 { true } else { false } }.count
+            commands = []
             defer { held = nil }
-            return held?.wake
+            return (held?.wake, queries)
         }
+        // Queries asked and never written: no answer comes for them.
+        for _ in 0..<unwritten { _ = answers?.withdrawn() }
         wake?.signal()
         inner.stop()
     }
 
-    func send(_ bytes: [UInt8]) { inner.send(bytes) }
+    /// Input from the helper, without the surface's answers to the pane's size queries.
+    func send(_ bytes: [UInt8]) {
+        let passed = answers?.filter(bytes) ?? bytes
+        guard !passed.isEmpty else { return }
+        inner.send(passed)
+    }
     func claim(cols: Int, rows: Int) { inner.claim(cols: cols, rows: rows) }
 
     private func observed(_ message: StreamMessage) {
@@ -309,9 +361,18 @@ final class RemotePane {
     @ObservationIgnored private var currentLink: ObservedLink?
     /// The grid the view was last given (`impose`), nil for the pane's own size.
     @ObservationIgnored private var shownGrid: TerminalSize?
-    /// A snapshot of the current link held until the surface has `target`.
-    @ObservationIgnored private var heldSnapshot: (token: Int, target: TerminalSize)?
+    /// A snapshot of the current link held until the terminal has `target`;
+    /// `reported` once the surface reported that grid (only then is the terminal asked).
+    @ObservationIgnored private var heldSnapshot: (token: Int, target: TerminalSize, reported: Bool)?
     @ObservationIgnored private var holdLimit: Cancel?
+    /// The next size query after an answer that named another grid.
+    @ObservationIgnored private var requery: Cancel?
+    /// Takes the surface's answers to the size queries out of its input; one per pane,
+    /// shared by its links (the answer comes back whichever link the bridge has then).
+    @ObservationIgnored private var answers: SizeAnswerFilter?
+
+    /// How soon the terminal is asked its size again after an answer naming another grid.
+    static let sizeQueryRetry: TimeInterval = 0.01
 
     /// How long a snapshot is held at most for the surface to take the grid the view
     /// was given; past it the snapshot is passed on anyway.
@@ -368,6 +429,10 @@ final class RemotePane {
             publish()
             return
         }
+        let toMainForAnswers = dependencies.toMain
+        answers = SizeAnswerFilter { [weak self] size in
+            toMainForAnswers { [weak self] in self?.sizeAnswered(size) }
+        }
         let bridge: any ViewerBridging
         do {
             bridge = try dependencies.makeBridge(makeLink(connection))
@@ -419,7 +484,7 @@ final class RemotePane {
         let tag = generation
         let toMain = dependencies.toMain
         let link = ObservedLink(dependencies.makeLink(connection, ref.sessionId),
-                                holdsSnapshots: true) { [weak self] event in
+                                holdsSnapshots: true, answers: answers) { [weak self] event in
             toMain { [weak self] in self?.linkReported(event, generation: tag) }
         }
         currentLink = link
@@ -470,7 +535,8 @@ final class RemotePane {
         // Claims made from here go to the inert link and are never answered: the next
         // attempt resets the grid's count after it replaces this link (`attempt()`).
         linkOut = true
-        bridge.reconnect(with: InertLink())
+        // Observed too, so an answer to a size query still on its way is taken out.
+        bridge.reconnect(with: ObservedLink(InertLink(), answers: answers) { _ in })
         // After the reconnect: an end of the retired link that marked the bridge's
         // claims held before it is cleared here.
         grid?.linkLost()
@@ -574,57 +640,97 @@ final class RemotePane {
     // MARK: The held snapshot
 
     /// The current link holds a snapshot. Passed on at once when the view shows the
-    /// pane's own size or the surface already has the grid the view was given; else when
-    /// the surface reports that grid, or after `snapshotHoldLimit`.
+    /// pane's own size. Otherwise held until the terminal behind the surface has the grid
+    /// the view was given: once the surface has reported that grid (at once if it has it
+    /// already), the terminal is asked its size in band (`CSI 18 t`, through the held
+    /// callback), again `sizeQueryRetry` after every answer naming another grid, and the
+    /// snapshot passes on the answer that names it, or after `snapshotHoldLimit`.
+    ///
+    /// The surface's report alone is not enough: `ghostty_surface_set_size` changes the
+    /// surface's grid at once, but libghostty resizes the terminal later on its IO
+    /// thread, and a snapshot parsed before that is laid out at the old grid (measured,
+    /// fix round 2 of task 3).
     private func snapshotWaiting(token: Int) {
         dropHeldSnapshot()
-        guard let target = shownGrid, let id = surfaceId, dependencies.host.size(id: id) != target else {
+        guard let target = shownGrid, let id = surfaceId else {
             currentLink?.releaseSnapshot(token: token, pass: true)
             return
         }
-        heldSnapshot = (token, target)
+        heldSnapshot = (token, target, dependencies.host.size(id: id) == target)
         holdLimit = dependencies.schedule(Self.snapshotHoldLimit) { [weak self] in
             guard let self, !self.closed, let held = self.heldSnapshot, held.token == token else { return }
             Self.log.error("""
-                a remote pane's surface did not reach \(held.target.cols)x\(held.target.rows) \
+                a remote pane's terminal did not reach \(held.target.cols)x\(held.target.rows) \
                 within \(Self.snapshotHoldLimit) s; its snapshot is passed on anyway
                 """)
             self.holdLimit = nil
             self.passHeldSnapshot()
         }
+        askSize()
     }
 
     /// The grid handed to the view changed (`OwnPaneGrid` imposed it).
     private func imposed(_ size: TerminalSize?) {
         shownGrid = size
         guard let held = heldSnapshot else { return }
-        if let size, let id = surfaceId, dependencies.host.size(id: id) != size {
-            heldSnapshot = (held.token, size)
-        } else {
+        guard let size, let id = surfaceId else {
             passHeldSnapshot()
+            return
         }
+        heldSnapshot = (held.token, size, dependencies.host.size(id: id) == size)
+        askSize()
     }
 
     /// The surface reported its grid.
     private func surfaceReported(_ size: TerminalSize) {
         guard !closed, let held = heldSnapshot, held.target == size else { return }
-        passHeldSnapshot()
+        heldSnapshot = (held.token, held.target, true)
+        askSize()
+    }
+
+    /// Asks the terminal its size, if a snapshot is held for a grid the surface has
+    /// reported, and no query is outstanding (never more than one, also across links).
+    private func askSize() {
+        guard !closed, let held = heldSnapshot, held.reported, requery == nil,
+              let answers, answers.outstanding == 0, let link = currentLink else { return }
+        // Armed before the query is written, so its answer cannot come first.
+        answers.queried()
+        link.askSize(token: held.token)
+    }
+
+    /// The terminal answered a size query (its answer already taken out of the input).
+    private func sizeAnswered(_ size: TerminalSize) {
+        guard !closed, let held = heldSnapshot else { return }
+        if size == held.target {
+            passHeldSnapshot()
+        } else if requery == nil {
+            requery = dependencies.schedule(Self.sizeQueryRetry) { [weak self] in
+                guard let self else { return }
+                self.requery = nil
+                self.askSize()
+            }
+        }
     }
 
     private func passHeldSnapshot() {
         guard let held = heldSnapshot else { return }
         heldSnapshot = nil
-        holdLimit?()
-        holdLimit = nil
+        cancelHoldTimers()
         currentLink?.releaseSnapshot(token: held.token, pass: true)
     }
 
     private func dropHeldSnapshot() {
-        holdLimit?()
-        holdLimit = nil
+        cancelHoldTimers()
         guard let held = heldSnapshot else { return }
         heldSnapshot = nil
         currentLink?.releaseSnapshot(token: held.token, pass: false)
+    }
+
+    private func cancelHoldTimers() {
+        holdLimit?()
+        holdLimit = nil
+        requery?()
+        requery = nil
     }
 
     /// Starts the attempt timeout of the current link, replacing any earlier one.
