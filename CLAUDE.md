@@ -27,7 +27,9 @@ Which side of the remote protocol lives where decides which repo a bug belongs i
   of the stream like the others: its libghostty surface is fed from the stream, through
   `LocalStreamServer`, the pane's `LocalSocketLink` and its `TerminalBridge`. So a fault seen in the
   pane and in every other client is the stream's or the model's, and one seen only in the pane is
-  the surface's or the bridge's.
+  the surface's or the bridge's. A terminal of another Mac is shown here by the same kind of
+  surface and bridge, fed by `RemoteSocketLink` over `WS /attach`; it is a client like the iPad,
+  so a fault seen only there is in that pane (`RemotePane`), not in the serving Mac.
 
 - **Controlling side, in `wietty-shared`.** `RemoteWorkspaceStore`, `RemoteWorkspacesController`,
   `RemoteTerminalConnection`, `RemoteSnapshotDecoder`, `RemoteConnection`, `SecretStore`. This app
@@ -61,7 +63,10 @@ The app is split in two, and the split is enforced by the compiler rather than b
   `ServerRuntime`, `TerminalSelection`, and the pane's side of the terminal stream: the bridge each
   surface's helper connects to (`TerminalBridge`, made per surface by `OwnPaneBridge` and
   `PaneBridges`), its link to `LocalStreamServer` (`LocalSocketLink`, behind `TerminalStreamLink`),
-  and what decides when the pane claims the grid (`PaneGrid`, carried out by `OwnPaneGrid`).
+  and what decides when the pane claims the grid (`PaneGrid`, carried out by `OwnPaneGrid`). The
+  pane of a terminal on another Mac is frontend too: its link (`RemoteSocketLink`), its owner and
+  registry (`RemotePane`, `RemotePanes`, with `ObservedLink` and `RemoteReconnectPolicy`), and the
+  filter that keeps its size queries' answers from the other Mac (`SizeAnswerFilter`).
 
 Members the app or the tests need are `package`, never `public`. The three targets share a
 `SWIFT_PACKAGE_NAME`, so `package` reaches all of them and nothing outside sees a line of it. A
@@ -185,11 +190,15 @@ counted and reported as skipped.
 
 `RemoteSurfaceMeasurementTests` measures a terminal of another Mac shown in a libghostty surface, with
 a real `RemoteServer` on 127.0.0.1 and a throwaway token: a snapshot fed through the bridge and the
-helper to a surface its child left dirty, compared with a clean surface and with the model (R1);
-backpressure through the package's WebSocket client (R2); the cost of a show and of 100 shows and
-hides (R3); large snapshots through the helper (R4); the ends that stop the helper (R7); and fast hides
-and shows (R8). It prints lines starting with `STEP5`. Run it after changing the pin of libghostty,
-the bridge, the helper or the package's stream client:
+helper to a surface its child left dirty, compared with a clean surface and with the model, also on
+the alternate screen and, through `RemotePanes`, at a grid other than the surface's (R1); backpressure
+through the package's WebSocket client (R2); the cost of a show and a hide through `RemotePanes` and of
+100 of each (R3); large snapshots through the helper (R4); the ends that stop the helper (R7); fast
+hides and shows, with and without the host's drain on destroy (R8); a reconnect on a kept dirty surface
+through `RemotePanes`, the server dropped and back, compared with the server's terminal (RECONNECT); a
+viewer surface's clipboard and dropped events; and `RemoteSurfacePane` in a window (PANE). It prints
+lines starting with `STEP5`. Run it after changing the pin of libghostty, the bridge, the helper, the
+remote pane or the package's stream client:
 
 ```sh
 scripts/remote-surface-check.sh [test name]

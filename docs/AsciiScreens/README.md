@@ -139,7 +139,9 @@ lets a terminal keep running while another is on screen. Its `SurfaceContainerVi
 pins the view to the top left and either lets it fill the pane (while the pane holds
 the terminal's grid) or gives it the size of the grid another viewer claimed, cut off
 at the pane's edges when larger, in a margin of the terminal's background colour when
-smaller.
+smaller. A surface of a session on another Mac is the exception to "the terminal's
+whole life": its `RemotePane` makes it when the session is shown and destroys it when
+the session is hidden, and the container moves it the same way meanwhile.
 `../terminal.md` covers the rest.
 
 ## Inventory
