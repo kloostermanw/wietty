@@ -276,7 +276,9 @@ final class PaneBridges {
         "'" + word.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
     }
 
-    private static func nextSequence() -> Int {
+    /// The next bridge socket sequence number. Also taken by `RemotePanes`, whose
+    /// bridges bind in the same directory under the same pid.
+    static func nextSequence() -> Int {
         lastSequence += 1
         return lastSequence
     }
