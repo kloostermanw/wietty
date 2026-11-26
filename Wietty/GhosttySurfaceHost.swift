@@ -886,17 +886,17 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     /// Each logged once per surface, as they are found on every layout pass.
     private var reportedPaddingMismatch = false
     private var reportedClamp = false
-    /// How many times the closed loop corrected the imposed size for the grid it
-    /// is imposing now. Bounded, so a surface that will not settle cannot loop.
-    private var corrections = 0
-    private static let maxCorrections = 2
+    /// What the closed loop may still correct of the imposed size: twice per grid
+    /// imposed and per metrics key (`ImposedSizeCorrections`).
+    private var corrections = ImposedSizeCorrections()
+    private static let maxCorrections = ImposedSizeCorrections.limit
 
     /// The grid imposed on this surface, kept whether or not it is on display. As
     /// asked: the size it gets is that of `shownGrid`, which is this clamped.
     var imposedGrid: TerminalSize? {
         didSet {
             guard imposedGrid != oldValue else { return }
-            corrections = 0
+            corrections.gridImposed()
             refreshImposedSize()
         }
     }
@@ -1017,6 +1017,7 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
         let cellWidth = Int(size.cell_width_px), cellHeight = Int(size.cell_height_px)
         guard cellWidth > 0, cellHeight > 0 else { metrics = nil; return }
         let key = [Double(cellWidth), Double(cellHeight), scale, Double(host.configGeneration)]
+        corrections.metricsTaken(key: key)
         if key != paddingWindowsKey {
             paddingWindowsKey = key
             paddingWindows = (PaddingWindow(), PaddingWindow())
@@ -1135,14 +1136,14 @@ final class GhosttySurfaceView: NSView, GridSizedSurface {
     /// The closed loop: with a grid imposed and the view at its size, the surface
     /// must show exactly that grid. When it does not, the padding in use was wrong;
     /// this observation has already narrowed the padding bounds, so sizing again
-    /// from the new metrics corrects it. At most `maxCorrections` times per grid.
+    /// from the new metrics corrects it. At most `maxCorrections` times per grid and
+    /// per metrics key.
     private func checkImposedGrid() {
         guard let shownGrid, let imposedSize, bounds.size == imposedSize,
               let grid = currentGrid(), grid != shownGrid else { return }
         GhosttySurfaceHost.log.fault(
             "surface \(self.id, privacy: .public) shows \(grid.cols)x\(grid.rows) at the size of \(shownGrid.cols)x\(shownGrid.rows)")
-        guard corrections < Self.maxCorrections else { return }
-        corrections += 1
+        guard corrections.take() else { return }
         refreshImposedSize()
     }
 

@@ -236,7 +236,8 @@ final class TerminalBridge: @unchecked Sendable {
     /// next link that starts. With `holdsClaimsUntilReset`, claims made from a link's
     /// end until `resetClaims()` are kept the same way and then dropped, never sent.
     /// A claim is not sent again to a link `reconnect` starts:
-    /// after a reconnect the owner claims again if it still owns the grid.
+    /// after a reconnect the owner claims again if the new link's attach shows it
+    /// still owns the grid (`PaneGrid.resizeReceived`).
     @discardableResult
     func claim(cols: Int, rows: Int) -> Bool {
         guard Self.claimRange.contains(cols), Self.claimRange.contains(rows) else { return false }

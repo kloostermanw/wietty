@@ -136,3 +136,37 @@ struct PaddingWindow: Equatable {
         return (lower...upper).contains(configured) ? configured : upper
     }
 }
+
+/// How often the closed loop in `GhosttySurfaceView` may still size an imposed grid
+/// again: `limit` times, whole again for every new grid imposed and for every new
+/// metrics key (the cell size, the scale and the host's configuration generation,
+/// which is what the configured padding is read with).
+///
+/// Bounded, so a surface that will not settle cannot loop. Whole again on a new key
+/// because the padding the loop corrected for may have moved with the cell size, the
+/// scale or the configuration: a surface that spent its budget at one scale would
+/// otherwise keep a wrong size at the next. The key leaves out the padding the
+/// surface's own reports narrow (`PaddingWindow`), since each correction moves that.
+struct ImposedSizeCorrections: Equatable {
+    static let limit = 2
+    private(set) var used = 0
+    private var key: [Double]?
+
+    /// A new grid was imposed.
+    mutating func gridImposed() { used = 0 }
+
+    /// The metrics were taken for `key`; a key other than the last makes the budget
+    /// whole again.
+    mutating func metricsTaken(key: [Double]) {
+        guard key != self.key else { return }
+        self.key = key
+        used = 0
+    }
+
+    /// Spends one correction, if one is left.
+    mutating func take() -> Bool {
+        guard used < Self.limit else { return false }
+        used += 1
+        return true
+    }
+}
