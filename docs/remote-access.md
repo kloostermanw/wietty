@@ -129,8 +129,9 @@ client side:
   Mac, and nothing is looked up with `infocmp`. See terminal.md, "Spawning the
   shell". Because the served bytes are the child's own, a program
   drawing for `xterm-ghostty` can emit sequences a client does not implement:
-  xterm.js in the browser page and SwiftTerm in the iPadOS client each render
-  what they support and ignore the rest. Nothing translates between them.
+  xterm.js in the browser page, SwiftTerm in the iPadOS client and libghostty
+  in the pane of another Mac each render what they support and ignore the
+  rest. Nothing translates between them.
 - **The snapshot on attach is coloured and exact.** A `resize` with the grid,
   then a `snapshot`: a full reset (`ESC c`) and the screen model's history and
   screen, every cell with its colours and attributes, the modes a program has
@@ -506,8 +507,8 @@ serving instance to activate the row (`RemoteWorkspaceStore.activate(refId:)`),
 which opens a session when the row has none, and the pane attaches to the
 session id that comes back rather than to the one the last snapshot carried. A
 revived row gets a new session id, so a tap that used the id it already held
-would attach to the session that just died and the pane would print
-`[session ended]` with no way to get a working terminal out of that row. Waiting
+would attach to the session that just died and the pane would only say that it
+ended, with no way to get a working terminal out of that row. Waiting
 for the reply also keeps a dead session off the screen entirely, instead of
 showing one and swapping it a moment later. The request is capped at 15 seconds,
 well below `URLSession`'s default, because a tap shows nothing until it answers.
@@ -590,19 +591,54 @@ The server (`RemoteServer.swift`) exposes, all token gated:
 
 ### Where an attached session is drawn
 
-A tapped remote row is drawn in the main window's pane, by SwiftTerm rather than
-the browser's xterm.js. The pane already draws the local terminals, so a remote
-session lands beside the sidebar with no second window and no tab bar, and its
-sidebar row is marked the same way a local one is. One terminal is on screen at a
-time, local or remote, and `PaneSelection` is what decides which.
+A tapped remote row is drawn in the main window's pane, by a libghostty surface
+of this Mac, the same renderer as the local terminals. The surface's helper
+connects to a `TerminalBridge` of its own, whose link (`RemoteSocketLink`) is a
+`WS /attach` connection to the other Mac through the package's
+`TerminalStreamConnection` with `resize` mode `reflow`. A remote session lands
+beside the sidebar with no second window and no tab bar, and its sidebar row is
+marked the same way a local one is. One terminal is on screen at a time, local or
+remote, and `PaneSelection` is what decides which. The pieces, and how they hold
+together, are in `docs/terminal.md`, "A terminal on another Mac"; what the pane
+draws in each state is in `docs/AsciiScreens/RemoteSurfacePane.md`.
 
-Only the session on screen holds a `WS /attach` connection: switching away
-discards its view, which stops the socket, and coming back attaches again. Nothing
-is lost by that beyond what the server's screen model no longer holds, because the
-server sends a snapshot of the history it keeps and the screen on every attach. A
-session that ends while it is on screen keeps its last output with the
-`[session ended]` banner under it, matching what the pane does for a local
-terminal whose command exited.
+Only the session on screen holds a connection, a bridge and a surface: switching
+away destroys all three, and coming back makes new ones and attaches again.
+Nothing is lost by that beyond what the server's screen model no longer holds,
+because the server sends a snapshot of the history it keeps and the screen on
+every attach. This Mac keeps as much of that history as its own Ghostty
+`scrollback-limit` allows. The font, theme and padding are this Mac's too.
+
+**Sizing.** Showing a session claims nothing: the pane shows the grid in force,
+with a margin or clipped, until the user acts in it (a key, a press of a mouse
+button, a paste or a drop), the rule the iPad follows. Then it claims its own
+grid, as the serving Mac's pane does. A snapshot is held on this Mac until the
+surface's terminal has the grid of the `resize` before it: the pane asks it with
+`CSI 18 t` and takes the answer (`ESC [ 8 ; rows ; cols t`) out of the input, so
+it never reaches the other Mac, and passes the snapshot after 1 second whatever
+happens. A pane that owns the grid shows its own size and passes the snapshot at
+once.
+
+**A lost connection** is made again by itself on the same surface: at once, then
+after 0.25 s doubling to 5 s, for 2 minutes from the loss, then only the
+"Reconnect" button. The doubling and the 2 minutes start over only after a link
+stayed live for 10 seconds, and an attempt with no snapshot within 15 seconds
+counts as lost. Meanwhile a bar over the top of the surface says so, and the
+last screen stays. A wrong token arrives as a lost connection too, because the
+server refuses the HTTP upgrade and the package cannot see the status, so it is
+retried. Input typed while there is no link is dropped.
+
+**A session that ends** while it is on screen keeps its last screen, with a bar
+over it saying so. A refusal, and a serving Wietty that is too old or newer,
+show a message that fills the pane, and nothing is retried.
+
+**What the other Mac's program cannot do here.** It can neither set nor read this
+Mac's clipboard (`OSC 52`): the surface runs under `clipboard-read = deny` and
+`clipboard-write = deny`. Its titles, bells, desktop notifications and close
+requests are dropped by the surface (the bell arrives through the control channel,
+below). Links are not clickable. What the user does, select and copy, paste and
+drop a file, works as in a local terminal. Its queries are answered by this
+surface as by every other viewer (issue 91).
 
 A session that rings the bell on a connected Mac also posts a notification here,
 built by diffing the `needs_attention` flag across successive snapshots, since

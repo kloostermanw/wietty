@@ -139,8 +139,9 @@ Only the remote session on screen holds a connection and a surface. Its view car
 an explicit `.id`, so switching sessions discards the view rather than reusing it: the
 old view's disappear closes its pane in `RemotePanes` and the new one's appear opens
 another. Without that id one pane position would keep the first session's pane while
-claiming to show the second. Coming back attaches again and the server paints the
-current screen, so what is lost is that viewer's scrollback and not the screen. A
+claiming to show the second. Coming back attaches again and the server sends the
+history its model keeps and the current screen, of which this Mac keeps what its own
+Ghostty `scrollback-limit` allows. A
 remote session that ends while it is on screen keeps its last screen, with a bar over
 its top saying so and no button. That differs from a local terminal whose command
 exited, which hides its last screen behind the stopped screen with Restart (below):

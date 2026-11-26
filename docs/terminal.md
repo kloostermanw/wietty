@@ -38,8 +38,8 @@ than a crash at each call site.
 
 The pane in the main window (`RightTerminalView`, drawn in
 `docs/AsciiScreens/ContentView.md`) is not only for local terminals: a remote session tapped
-in the sidebar is shown in the same pane, by SwiftTerm rather than libghostty, and
-so is a process's log.
+in the sidebar is shown in the same pane, by a libghostty surface of its own fed from the other
+Mac (see "A terminal on another Mac" below), and so is a process's log.
 
 ## What a terminal is
 
@@ -434,8 +434,9 @@ the pane uncovered; with nothing imposed the container paints nothing.
 Redraw only when libghostty asks, coalesced onto one main queue turn. Measured idle CPU over five
 seconds with a live shell and no output: draw on demand 0.06 s, a 60 Hz `DispatchSourceTimer` 0.48 s,
 a display link 1.12 s. All three render correctly; the clocks just burn that per pane, and a workspace
-can hold eight. `ghostty_app_tick` runs only in response to `wakeup_cb`, on the main thread, and every
-other call in this API is main thread only.
+can hold eight. `ghostty_app_tick` runs on the main thread, in response to `wakeup_cb` and once more right
+after a surface is freed (`destroySurface`, see "A terminal on another Mac"), and every other call in this
+API is main thread only.
 
 The view supplies no layer of its own. libghostty replaces `view.layer` with its own `IOSurfaceLayer`
 on the first frame, so a host-supplied `CAMetalLayer` survives only as a detached object and every
@@ -1053,6 +1054,93 @@ frame. The pane is therefore lossless end to end, at the cost the local viewer s
 describes. `LocalSocketLinkTests` and `TerminalBridgeTests` cover both, the latter once end to end
 with the real server, link, bridge and bundled helper.
 
+## A terminal on another Mac
+
+A session of another Mac, selected in the sidebar's remote section, is drawn in the same pane by a
+libghostty surface of this Mac, fed through the same kind of bridge the own pane uses. The pieces, all
+in the app target:
+
+| Piece | File | What it is |
+| --- | --- | --- |
+| `RemotePanes` | `Wietty/RemotePane.swift` | The registry, built by `TerminalStack` on the app's surface host. Opens a pane when `RemoteSurfacePane` appears and closes it when it disappears, counted per session; `closeAll` at quit, after which nothing opens. |
+| `RemotePane` | `Wietty/RemotePane.swift` | The owner of one shown session: its viewer surface, its `TerminalBridge`, its grid, the current link, the reconnect policy and its timers. |
+| `RemoteSocketLink` | `Wietty/RemoteSocketLink.swift` | The link: the package's `TerminalStreamConnection` (`WS /attach`, `resize` mode `reflow`) behind `TerminalStreamLink`. Used once, then a new one is made. |
+| `ObservedLink` | `Wietty/RemotePane.swift` | Wraps each link so the owner hears of its snapshot, its `resize` and its end, and holds a snapshot (below). |
+| `SizeAnswerFilter` | `Wietty/SizeAnswerFilter.swift` | Takes the answers to the pane's own size queries out of the input before it reaches the other Mac. |
+| `RemoteReconnectPolicy` | `Wietty/RemoteReconnectPolicy.swift` | When the next link is made and what the pane shows meanwhile. Pure. |
+| `ViewerSurfaceGate` | `Wietty/RemotePane.swift` | Puts every create of a viewer surface on a main turn queued after every viewer destroy. |
+
+**It exists only while it is shown.** Showing the session makes the pane, which makes its surface, its
+bridge and its first link on the next main turn; hiding it (another row selected) destroys all three. Showing it again makes new ones and attaches again, and the server paints its history and
+screen. Each surface has an id of its own, `rv:<connection>:<session>:<n>`, with `n` counting every
+creation. The bridge's socket is named from the same sequence as the own pane's bridges.
+
+**The viewer surface.** `GhosttySurfaceHost.createViewerSurface` records the surface as a viewer and
+drops for it what would reach this Mac's terminals, store or Notification Center: titles, bells,
+desktop notifications, close requests and `onInput`. A bell of a session on another Mac still reaches
+Notification Center, through the control channel (`docs/notifications.md`). A viewer surface runs under a
+configuration of its own: the app's, with `clipboard-read = deny` and `clipboard-write = deny` loaded
+last, so libghostty itself refuses a program's `OSC 52` read and write. The host reads both keys back
+from the configuration it built, and makes no viewer surface at all if either is not `deny`; a reload
+gives the viewers a configuration that passed the same check. For a write the configuration is the
+only line: the write callback is not told whether a program or a copy binding of the user's own asked.
+What the user does works as in the own pane: select and copy, paste, drop a file. Everything else is
+this Mac's: font, theme, padding and the `scrollback-limit` of this Mac's Ghostty configuration.
+
+**The grid.** The pane's grid is an `OwnPaneGrid` made as a viewer: showing the session claims
+nothing. The surface shows its own size until the first `resize`, then the grid in force, imposed as
+for the own pane (with a margin, or clipped). The pane claims on a key, a press of a mouse button, a
+paste or a drop, as the iPad does, and from then on claims as the own pane does while it owns the grid.
+
+**A snapshot waits for the grid.** The `resize` that comes before a snapshot is imposed on the main
+queue, and libghostty resizes the surface's terminal later still, on its IO thread, while the
+snapshot would reach the surface through the helper at once. Parsed at the old grid and then resized,
+a snapshot is not the other Mac's screen (measured: the cursor and the scrolling region reset, rows
+shifted, lines of an alternate screen lost). So `ObservedLink` holds every `snapshot` on the link's
+thread until the pane releases it. Only snapshots are held; a `resize` during live output holds
+nothing. When the view shows the pane's own size the snapshot passes at once. Otherwise, once the
+surface has reported the imposed grid, the pane asks the terminal its size in band: the held callback
+writes `CSI 18 t` to the helper as if it were output, and the terminal answers `ESC [ 8 ; rows ; cols t`
+in the surface's input. An answer naming the grid releases the snapshot; any other answer asks again
+after 10 ms; after 1 second the snapshot passes anyway and the pane logs it. Measured holds are 5 to
+50 ms. A close, a replacement of the link and the attempt timeout drop a held snapshot.
+
+The answers never reach the other Mac. `SizeAnswerFilter`, one per pane and shared by its links (the
+answer comes back on the helper's stream, whichever link the bridge has by then), removes exactly one
+`ESC [ 8 ; rows ; cols t` per query outstanding, and nothing when none is. Every other byte passes
+unchanged and in order; with a query out, at most 25 bytes that could start an answer are held until
+the next read. One query is out per pane at a time, across links. Queries are numbered and an answer
+counts only for the hold that asked it. A query that is never written is withdrawn; one whose write
+the bridge skipped, or that the terminal does not answer, is given up 1 second after its hold ended.
+Either way the bytes held for it pass first on the next read, and an answer arriving after that
+reaches the other Mac as input.
+
+**Reconnecting** (`RemoteReconnectPolicy`). A lost link is made again on the same bridge and the same
+surface: at once, then after 0.25 s, doubling to 5 s, for 2 minutes counted from the loss. An attempt
+that would start after the 2 minutes is not made, and the pane waits for its button. The doubling and
+the 2 minutes start over only after a link stayed live for 10 seconds, so a link that delivers its
+snapshot and drops at once cannot reconnect at once forever. An attempt that has delivered no snapshot
+15 seconds after it was handed to the bridge counts as lost; for the first link that runs from the
+show, so it also covers a helper that never connects. Each attempt reads the connection the store
+holds at that moment, so an edited host or token is used, and a removed connection ends the pane.
+Input typed while no link is live is dropped. A wrong token arrives as a lost connection (the other Mac
+refuses the HTTP upgrade and the package cannot see why), so it is retried like one.
+
+**Ends.** The session ending on the other Mac keeps the bridge, the helper and the surface until the
+pane is hidden, so the last screen stays and libghostty draws no notice of its own. A refusal (the
+other Mac refused, runs an older or a newer Wietty, the connection was removed, this Mac could not make
+the surface or the bridge, or the helper went away) keeps nothing. What the pane draws in each state is in
+`docs/AsciiScreens/RemoteSurfacePane.md`.
+
+**A destroy and the next create.** A surface created in the main turn of another's destroy often gets
+the freed `ghostty_surface_t` address, and the messages the destroyed surface's IO thread had queued
+(a title, a bell, a background, a program's clipboard write) were then handled as the new surface's
+own: in the step 5 measurement 2 to 14 titles in 50 cycles, and a viewer's `OSC 52` write reaching an
+own pane's pasteboard in 2 to 10. `destroySurface` therefore ticks libghostty's mailbox right after the
+free, while no surface has that address, and libghostty drops them (0 in 300 cycles). As a second line,
+a viewer surface is created no sooner than a main turn queued after every viewer destroy
+(`ViewerSurfaceGate`), which on its own also measured 0.
+
 ## Reading a terminal's output
 
 `GhosttyService.readOutput` answers an MCP read of what a terminal has printed, from the terminal's
@@ -1366,8 +1454,9 @@ a socket that then stays silent forever.
   5 second wait without it) answers no query and reports no title or bell, and a server without a
   frontend would answer nothing at all.
 - **A query is answered once per attached viewer** (issue 91). The surface answers, and so does every
-  emulator viewing the terminal elsewhere (xterm.js in the browser, SwiftTerm on the iPad), and each
-  answer reaches the pty as input. A program that reads one answer finds the others in its input.
+  emulator viewing the terminal elsewhere (xterm.js in the browser, SwiftTerm on the iPad, the surface
+  of another Mac showing it), and each answer reaches the pty as input. A program that reads one answer
+  finds the others in its input.
 - **The model follows a switch to 132 columns by itself** (issue 92). After `ESC [ ? 40 h` a program's
   `ESC [ ? 3 h` or `ESC [ ? 3 l` changes the model's column count while the pty and the surface keep
   theirs. The model keeps that width until a claim for another grid resizes it, since a claim for the
@@ -1399,9 +1488,16 @@ a socket that then stays silent forever.
   badge travels as the surface's initial title and reaches only the host's own record and the view's
   accessibility label. It is still passed rather than dropped, so that the day the C API grows a setter
   the value is already there.
-- **libghostty can never render a remote session.** There is no way to feed bytes into a surface, which
-  is the same fact that forces the helper. `RemoteTerminalView` therefore stays on SwiftTerm, and the
-  local pane and the remote terminal window do not look alike.
+- **A terminal on another Mac has no clickable links and no audible bell** in its pane. Links are not
+  opened for local panes either, and its bell reaches Notification Center through the control channel.
+- **A terminal on another Mac keeps only the history this Mac's `scrollback-limit` allows** in its
+  pane, whatever the other Mac holds (about 46,000 to 48,000 of 100,000 log lines with the default).
+- **A wrong token for a connection shows as a lost connection**, retried, rather than as a refusal: the
+  other Mac refuses the HTTP upgrade before any frame, and the package cannot read the status.
+- **A pane that owns the grid passes a snapshot taken at another grid at once.** It shows its own size,
+  so there is no imposed grid to wait for; it then claims its grid, and the server's reflow follows.
+- **A size answer later than its 1 second reaches the other Mac as input.** See "A terminal on another
+  Mac".
 - **An exited shell leaves a notice on its surface.** libghostty draws "Process exited. Press any key to
   close the terminal." and its close request only arrives with that next key. The pane never shows it:
   once the session has ended, `LocalTerminalView` draws a stopped screen with Restart instead of the
@@ -1426,7 +1522,8 @@ a socket that then stays silent forever.
   quotes and newlines in a filename cannot run as shell input. The text goes through `sendText`
   (`ghostty_surface_text`), the same plain path dictation and a Services item use, not the paste
   binding: one line with no newline needs no bracketed paste and would only raise the unsafe paste
-  alert. Local pane only. The browser client and the iPad have the same gap and are served elsewhere.
+  alert. This Mac's panes only, its own terminals and those of another Mac. The browser client and the
+  iPad have the same gap and are served elsewhere.
 
 Consciously deferred, so do not read the above as a complete feature list and do not promise these:
 mouse shape (`GHOSTTY_ACTION_MOUSE_SHAPE` is unhandled, so a full screen program that asks for an
