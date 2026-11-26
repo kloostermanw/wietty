@@ -13,9 +13,6 @@ packages:
   HummingbirdWebSocket:
     url: https://github.com/hummingbird-project/hummingbird-websocket
     from: "2.2.0"
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm
-    from: "1.2.0"
   # Exact, not a floor: the package defines the wire format. 1.0.0 brought terminal
   # stream protocol version 2, which this app serves and the iPad has to speak too.
   # 1.1.0 adds, with no change on the wire, what the local socket server needs from
@@ -122,8 +119,6 @@ targets:
     sources: [Wietty]
     dependencies:
       - target: WiettyCore
-      - package: SwiftTerm
-        product: SwiftTerm
       - package: WiettyShared
         product: WiettyShared
       - package: GhosttyKit
