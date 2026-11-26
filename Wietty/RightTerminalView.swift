@@ -126,8 +126,10 @@ struct RightTerminalView: View {
                    maxHeight: .infinity)
         } else {
             // The connection was removed while its terminal was on screen. Same
-            // wording the tabbed window uses, because it is the same situation.
-            ContentUnavailableView("Connection removed", systemImage: "bolt.slash")
+            // wording as the bar of a pane whose connection is gone at its next
+            // attempt (`RemoteReconnectPolicy.connectionRemovedText`), because it is
+            // the same situation.
+            ContentUnavailableView(RemoteReconnectPolicy.connectionRemovedText, systemImage: "bolt.slash")
                 .frame(minWidth: SidebarWidth.paneMinimum,
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)

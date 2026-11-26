@@ -618,9 +618,10 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         // background, a program's clipboard request) are addressed by the surface
         // pointer, and the allocator often hands the next surface that very address: a
         // surface created before the next tick (in this main turn) received them as its
-        // own (R8 of the step 5 measurement, without this tick: 4 to 12 titles of 50
-        // cycles, and a viewer's clipboard write on an own surface in 4 to 9; with it, 0
-        // of 300). Ticked now, libghostty finds no surface at that address and drops them.
+        // own (R8 of the step 5 measurement, final runs, 50 cycles a run: without this
+        // tick 2 to 14 crossed titles, and a viewer's clipboard write reaching an own
+        // surface in 2 to 10; with it 0 in 18 runs, 900 cycles). Ticked now, libghostty
+        // finds no surface at that address and drops them.
         //
         // Safe to do here: every runtime callback a tick raises hops to the main queue
         // before it touches the host, except a clipboard read, which completes on the
