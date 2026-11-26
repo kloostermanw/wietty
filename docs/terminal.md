@@ -250,7 +250,10 @@ local viewer's claims are held the same way, and its answers reach it in order b
 left (see "Serving the stream"). Detaching the viewer, the end of the session and `stop()` drop a held
 claim unanswered and cancel its timer. The bounds above are checked before a claim is held, so a grid
 out of bounds neither starts a hold nor replaces one. The clock and the timer are injected for the
-tests, as `ResyncThrottle`'s are.
+tests, as `ResyncThrottle`'s are. During an unbroken run of claims from one viewer (no pause of 50
+ms), a delay met on the delivery queue carries over to the run's later claims, because a held claim
+counts as handled when it was due and an immediate one when it was handled: they are held by the
+difference, up to one interval, until the viewer pauses for 50 ms. The last claim always lands.
 
 **Who claims, and when.** For this Mac's pane, `PaneGrid` decides and `OwnPaneGrid` carries it out
 on the main actor, through the pane's bridge, its link and the local socket. What the pane claims is
@@ -283,7 +286,8 @@ false, carrying the grid in force, before the snapshot, whenever a snapshot fram
 pane owned the grid and which grid it claimed last, and `PaneGrid.resizeReceived` decides on that
 first `resize`:
 
-- The pane owned the grid and the `resize` names the grid it claimed last: nobody took it, so it
+- The pane owned the grid and the `resize` names the grid it claimed last: nobody took it, as far as the pane can tell (another viewer
+  that claimed exactly the pane's last grid is taken from), so it
   claims its own grid, the grid that fits the pane now, which may differ when the window changed
   while the link was down. A surface that is not on display claims the grid in force instead, which
   keeps the grid without a reflow; shown again, it claims its own grid as an owner does.
@@ -297,8 +301,11 @@ from another viewer claiming that grid, so it claims nothing. The likeliest way 
 is a claim the hub was still holding (it holds a viewer's claims to one per 50 ms, above), which is
 dropped with the link when the viewer detaches. While the link is down the pane claims only on a
 user action, which goes to the new link and is outstanding when its first `resize` arrives, so that
-`resize` decides nothing and the claim stands for itself. Claims the bridge held from the end until
-the pane heard of it, and a claim waiting for the debounce, are dropped and never sent. A second
+`resize` decides nothing and the claim stands for itself. A claim the user made while the link was down is kept for the next link; if
+that link is lost too before the server read the claim (it reads claims only after the attach has
+been written), the pane gives up the grid on the link after it, until the user acts again. Claims
+the bridge held from the end until the pane heard of it, and a claim waiting for the debounce, are
+dropped and never sent. A second
 loss before the new link's first `resize` keeps what the pane remembered at the first, unless it has
 claimed since. Meanwhile a pane that owned the grid keeps filling the pane and follows its window,
 as an owner with a claim outstanding does, and any other shows the grid in force.
@@ -361,8 +368,8 @@ nobody sees it. A grid imposed on a view that no container holds is applied to t
 last rendered at, the one `synchronizeMetrics` uses for a view with no window. That covers a
 terminal created and never shown (the attach imposes 120 by 34 on the 800 by 480 point view
 `createSurface` makes), a hidden terminal whose grid another viewer claims, and a hidden terminal
-whose link is lost and made again: the grid in force is imposed when the link is lost, and the grid
-the new attach names when it differs. With nothing imposed (the pane owned the grid when it was
+whose link is lost and made again: for a surface already hidden, the grid in force is imposed when
+the link is lost; in either case the grid the new attach names is imposed when it differs. With nothing imposed (the pane owned the grid when it was
 hidden) the view keeps the size its pane last gave it, which is the grid the pane claimed and so the
 grid in force; when another viewer claims, the pane is no longer the owner, the grid is imposed, and
 the view follows it. Shown again with a grid imposed, the view is already at the size the
@@ -616,7 +623,9 @@ no other callback either: the bell, the title and notifications are reported by 
   cursor on the same cell. A line the terminal wrapped arrives wrapped at the same column rather than
   as two lines, and the blank rows at the bottom of the screen are kept, so the history is neither a
   row short nor a row long. Measured at 120 columns with a full default scrollback of coloured log
-  lines: about 630 KB in about 2 ms. At 100,000 lines: 6.4 MB in about 17 ms, in the debug test host.
+  lines: about 630 KB in about 2 ms. At 100,000 lines of such log lines: 6.4 MB in about 17 ms for the format alone, in the debug test
+  host (a different content and span from the 12.3 MB snapshot of 100,000 full lines under "Serving
+  the stream", where the delivery queue is held 40 to 60 ms).
   What a viewer is sent on attach and on a resync.
 - Whether the alternate screen is the active one (`isAlternateScreen`).
 - The plain text `readOutput` returns (`text(maxLines:)`), and the library's own binary snapshot
@@ -906,9 +915,10 @@ go, so grid changes arriving meanwhile lengthen the wait, at most one per 50 ms 
 Nothing else waits. A pane that has stopped holds its terminal until 5 seconds after it last read,
 when the server drops it; a pane that reads slowly but steadily holds it for as long as the whole
 snapshot takes (3.8 seconds measured for 1.2 MB at 320 KiB/s). What the delivery queue still pays is
-the format of the snapshot: measured with a full default history of 1.2 MB, about 5 ms whether the
+the format of the snapshot: measured with a full default history of 1.2 MB, 5 to 11 ms whether the
 pane read at once, slowly, after 4.5 seconds or never (before, the queue was held for 3 to 5 seconds
-by the last three), and about 40 to 60 ms with 100,000 lines of history.
+by the last three), and about 40 to 60 ms for a snapshot of 12.3 MB, with 100,000 full lines of
+history.
 
 When the delivery queue itself is the writer (a resize, a claim's answer, an ending or a drain sent
 to a viewer that was idle) and the pane stops reading in the middle of that write, the delivery queue
@@ -1339,6 +1349,14 @@ a socket that then stays silent forever.
   parks the hub's delivery queue, and with it every queued viewer of every terminal, for up to 5
   seconds per stopped pane; that takes a pane whose socket buffer of 256 KiB is already full on a
   terminal producing nothing. See "Serving the stream".
+- **A terminal that ends while a local viewer is being attached loses one chunk.** The chunk of
+  output (at most one read of the pty) that was waiting for that attach reaches no viewer: the ending
+  was queued behind everything already accepted, which did not include it, and the chunk is accepted
+  only after the viewer is gone. What is still unread in the kernel is lost in the same situation
+  with or without the attach.
+- **A pane whose last claim was not carried out before its link was lost shows the server's grid
+  until a key or a click.** The claim may have been held by the hub, in flight, or made while the
+  link was down and lost with the next link too. See "After a lost link".
 - **A terminal produces nothing until its pane has attached, or for 5 seconds** (decision P2). A
   terminal opened through MCP or from the iPad depends on its surface on this Mac for that long. See
   "The deferred read".
