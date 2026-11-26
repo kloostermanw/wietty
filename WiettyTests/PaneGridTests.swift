@@ -576,6 +576,23 @@ private struct Pane {
         }
     }
 
+    /// A claim the bridge refused after the pane's last accepted one does not make it
+    /// forget that one: an owner that finds the grid it last claimed with an accepted
+    /// claim keeps the grid after a lost link.
+    @Test func aRefusedClaimDoesNotHideTheLastAcceptedOneAfterALoss() {
+        var pane = Pane.owning(grid(100, 30))
+        pane.advance(200 * ms)
+        pane.refuse = true
+        pane.own(grid(110, 30))
+        pane.refuse = false
+        #expect(pane.claims == [grid(100, 30), grid(110, 30)])
+        #expect(pane.model.isOwner)
+        pane.ended()
+        pane.server(grid(100, 30), own: false)
+        #expect(pane.claims == [grid(100, 30), grid(110, 30), grid(110, 30)])
+        #expect(pane.model.isOwner)
+    }
+
     /// A second loss before the first reconnect's `resize` arrived keeps what the
     /// pane knew at the first: an owner is still judged an owner on the attach that
     /// finally speaks, and a pane that was not stays not.
@@ -623,7 +640,8 @@ private struct Pane {
     /// Off display the surface is given the grid in force as soon as the link is
     /// lost. An owner that finds its grid on the attach keeps the grid by claiming the
     /// grid in force, which reflows nothing, rather than an own grid it last knew on
-    /// display; shown again, it claims the grid that fits the pane, as an owner does.
+    /// display; the grid in force is imposed once that claim is answered. Shown again,
+    /// it claims the grid that fits the pane, as an owner does.
     @Test func offDisplayAnOwnerFindingItsGridClaimsTheGridInForce() {
         var pane = Pane.owning(grid(100, 30))
         pane.advance(200 * ms)
@@ -635,7 +653,7 @@ private struct Pane {
         pane.server(grid(100, 30), own: false)
         #expect(pane.claims == [grid(100, 30), grid(100, 30)])
         #expect(pane.model.isOwner)
-        #expect(pane.imposed == [grid(100, 30)])
+        #expect(pane.imposed.isEmpty)
         pane.server(grid(100, 30), own: true)
         #expect(pane.imposed == [grid(100, 30)])
 
@@ -654,6 +672,25 @@ private struct Pane {
         pane.server(grid(100, 30), own: false)
         #expect(pane.claims == [grid(100, 30), grid(100, 30)])
         #expect(pane.imposed == [grid(100, 30)])
+    }
+
+    /// Hidden with a claim in flight and a debounced one waiting: the debounce firing
+    /// off display claims nothing and imposes nothing, not even the old grid in force
+    /// the pty is leaving; the answer's grid is imposed when it comes.
+    @Test func offDisplayAClaimInFlightImposesNothingUntilItsAnswer() {
+        var pane = Pane.owning(grid(100, 30))
+        pane.advance(200 * ms)
+        pane.own(grid(110, 30))
+        pane.advance(10 * ms)
+        pane.own(grid(120, 30))
+        #expect(pane.debounces.count == 1)
+        pane.hide()
+        pane.advance(40 * ms)
+        pane.fire()
+        #expect(pane.claims == [grid(100, 30), grid(110, 30)])
+        #expect(pane.imposed.isEmpty)
+        pane.server(grid(110, 30), own: true)
+        #expect(pane.imposed == [grid(110, 30)])
     }
 
     /// Off display, an owner finding another grid claims nothing and that grid is
@@ -692,6 +729,8 @@ private struct Pane {
         taken.server(grid(110, 30), own: false)
         #expect(taken.claims == [grid(100, 30), grid(110, 30), grid(110, 30)])
         #expect(taken.model.isOwner)
+        #expect(taken.imposed == [grid(100, 30)])
+        taken.server(grid(110, 30), own: true)
         #expect(taken.imposed == [grid(100, 30), grid(110, 30)])
 
         var lost = Pane.owning(grid(100, 30))

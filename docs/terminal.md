@@ -278,7 +278,8 @@ when the link is lost, since a claim sent on a link that ended may never be answ
 
 **After a lost link** (decision Q3) the pane claims nothing at first. Another viewer may have claimed
 while the link was down, and only the new link can say so: its attach sends a `resize` with `own`
-false, carrying the grid in force, before the snapshot. `PaneGrid.linkEnded` remembers whether the
+false, carrying the grid in force, before the snapshot, whenever a snapshot frame or a grid is known
+(a terminal that some viewer has claimed always has one). `PaneGrid.linkEnded` remembers whether the
 pane owned the grid and which grid it claimed last, and `PaneGrid.resizeReceived` decides on that
 first `resize`:
 
@@ -289,16 +290,18 @@ first `resize`:
 - Otherwise (it did not own the grid, or the `resize` names another grid) it claims nothing, is not
   the owner, and shows that grid until the user acts, as any pane that does not own the grid.
 
-A claim unanswered when the link was lost counts as the grid claimed last: if the server took it the
-attach names it and the pane claims again; if the claim was lost with the link, the attach names the
-grid before it, which the pane cannot tell apart from another viewer claiming that grid, so it claims
-nothing. While the link is down the pane claims only on a user action, which goes to the new link and
-is outstanding when its first `resize` arrives, so that `resize` decides nothing and the claim stands
-for itself. Claims the bridge held from the end until the pane heard of it, and a claim waiting for
-the debounce, are dropped and never sent. A second loss before the new link's first `resize` keeps
-what the pane remembered at the first, unless it has claimed since. Meanwhile a pane that owned the
-grid keeps filling the pane and follows its window, as an owner with a claim outstanding does, and
-any other shows the grid in force.
+A claim unanswered when the link was lost counts as the grid claimed last (a claim the bridge
+refused does not count, it never left the pane): if the hub carried it out, the attach names it and
+the pane claims again; if not, the attach names the grid before it, which the pane cannot tell apart
+from another viewer claiming that grid, so it claims nothing. The likeliest way for that to happen
+is a claim the hub was still holding (it holds a viewer's claims to one per 50 ms, above), which is
+dropped with the link when the viewer detaches. While the link is down the pane claims only on a
+user action, which goes to the new link and is outstanding when its first `resize` arrives, so that
+`resize` decides nothing and the claim stands for itself. Claims the bridge held from the end until
+the pane heard of it, and a claim waiting for the debounce, are dropped and never sent. A second
+loss before the new link's first `resize` keeps what the pane remembered at the first, unless it has
+claimed since. Meanwhile a pane that owned the grid keeps filling the pane and follows its window,
+as an owner with a claim outstanding does, and any other shows the grid in force.
 
 **Before the first claim the grid is 120 by 34** (`GhosttyService.initialSize`). The pty is spawned
 at that size as `forkpty` creates it and the model is built at it: a full screen program lays itself
@@ -320,7 +323,9 @@ until the first claim, so the first claim is handled as a new grid even when it 
 - An owner whose last claim was answered with a grid other than its own, with no claim waiting,
   shows the grid in force too: the server's word stands until the own grid changes again.
 - A surface that is not on display shows the grid in force whenever the pane decides its view
-  again while it is hidden (a `resize`, a lost link, a claim's answer), whoever owns the grid.
+  again while it is hidden (a `resize`, a lost link, a claim's answer), whoever owns the grid, once
+  no claim of the pane's own is outstanding. Until that claim's answer the view is left as it is, so
+  a hidden surface is not sized to a grid the pty is leaving and then again to the answer's.
 
 An imposed grid sits at the top left of the pane. A smaller one has a margin around it in the
 terminal's background colour, and a larger one is cut off at the right and bottom edges. The view
@@ -346,21 +351,24 @@ reports arrive one main queue turn after `createSurface` has returned, so a hand
 the session through its own registry finds it. The first metrics report is what lets the pane work
 out its first own grid.
 
-A surface that is not in the view hierarchy is not laid out and claims nothing, but **it is kept at
-the grid in force**. The pty and the model are at that grid, and the surface answers the terminal's
+A surface that is not in the view hierarchy is not laid out and claims nothing, with one exception:
+once after a lost link, if the pane owned the grid and the new attach names the grid it claimed
+last, it claims the grid in force to keep it (see "After a lost link" above). **It is kept at the
+grid in force**. The pty and the model are at that grid, and the surface answers the terminal's
 queries and keeps its history, so it has to lay the child's output out for the same grid even while
 nobody sees it. A grid imposed on a view that no container holds is applied to the view directly
-(`GhosttySurfaceView.applyImposedSizeOffDisplay`, which sets its frame), at the scale the surface last
-rendered at, the one `synchronizeMetrics` uses for a view with no window. That covers a terminal
-created and never shown (the attach imposes 120 by 34 on the 800 by 480 point view `createSurface`
-makes), a hidden terminal whose grid another viewer claims, and a hidden terminal whose link is lost
-and made again: the grid in force is imposed when the link is lost, and the grid the new attach names
-when it differs. With nothing imposed (the pane owned the grid when it was hidden) the view keeps the
-size its pane last gave it, which is the grid the pane claimed and so the grid in force; when another
-viewer claims, the pane is no longer the owner, the grid is imposed, and the view follows it. Shown again with a grid imposed,
-the view is already at the size the container's constraints ask for, so showing it changes nothing
-about its grid. A pane that owns the grid is different when its window was resized while the terminal
-was hidden: shown again, its view fills the new pane and the pane claims that grid.
+(`GhosttySurfaceView.applyImposedSizeOffDisplay`, which sets its frame), at the scale the surface
+last rendered at, the one `synchronizeMetrics` uses for a view with no window. That covers a
+terminal created and never shown (the attach imposes 120 by 34 on the 800 by 480 point view
+`createSurface` makes), a hidden terminal whose grid another viewer claims, and a hidden terminal
+whose link is lost and made again: the grid in force is imposed when the link is lost, and the grid
+the new attach names when it differs. With nothing imposed (the pane owned the grid when it was
+hidden) the view keeps the size its pane last gave it, which is the grid the pane claimed and so the
+grid in force; when another viewer claims, the pane is no longer the owner, the grid is imposed, and
+the view follows it. Shown again with a grid imposed, the view is already at the size the
+container's constraints ask for, so showing it changes nothing about its grid. A pane that owns the
+grid is different when its window was resized while the terminal was hidden: shown again, its view
+fills the new pane and the pane claims that grid.
 
 ### Metrics and an imposed size
 
@@ -892,15 +900,15 @@ that viewer waits for the blocked write, so its owner shuts the socket down firs
 The attach costs the same as output, and no more. A pane that reads its snapshot slowly or not at
 all holds the thread that attached it (in `LocalStreamServer`, its own connection's thread) and its
 own terminal, whose output waits for the snapshot: the terminal's other local viewers and its queued
-viewers (a browser, an iPad, another Mac) get no new output meanwhile. A resize, a claim's answer and
-an ending for the pane are left with it, and the attaching thread writes them too before it lets go,
-so grid changes arriving meanwhile lengthen the wait, at most one per 50 ms per claiming viewer.
+viewers (a browser, an iPad, another Mac) get no new output meanwhile. A resize, a claim's answer
+and an ending for the pane are left with it, and the attaching thread writes them too before it lets
+go, so grid changes arriving meanwhile lengthen the wait, at most one per 50 ms per claiming viewer.
 Nothing else waits. A pane that has stopped holds its terminal until 5 seconds after it last read,
 when the server drops it; a pane that reads slowly but steadily holds it for as long as the whole
-snapshot takes (3.8 seconds measured for 1.2 MB at 320 KiB/s). What the delivery queue still pays is the format of the snapshot:
-measured with a full default history of 1.2 MB, about 5 ms whether the pane read at once, slowly,
-after 4.5 seconds or never (before, the queue was held for 3 to 5 seconds by the last three), and
-about 40 to 60 ms with 100,000 lines of history.
+snapshot takes (3.8 seconds measured for 1.2 MB at 320 KiB/s). What the delivery queue still pays is
+the format of the snapshot: measured with a full default history of 1.2 MB, about 5 ms whether the
+pane read at once, slowly, after 4.5 seconds or never (before, the queue was held for 3 to 5 seconds
+by the last three), and about 40 to 60 ms with 100,000 lines of history.
 
 When the delivery queue itself is the writer (a resize, a claim's answer, an ending or a drain sent
 to a viewer that was idle) and the pane stops reading in the middle of that write, the delivery queue
@@ -978,19 +986,19 @@ answers `onUnavailable`, and on a resize the viewer is sent the bare `resize`.
 ## The link and the bridge
 
 Two types in the app make this Mac's own pane a local viewer of the stream. `OwnPaneBridge` (in
-`Wietty/OwnPaneBridge.swift`) gives every local surface one of each: a `TerminalBridge` whose
-socket the surface's `wietty-pty` connects to, with a `LocalSocketLink` to the app's
-`LocalStreamServer` for that session. `PaneBridges`, which `GhosttySurfaceHost` owns, makes one
-`OwnPaneBridge` and one `OwnPaneGrid` per surface before the surface is created, and stops both when
-it is destroyed. `OwnPaneBridge` makes a fresh link when one ends as `.connectionLost` while the
-terminal lives (at once, then after 250 ms, doubling up to 5 s, the count reset once a link stayed
-up 10 s). Before it asks for the new link it tells the pane's grid, which drops the claims the bridge
-held since the end and starts its count of unanswered claims over; whether it claims again is decided
-by the new link's first `resize` (see "After a lost link" under "Sizing"). On `.sessionEnded` it stops the bridge instead, so the helper exits with the child
-and its socket goes, while the surface keeps its last screen until the row is closed or restarted. A
-`.refused` link (the server is at its cap and answered `busy`) is logged and not made again; the
-terminal is then read without its pane after 5 seconds. The helper going away means the surface
-went away, and the bridge is stopped.
+`Wietty/OwnPaneBridge.swift`) gives every local surface one of each: a `TerminalBridge` whose socket
+the surface's `wietty-pty` connects to, with a `LocalSocketLink` to the app's `LocalStreamServer`
+for that session. `PaneBridges`, which `GhosttySurfaceHost` owns, makes one `OwnPaneBridge` and one
+`OwnPaneGrid` per surface before the surface is created, and stops both when it is destroyed.
+`OwnPaneBridge` makes a fresh link when one ends as `.connectionLost` while the terminal lives (at
+once, then after 250 ms, doubling up to 5 s, the count reset once a link stayed up 10 s). Before it
+asks for the new link it tells the pane's grid, which drops the claims the bridge held since the end
+and starts its count of unanswered claims over; whether it claims again is decided by the new link's
+first `resize` (see "After a lost link" under "Sizing"). On `.sessionEnded` it stops the bridge
+instead, so the helper exits with the child and its socket goes, while the surface keeps its last
+screen until the row is closed or restarted. A `.refused` link (the server is at its cap and
+answered `busy`) is logged and not made again; the terminal is then read without its pane after 5
+seconds. The helper going away means the surface went away, and the bridge is stopped.
 
 `LocalSocketLink` is a client of `LocalStreamServer` for one session, behind the protocol
 `TerminalStreamLink`. `start()` returns at once: a reader thread of its own connects and then decodes
@@ -1320,16 +1328,17 @@ a socket that then stays silent forever.
   most two reflows, but every viewer has its own 50 ms: several viewers claiming at once, or one
   claiming steadily at that pace on a full scrollback, still hold the delivery queue for a reflow each
   time.
-- **A pane that stops reading holds back its terminal** (decision P1). Output is written to the
-  pane on the pty's read queue with a blocking write, so a surface that does not read stops the
-  child at a full pty, and the terminal's other local viewers with it. The same holds at attach: the
-  snapshot is written on the attaching connection's thread (decision Q2), and the terminal's output,
-  for its other local viewers and its queued viewers alike, waits for it: for as long as the
-  snapshot takes for a pane that reads slowly but steadily, and until 5 seconds after it last read for
-  a pane that has stopped, which the server then drops; the pane then reconnects with a backoff. A control message written to an idle pane that has stopped (a `resize`, a claim's answer,
-  the ending) still parks the hub's delivery queue, and with it every queued viewer of every
-  terminal, for up to 5 seconds per stopped pane; that takes a pane whose socket buffer of 256 KiB is
-  already full on a terminal producing nothing. See "Serving the stream".
+- **A pane that stops reading holds back its terminal** (decision P1). Output is written to the pane
+  on the pty's read queue with a blocking write, so a surface that does not read stops the child at
+  a full pty, and the terminal's other local viewers with it. The same holds at attach: the snapshot
+  is written on the attaching connection's thread (decision Q2), and the terminal's output, for its
+  other local viewers and its queued viewers alike, waits for it: for as long as the snapshot takes
+  for a pane that reads slowly but steadily, and until 5 seconds after it last read for a pane that
+  has stopped, which the server then drops; the pane then reconnects with a backoff. A control
+  message written to an idle pane that has stopped (a `resize`, a claim's answer, the ending) still
+  parks the hub's delivery queue, and with it every queued viewer of every terminal, for up to 5
+  seconds per stopped pane; that takes a pane whose socket buffer of 256 KiB is already full on a
+  terminal producing nothing. See "Serving the stream".
 - **A terminal produces nothing until its pane has attached, or for 5 seconds** (decision P2). A
   terminal opened through MCP or from the iPad depends on its surface on this Mac for that long. See
   "The deferred read".
