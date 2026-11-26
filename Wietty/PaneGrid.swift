@@ -29,8 +29,10 @@ import WiettyShared
 /// claim has been answered with a grid other than its own grid and that has no claim
 /// waiting: the server's word stands, and the view shows that grid until the own grid
 /// changes again. A surface that is not on display shows the grid in force whenever
-/// the view is decided, so the hidden surface lays the child's output out for the
-/// grid the pty and the model are at; shown again, the rule above applies.
+/// the view is decided with no claim of its own outstanding, so the hidden surface
+/// lays the child's output out for the grid the pty and the model are at; with a
+/// claim outstanding the view is left as it is until the answer. Shown again, the
+/// rule above applies.
 ///
 /// **Ownership** is the package's `GridOwnership`: owner while a claim is unanswered
 /// or when the last `resize` was its own. It is replaced when the link ends, since a
@@ -62,9 +64,13 @@ package struct PaneGrid {
     private var onDisplay = false
     /// No claim has been accepted for this surface yet.
     private var opening = true
-    /// The grid last claimed, and when.
+    /// The grid last claimed, and when. Cleared by a refusal, so a later change may
+    /// claim the same grid again.
     private var lastClaim: TerminalSize?
     private var lastClaimAt: UInt64?
+    /// The grid of the last claim the bridge accepted, which a refusal leaves alone:
+    /// what a lost link compares the next attach with.
+    private var lastAccepted: TerminalSize?
     /// The own grid a debounced claim will carry when it fires.
     private var pending: TerminalSize?
     /// A `scheduleDebounce` has been returned and has not fired yet.
@@ -79,8 +85,8 @@ package struct PaneGrid {
     private struct LostLink {
         /// Whether the pane owned the grid when the link was lost.
         var owned: Bool
-        /// The grid it claimed last, nil when it never claimed or the last claim was
-        /// refused.
+        /// The grid of the last claim it made that the bridge accepted, nil when it
+        /// never made one. A refused claim does not count: it never left the pane.
         var lastClaim: TerminalSize?
     }
 
@@ -151,6 +157,7 @@ package struct PaneGrid {
         ownership.claimSent()
         awaiting += 1
         opening = false
+        lastAccepted = lastClaim
         return show(wanted())
     }
 
@@ -174,7 +181,7 @@ package struct PaneGrid {
     /// the grid in force; a surface off display is given the grid in force.
     package mutating func linkEnded() -> Action {
         if ownership.isOwner || lostLink == nil {
-            lostLink = LostLink(owned: ownership.isOwner, lastClaim: lastClaim)
+            lostLink = LostLink(owned: ownership.isOwner, lastClaim: lastAccepted)
         }
         ownership = GridOwnership()
         awaiting = 0
@@ -182,7 +189,10 @@ package struct PaneGrid {
         return show(wanted())
     }
 
-    /// The surface left the window: it keeps its last size and claims nothing.
+    /// The surface left the window: it keeps its last size and claims nothing, with
+    /// one exception: once after a lost link, if it owned the grid and the next
+    /// attach names the grid it claimed last, it claims the grid in force to keep it
+    /// (see `resizeReceived`).
     package mutating func wentOffDisplay() {
         onDisplay = false
     }
@@ -222,7 +232,14 @@ package struct PaneGrid {
 
     /// What the view should show now, by the rule in the type's doc.
     private func wanted() -> TerminalSize?? {
-        if !onDisplay, let inForce { return .some(inForce) }
+        if !onDisplay {
+            // Hidden: the grid in force, once no claim of the pane's own is
+            // outstanding. Until its answer the view is left as it is, so a hidden
+            // surface is not sized to a grid the pty is about to leave and then again
+            // to the answer's.
+            if awaiting > 0 { return shown }
+            if let inForce { return .some(inForce) }
+        }
         if ownership.isOwner {
             if awaiting > 0 || pending != nil { return viewWhileClaimsOutstanding() }
             guard let inForce, let ownGrid, inForce != ownGrid else { return .some(nil) }
