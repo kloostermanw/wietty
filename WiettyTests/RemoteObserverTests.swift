@@ -103,4 +103,53 @@ import WiettyShared
         store.apply(snapshotText: snapshot(session: "late"))
         #expect(calls.values.count == count)
     }
+
+    // MARK: - Bells
+
+    @Test func aBellOfAConnectionIsReported() throws {
+        let (_, controller) = controller()
+        let calls = Calls<RemoteBellDiff>()
+        let observer = RemoteBellObserver { _, diff in calls.values.append(diff) }
+        observer.start(controller: controller)
+        controller.sync()
+        let store = try #require(controller.stores[connection.id])
+        store.apply(snapshotText: snapshot(session: "s"))
+        store.apply(snapshotText: snapshot(session: "s", attention: true))
+        #expect(calls.values.last?.ringing.map(\.sessionId) == ["s"])
+    }
+
+    /// The same for bells: after an edit the new store is the one that rings.
+    @Test func aBellOfAnEditedConnectionsNewStoreIsReported() throws {
+        let (connections, controller) = controller()
+        let calls = Calls<RemoteBellDiff>()
+        let observer = RemoteBellObserver { _, diff in calls.values.append(diff) }
+        observer.start(controller: controller)
+        controller.sync()
+        let first = try #require(controller.stores[connection.id])
+        first.apply(snapshotText: snapshot(session: "s"))
+        let second = try rename(connections, controller)
+        second.apply(snapshotText: snapshot(session: "s"))
+        let before = calls.values.count
+        second.apply(snapshotText: snapshot(session: "s", attention: true))
+        #expect(calls.values.count == before + 1)
+        #expect(calls.values.last?.ringing.map(\.sessionId) == ["s"])
+        // The store that was replaced is no longer listened to.
+        let count = calls.values.count
+        first.apply(snapshotText: snapshot(session: "s", attention: true))
+        #expect(calls.values.count == count)
+    }
+
+    /// A store just made holds no snapshot. That nothing is not the connection's first
+    /// snapshot: the real first one is, and it is adopted in silence, so a Mac whose
+    /// agent has been waiting for an hour is not announced as news at launch.
+    @Test func theFirstSnapshotOfAConnectionIsAdoptedInSilence() throws {
+        let (_, controller) = controller()
+        let calls = Calls<RemoteBellDiff>()
+        let observer = RemoteBellObserver { _, diff in calls.values.append(diff) }
+        observer.start(controller: controller)
+        controller.sync()
+        let store = try #require(controller.stores[connection.id])
+        store.apply(snapshotText: snapshot(session: "s", attention: true))
+        #expect(calls.values.isEmpty)
+    }
 }

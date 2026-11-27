@@ -210,13 +210,23 @@ rules in it are load bearing:
   was down is still reported once it is back.
 
 A connection removed and added again is forgotten deliberately, so re-adding a Mac
-does not announce its backlog.
+does not announce its backlog. An edited connection (name, host, port or token) is
+forgotten in the same way: the controller gives it a new store under its old id, and
+the host may now be another Mac.
 
 `RemoteBellObserver` is what feeds the watcher, and it subscribes to each store's
 published `workspaces` with Combine rather than from a view. That is a requirement,
 not a preference: the sidebar is a `LazyVStack`, so a remote section scrolled out of
 view is never built, and notifications are precisely the feature that has to work
 while nobody is looking.
+
+Two things in the observer keep the watcher's rules true. It skips the value a store
+holds when it is first seen: a store just made holds no snapshot, and adopting that
+nothing as the first snapshot made the real first one announce every waiting agent.
+And it keeps the store each subscription belongs to, and subscribes again when the
+controller holds another store under the same id, which is what an edit does. Before
+that, an edited connection's bells were lost until the next launch.
+`RemoteObserverTests` asserts both on a real controller.
 
 ## Tapping one
 
