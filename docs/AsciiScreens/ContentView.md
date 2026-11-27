@@ -145,7 +145,10 @@ Ghostty `scrollback-limit` allows. A
 remote session that ends while it is on screen gets the stopped screen with Restart
 that a local terminal whose command exited gets (below), drawn by the same
 `TerminalStoppedView`. Its Restart is handed up to `ContentView` as the local one is,
-which asks the other Mac for a restart unless the sidebar is busy. The row then
+and so is a remote row's restart button (`RemoteSectionView.onRestart`). Both land in
+`restartRemoteTerminal`, which asks the other Mac for a restart unless the sidebar is
+busy or a restart of that session is still held (`RemoteRestartHolds`, see
+`RemoteSurfacePane.md`). The row then
 carries a new session, and the selection follows it there
 (`PaneRouter.remoteRowsChanged`, fed by a `RemoteRowsObserver` that `task` starts), so
 the pane shows the replacement. The same happens when the row is restarted from the

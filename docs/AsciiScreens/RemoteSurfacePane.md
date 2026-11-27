@@ -95,7 +95,7 @@ asserts it.
 | `live` | none | none | the surface |
 | `reconnecting` | "Connection lost. Reconnecting…" | "Reconnect now" | the surface |
 | `waiting` | "Connection lost." | "Reconnect" | the surface |
-| `ended` | none | "Restart", on the stopped screen | the stopped screen (`TerminalStoppedView`), in place of the surface |
+| `ended` | none | "Restart", on the stopped screen, when a row still carries the session | the stopped screen (`TerminalStoppedView`), in place of the surface |
 | `refused(message)` | none | none | a `ContentUnavailableView`, "Cannot show this terminal" and the message |
 
 Both of the bar's buttons call `RemotePane.reconnectPressed()`: in `reconnecting` it
@@ -110,19 +110,60 @@ A session that ended on the other Mac looks and works as a terminal of this Mac 
 has ended (see "The local terminal in the pane" in `ContentView.md`). Both panes draw
 the one `TerminalStoppedView`: "Terminal stopped" and "The process has exited.", or
 "Agent stopped" and "The agent has exited." for an agent row, and a Restart button
-that is the window's default (return). Whether the row is an agent is read from the
-connection's last snapshot when the screen is drawn. A session no row of that snapshot
-carries gets the terminal wording.
+that is the window's default (return).
+
+What the screen says and offers comes from the rows of the connection's last snapshot
+(`RemoteStoppedContent`), and the screen observes the connection's store, so a
+snapshot that arrives while it is up redraws it:
+
+| the snapshot's rows | wording | Restart |
+| --- | --- | --- |
+| an agent row carries the session | "Agent stopped", "The agent has exited." | yes |
+| a terminal row carries the session | "Terminal stopped", "The process has exited." | yes |
+| no row carries the session | "Terminal stopped", "The process has exited." | no button |
+
+No row carries the session when its row was closed on the other Mac, when the id is a
+stale one (a notification tapped after the session was replaced), and for the moment
+before the first snapshot that carries a session just opened. The other Mac can only
+answer 404 to a restart of such a session, so there is no button. Clicking a row in
+the sidebar is the way on from there.
 
 The pane still holds its surface, bridge and helper until it is hidden (see "Ends" in
-`docs/terminal.md`), but the surface is not shown, as a local terminal's is not.
+`docs/terminal.md`), but the surface is not shown, as a local terminal's is not. So
+the last screen of a remote session that ended is not readable here, as a local one's
+is not.
 
-Restart is handed up to `ContentView`, which refuses it while the sidebar is busy and
-otherwise makes the call the remote row's own restart button makes
-(`RemoteWorkspaceStore.restart(sessionId:)`). That call does not wait and does not
-answer with the new session. The other Mac closes the session and opens a new one for
-the same row, so the row keeps its id and gets a new session id, and its next snapshot
-says so.
+Restart is handed up to `ContentView.restartRemoteTerminal`, which refuses it while
+the sidebar is busy and otherwise calls `RemoteWorkspaceStore.restart(sessionId:)`.
+The sidebar row's restart button goes through the same function. That call does not
+wait and does not answer with the new session. The other Mac closes the session and
+opens a new one for the same row, so the row keeps its id and gets a new session id,
+and its next snapshot says so.
+
+Because the call cannot be awaited, a press is held instead (`RemoteRestartHolds`,
+one for the window): a second press for the same session, on the stopped screen or on
+its sidebar row, is dropped, and the stopped screen's button is drawn disabled, until
+one of three things happens.
+
+- The selection moves. A restart that worked ends this way, since the selection
+  follows the row to its new session.
+- The connection's `lastActionError` becomes a text it was not at the press, which
+  means the request failed.
+- 5 seconds pass (`RemoteRestartHold.duration`).
+
+Without the hold a second Return sent a second request for a session the first had
+already replaced, and its 404 stayed as a red caption under the connection for a
+restart that had worked. `RemoteRestartHoldTests` asserts the rule on a clock the test
+moves. What the hold does not cover:
+
+- The sidebar row's button is not drawn disabled while its session is held. A press is
+  dropped without a sign.
+- A failure that leaves the same error text the connection already showed at the press
+  cannot be told from no answer, so the button stays held for the full 5 seconds.
+- A press later than 5 seconds after one that is still running on the other Mac goes
+  out as a second request.
+- Another viewer (the iPad, the browser, a second Mac) restarting the same session at
+  the same moment is not known here.
 
 The selection follows the row. `RemoteRowsObserver` hands every snapshot's rows to
 `PaneRouter.remoteRowsChanged`, which remembers the rows of the last snapshot that
@@ -137,8 +178,7 @@ button, another viewer, or the other Mac itself. It is what a local restart does
 which selects the replacement. What is not followed:
 
 - A row that is gone (closed on the other Mac). The pane stays on the stopped screen,
-  and its Restart is then refused by the other Mac, which the connection's red caption
-  says.
+  which then has no Restart.
 - A row that carries no session. It is followed once a snapshot gives it one.
 - Another connection's rows. Session ids and row ids are only unique on the Mac that
   hands them out.
@@ -146,11 +186,11 @@ which selects the replacement. What is not followed:
   There is no remote selection to move then.
 
 A restart that fails (the other Mac unreachable, or the session unknown there) leaves
-the stopped screen up, with the reason in the connection's red caption in the sidebar.
-A second press before the first has been answered sends a second request for the same
-session. Nothing on this Mac holds the button meanwhile, because the call cannot be
-awaited.
+the stopped screen up, with the reason in the connection's red caption in the sidebar,
+and its button live again.
 
-The bar appears and disappears with no animation. A link that keeps dropping switches
-between `live` and `reconnecting`, and an animated bar would make that worse to look
-at.
+An edited connection (name, host, port or token) gets a new store under its old id
+(`RemoteWorkspacesController.sync`). `RemoteRowsObserver` keeps the store each of its
+subscriptions belongs to and subscribes again when the controller holds another one,
+so the follow keeps working after an edit. `RemoteObserverTests` asserts it on a real
+controller.

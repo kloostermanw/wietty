@@ -69,7 +69,8 @@ The app is split in two, and the split is enforced by the compiler rather than b
   registry (`RemotePane`, `RemotePanes`, with `ObservedLink` and `RemoteReconnectPolicy`), the
   filter that keeps its size queries' answers from the other Mac (`SizeAnswerFilter`), and what
   moves the selection to a restarted row's new session (`RemoteSelectionFollow`, fed by
-  `RemoteRowsObserver` and applied by `PaneRouter`).
+  `RemoteRowsObserver` and applied by `PaneRouter`), with what holds a second press of its
+  Restart (`RemoteRestartHolds`).
 
 Members the app or the tests need are `package`, never `public`. The three targets share a
 `SWIFT_PACKAGE_NAME`, so `package` reaches all of them and nothing outside sees a line of it. A
