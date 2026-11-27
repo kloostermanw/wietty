@@ -1614,10 +1614,6 @@ a socket that then stays silent forever.
   be installed for the truthful name to be usable. It falls back to `xterm-256color` only when a build
   did not produce the bundled entry. Either way a remote client may receive sequences it does not
   implement, because the bytes are the child's own; see `docs/remote-access.md`.
-- **The workspace badge setting does nothing here.** libghostty has no title setter of any kind, so the
-  badge travels as the surface's initial title and reaches only the host's own record and the view's
-  accessibility label. It is still passed rather than dropped, so that the day the C API grows a setter
-  the value is already there.
 - **A terminal on another Mac has no clickable links and no audible bell** in its pane. The host handles
   no link action, for local panes either (whether libghostty opens a URL by itself when the host leaves
   that action unhandled is not verified), and its bell reaches Notification Center through the control
