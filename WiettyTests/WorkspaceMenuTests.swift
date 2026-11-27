@@ -112,6 +112,7 @@ import WiettyCore
             agents: agents,
             onActivate: { _ in },
             onRestartTerminal: { _ in },
+            onStopTerminal: { _ in },
             onRenameTerminal: { _ in },
             onRemoveTerminal: { _ in },
             onCloseTerminal: { _ in },

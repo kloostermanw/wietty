@@ -27,10 +27,6 @@ struct TerminalRowView: View {
     /// leaves the row in place. Required, not defaulted: the trash button is always
     /// rendered, so a caller that forgot to wire it would ship an inert delete.
     let onClose: () -> Void
-    /// Whether stopping a session in place is available, which offers the stop button
-    /// on a live row. False where only teardown exists, such as a remote card whose
-    /// LAN protocol has no stop that keeps the row.
-    var canStop: Bool = true
 
     @State private var isHovered = false
     @Environment(\.sidebarColors) private var sidebarColors
@@ -84,9 +80,7 @@ struct TerminalRowView: View {
     @ViewBuilder private var actionButtons: some View {
         HStack(spacing: 8) {
             if isRunning {
-                if canStop {
-                    RowActionButton(systemName: "stop.fill", help: "Stop", action: onStop)
-                }
+                RowActionButton(systemName: "stop.fill", help: "Stop", action: onStop)
                 RowActionButton(systemName: "arrow.clockwise", help: "Restart", action: onRestart)
             } else {
                 RowActionButton(systemName: "play.fill", help: "Activate", action: onPlay)

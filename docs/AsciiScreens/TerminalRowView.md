@@ -83,9 +83,10 @@ Hovering a selected row is still visible, because the action buttons appear
 either way. Both fills share one corner radius, so the shape under the pointer
 does not change.
 - Action buttons (visible on hover only):
-  - `[◼]` stop (`stop.fill`) → `onStop`, shown when `isRunning` and `canStop` is true.
+  - `[◼]` stop (`stop.fill`) → `onStop`, shown when `isRunning`.
     Stops the running session but leaves the row in place so it can be reopened,
-    distinct from the trash button. Absent on a remote row (`canStop` false).
+    distinct from the trash button. A row of another Mac has it too, and there it
+    posts `/api/sessions/{sid}/stop` (see `docs/remote-access.md`).
   - `[⟳]` restart (`arrow.clockwise`) → `onRestart` (restart session), shown when
     `isRunning`.
   - `[▶]` play (`play.fill`) → `onPlay` (activate / relaunch), shown instead of stop

@@ -1132,7 +1132,9 @@ refuses the HTTP upgrade and the package cannot see why), so it is retried like 
 pane is hidden, so libghostty draws no notice of its own. The pane does not show that surface: it
 draws the stopped screen with Restart in its place, the one view (`TerminalStoppedView`) the own pane
 draws for a terminal that has ended. It has no Restart when no row of the connection's last snapshot
-carries the session, since the other Mac could only answer 404. Restart asks the other Mac to restart
+carries the session, since the other Mac could only answer 404. A session stopped from its sidebar row
+(`RemoteWorkspaceStore.stopSession`, the stop button a local row has) ends like any other: the other
+Mac keeps the row and its session id, so this screen has its Restart. Restart asks the other Mac to restart
 the session (`RemoteWorkspaceStore.restart`), and a second press for the same session is dropped until
 the selection moves, the request fails or 5 seconds pass (`RemoteRestartHolds`), because that call
 cannot be awaited. The restart gives the row a new session id, and the selection follows the

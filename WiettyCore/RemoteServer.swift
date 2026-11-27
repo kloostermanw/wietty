@@ -114,6 +114,10 @@ package final class RemoteServer {
             guard Self.tokenOK(request, expected: expected) else { return Response(status: .unauthorized) }
             return await Self.restartSession(store: store, sessionId: ctx.parameters.get("sid"))
         }
+        router.post("api/sessions/:sid/stop") { request, ctx -> Response in
+            guard Self.tokenOK(request, expected: expected) else { return Response(status: .unauthorized) }
+            return await Self.stopSession(store: store, sessionId: ctx.parameters.get("sid"))
+        }
         router.post("api/sessions/:sid/close") { request, ctx -> Response in
             guard Self.tokenOK(request, expected: expected) else { return Response(status: .unauthorized) }
             return await Self.closeSession(store: store, sessionId: ctx.parameters.get("sid"))
@@ -524,6 +528,70 @@ package final class RemoteServer {
         } catch {
             return Response(status: .internalServerError)
         }
+    }
+
+    /// What a stop of one session came to. Its own type for the reason
+    /// `ActivateOutcome` is one: the decision can be tested without a socket.
+    package enum StopOutcome: Equatable {
+        /// No row carries that session id. Either the viewer's snapshot is older
+        /// than this Mac's rows (the row was closed, or restarted and so given
+        /// another session), or the id is empty, which is what a row that was never
+        /// opened carries and must not be matched by.
+        case notFound
+        /// The row, which a stop leaves in place.
+        case ok(JSONValue)
+
+        package var status: HTTPResponse.Status {
+            switch self {
+            case .notFound: .notFound
+            case .ok: .ok
+            }
+        }
+
+        package var body: JSONValue? {
+            switch self {
+            case .notFound: nil
+            case let .ok(json): json
+            }
+        }
+    }
+
+    /// Stops the tracked session with the given session id and answers with its
+    /// row's terminal JSON, since the row stays. `404` if no row carries that id.
+    @MainActor
+    private static func stopSession(store: ProjectStore, sessionId: String?) async -> Response {
+        let outcome = await stopOutcome(store: store, sessionId: sessionId)
+        guard let body = outcome.body else { return Response(status: outcome.status) }
+        return Self.jsonResponse(body.encodedString(), status: outcome.status)
+    }
+
+    /// The stop itself, split from its `Response` so it can be tested without a
+    /// socket.
+    ///
+    /// `ProjectStore.stopTerminal` does the work, the call the stop button of a
+    /// local row makes, so a remote stop ends the child, keeps the row and its last
+    /// screen, and clears the row's bell and finished status exactly as the Mac
+    /// beside it does. The viewers of the session are told by the stream (`ended`),
+    /// not by this reply.
+    ///
+    /// A session that has already ended is answered `200` with its row, like one
+    /// that was running: `GhosttyService.stop` does nothing for an exited terminal,
+    /// and what the caller asked for (a stopped session, the row kept) holds. The
+    /// bell is cleared in that case too, as it is locally.
+    ///
+    /// `run_state` in the answer is the row as the store sees it when the stop
+    /// returns. The store learns of the end through the monitor's `terminated`
+    /// event, which may come after, so the answer can still say `running`; the
+    /// pushed snapshot that follows is what says `exited`.
+    @MainActor
+    package static func stopOutcome(store: ProjectStore, sessionId: String?) async -> StopOutcome {
+        guard let sessionId, let found = store.terminal(paneId: sessionId) else { return .notFound }
+        await store.stopTerminal(found.ref, in: found.project)
+        // Re-read: the row is addressed by its id from here on, because a row
+        // removed or restarted while the stop was awaited no longer carries the
+        // session the caller named.
+        guard let refreshed = store.session(withRefId: found.ref.id) else { return .notFound }
+        return .ok(Self.terminalJSON(refreshed.ref, in: refreshed.project, store: store))
     }
 
     /// Closes the tracked session with the given session id, returning

@@ -43,12 +43,9 @@ struct WorkspaceCardView: View {
     let onActivate: (TerminalRef) -> Void
     let onRestartTerminal: (TerminalRef) -> Void
     /// Stops a row's running session without removing the row (the stop button).
-    /// Defaulted so a caller that does not offer it, such as a remote card, can
-    /// leave it out.
-    var onStopTerminal: (TerminalRef) -> Void = { _ in }
-    /// Whether rows offer the stop button. False on a remote card, whose LAN protocol
-    /// has no stop that keeps the row.
-    var canStopTerminal: Bool = true
+    /// Required, not defaulted: the button is rendered on every running row, local
+    /// or remote, so a caller that forgot to wire it would ship an inert stop.
+    let onStopTerminal: (TerminalRef) -> Void
     let onRenameTerminal: (TerminalRef) -> Void
     let onRemoveTerminal: (TerminalRef) -> Void
     let onCloseTerminal: (TerminalRef) -> Void
@@ -386,7 +383,6 @@ struct WorkspaceCardView: View {
                     programStatus: programStatus,
                     isSelected: isSelected,
                     isLocalOnly: isLocalOnly,
-                    canStop: canStopTerminal,
                     onActivate: { onActivate(ref) },
                     onStop: { onStopTerminal(ref) },
                     onRestart: { onRestartTerminal(ref) },
@@ -425,7 +421,6 @@ private struct TerminalRow<Menu: View>: View {
     let programStatus: (TerminalRef) -> ProgramStatusIndicator?
     let isSelected: (TerminalRef) -> Bool
     let isLocalOnly: (TerminalRef) -> Bool
-    let canStop: Bool
     let onActivate: () -> Void
     let onStop: () -> Void
     let onRestart: () -> Void
@@ -442,7 +437,6 @@ private struct TerminalRow<Menu: View>: View {
             programStatus: programStatus,
             isSelected: isSelected,
             isLocalOnly: isLocalOnly,
-            canStop: canStop,
             onActivate: onActivate,
             onStop: onStop,
             onRestart: onRestart,
@@ -467,7 +461,6 @@ private struct TerminalRowContent: View {
     let programStatus: (TerminalRef) -> ProgramStatusIndicator?
     let isSelected: (TerminalRef) -> Bool
     let isLocalOnly: (TerminalRef) -> Bool
-    let canStop: Bool
     let onActivate: () -> Void
     let onStop: () -> Void
     let onRestart: () -> Void
@@ -486,8 +479,7 @@ private struct TerminalRowContent: View {
             onPlay: onActivate,
             onStop: onStop,
             onRestart: onRestart,
-            onClose: onClose,
-            canStop: canStop
+            onClose: onClose
         )
     }
 }
