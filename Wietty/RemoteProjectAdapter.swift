@@ -27,7 +27,14 @@ enum RemoteProjectAdapter {
                 refs.append(TerminalRef(id: session.id, label: session.label,
                                         sessionId: session.sessionId,
                                         kind: kind(session.kind), slot: session.label))
-                out.runStates[session.id] = session.isRunning ? .running : .exited
+                // A row with no session cannot be running, whatever the serving
+                // instance says: it answers "running" for every row it has no job
+                // for, which includes a row never opened and every row after a
+                // relaunch. Drawn as running, such a row would offer stop and
+                // restart, which name a session and can only answer 404; drawn as
+                // exited it offers play, whose activate is what opens it.
+                let running = session.isRunning && !session.sessionId.isEmpty
+                out.runStates[session.id] = running ? .running : .exited
                 if session.needsAttention { out.attention.insert(session.id) }
                 if let job = session.jobName { out.jobNames[session.id] = job }
             }
