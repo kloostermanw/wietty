@@ -291,8 +291,8 @@ package final class ProjectStore: SettingsPairSource {
     /// Lines of history each terminal's screen model keeps (`TerminalScrollback`).
     ///
     /// Here and not in `UIPreferences`, by the rule that sorted the others: it
-    /// decides what the server answers a read of a terminal's output with, whether
-    /// or not a frontend is attached. Read by `GhosttyService.open`, so it applies
+    /// decides how much history the server holds and sends a viewer that attaches,
+    /// whether or not a frontend is attached. Read by `GhosttyService.open`, so it applies
     /// to terminals opened after a change.
     package var scrollbackLines: Int {
         didSet {
