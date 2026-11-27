@@ -124,4 +124,151 @@ import Foundation
         router.connectionsChanged(to: [])
         #expect(router.override == .log(log("npm")))
     }
+
+    // MARK: - A selected remote session follows its row
+
+    private func session(_ id: String, on connection: UUID) -> RemoteSessionRef {
+        RemoteSessionRef(connectionId: connection, sessionId: id)
+    }
+
+    /// A restart on the other Mac gives the row a new session. The selection moves to
+    /// it, which is what closes the ended pane and opens the replacement's.
+    @Test func aRestartedRowTakesTheSelectionToItsNewSession() {
+        let router = PaneRouter()
+        let row = UUID()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old")])
+        router.show(.remote(session("old", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "new")])
+        #expect(router.override == .remote(session("new", on: connection)))
+    }
+
+    /// The row is learnt from a snapshot that arrives after the selection too: a click
+    /// on a row that had no session selects the id the other Mac answered with, before
+    /// any snapshot carries it.
+    @Test func theRowIsLearntFromASnapshotAfterTheSelection() {
+        let router = PaneRouter()
+        let row = UUID()
+        router.show(.remote(session("old", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old")])
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "new")])
+        #expect(router.override == .remote(session("new", on: connection)))
+    }
+
+    /// A snapshot between the two sessions, with the row carrying none, does not lose
+    /// the row: it is remembered from the last snapshot that had the selected session.
+    @Test func aRowBetweenTwoSessionsIsFollowedOnceItHasOne() {
+        let router = PaneRouter()
+        let row = UUID()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old")])
+        router.show(.remote(session("old", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "")])
+        #expect(router.override == .remote(session("old", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "new")])
+        #expect(router.override == .remote(session("new", on: connection)))
+    }
+
+    /// A second restart is followed as the first was: the row is remembered for the
+    /// session the selection moved to.
+    @Test func aSecondRestartIsFollowedToo() {
+        let router = PaneRouter()
+        let row = UUID()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "one")])
+        router.show(.remote(session("one", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "two")])
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "three")])
+        #expect(router.override == .remote(session("three", on: connection)))
+    }
+
+    /// A closed row has nothing to follow to. The selection stays on the session that
+    /// ended, and the pane says so.
+    @Test func aClosedRowIsNotFollowed() {
+        let router = PaneRouter()
+        let row = UUID()
+        let other = RemoteRow(id: UUID(), sessionId: "other")
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old"), other])
+        router.show(.remote(session("old", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [other])
+        #expect(router.override == .remote(session("old", on: connection)))
+    }
+
+    @Test func aSnapshotThatStillHasTheSessionMovesNothing() {
+        let router = PaneRouter()
+        let row = UUID()
+        let neighbour = UUID()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old"),
+                                                      RemoteRow(id: neighbour, sessionId: "a")])
+        router.show(.remote(session("old", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old"),
+                                                      RemoteRow(id: neighbour, sessionId: "b")])
+        #expect(router.override == .remote(session("old", on: connection)))
+    }
+
+    /// Session ids are only unique on the Mac that hands them out, and so are row ids
+    /// (the same folder cloned onto two Macs): another connection's snapshot moves
+    /// nothing, even with the same row carrying another session.
+    @Test func anotherConnectionsSnapshotMovesNothing() {
+        let router = PaneRouter()
+        let row = UUID()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old")])
+        router.show(.remote(session("old", on: connection)))
+        router.remoteRowsChanged(on: otherConnection, to: [RemoteRow(id: row, sessionId: "new")])
+        #expect(router.override == .remote(session("old", on: connection)))
+    }
+
+    /// The rows remembered for a session are those of its own connection: selecting
+    /// the same session id on another connection does not inherit them.
+    @Test func theSameSessionIdOnAnotherConnectionIsAnotherSelection() {
+        let router = PaneRouter()
+        let row = UUID()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old")])
+        router.show(.remote(session("old", on: connection)))
+        router.show(.remote(session("old", on: otherConnection)))
+        router.remoteRowsChanged(on: otherConnection, to: [RemoteRow(id: row, sessionId: "new")])
+        #expect(router.override == .remote(session("old", on: otherConnection)))
+    }
+
+    /// Only a remote session on screen is moved. With a local terminal, a log or
+    /// settings in the pane there is no remote selection, and a snapshot must not put
+    /// one there.
+    @Test func aSnapshotNeverCoversWhatThePaneShowsInstead() {
+        let router = PaneRouter()
+        let row = UUID()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old")])
+        router.show(.remote(session("old", on: connection)))
+        router.show(.settings)
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "new")])
+        #expect(router.override == .settings)
+        router.localTerminalActivated()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "newer")])
+        #expect(router.override == nil)
+    }
+
+    /// Selecting another session forgets the row of the one before it.
+    @Test func selectingAnotherSessionFollowsThatOnesRow() {
+        let router = PaneRouter()
+        let first = UUID()
+        let second = UUID()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: first, sessionId: "a"),
+                                                      RemoteRow(id: second, sessionId: "b")])
+        router.show(.remote(session("a", on: connection)))
+        router.show(.remote(session("b", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: first, sessionId: "a2"),
+                                                      RemoteRow(id: second, sessionId: "b")])
+        #expect(router.override == .remote(session("b", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: first, sessionId: "a2"),
+                                                      RemoteRow(id: second, sessionId: "b2")])
+        #expect(router.override == .remote(session("b2", on: connection)))
+    }
+
+    /// A removed connection's rows are forgotten with it, so a session selected later
+    /// under the same ids is not given a row from before.
+    @Test func aRemovedConnectionsRowsAreForgotten() {
+        let router = PaneRouter()
+        let row = UUID()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old")])
+        router.connectionsChanged(to: [otherConnection])
+        router.show(.remote(session("old", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "new")])
+        #expect(router.override == .remote(session("old", on: connection)))
+    }
 }
