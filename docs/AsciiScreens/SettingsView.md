@@ -95,13 +95,16 @@ menu spell the feature out in full.
 │  Terminal history                                 │
 │    Scrollback             10,000 lines   [－][＋]   │
 │    Lines of history Wietty keeps for each          │
-│    terminal and sends to a viewer on another       │
-│    device. Another Mac and the browser can scroll  │
-│    back through it; the iPad shows the screen      │
-│    only. A full terminal costs about 1 KiB per     │
-│    line, so 10,000 lines is about 10 MiB each.     │
-│    Applies to terminals opened after a change.     │
-│    This Mac's own pane keeps its own history.      │
+│    terminal. It is what a viewer on another        │
+│    device is sent when it opens the terminal:      │
+│    another Mac and the browser can scroll back     │
+│    through it; the iPad shows the screen only. It  │
+│    does not limit how far back a pane that         │
+│    already shows the terminal can scroll, on this  │
+│    Mac or another. A full terminal costs about 1   │
+│    KiB per line, so 10,000 lines is about 10 MiB   │
+│    each. Applies to terminals opened after a       │
+│    change.                                         │
 │                                                    │
 │  Groups                                     Add   │
 │    Work                                (✎) (🗑)   │
@@ -179,9 +182,12 @@ the history the server keeps per terminal, which is what a viewer on another dev
 is sent when it attaches. The pane of another Mac and the browser page can scroll
 back through it (the page asks xterm.js for 100,000 lines of scrollback for that
 reason); the iPad is sent it too and shows the screen only, since its terminal view
-does not scroll. It costs memory, which is the trade. It does not bound what this
-Mac's own pane scrolls through: that is the surface's own history, sized by Ghostty's
-`scrollback-limit`, which Wietty does not write and has no control for. The caption
+does not scroll. It costs memory, which is the trade. It does not bound what a pane
+that already shows the terminal scrolls through, on this Mac or on another: that is
+the surface's own history, sized by Ghostty's `scrollback-limit`, which Wietty does
+not write and has no control for, and output that arrives while the pane shows the
+terminal piles up there. With the setting at 1,000, `seq 1 200000` in a shown pane
+could be scrolled back about 46,000 lines (seen by hand on 2026-11-27). The caption
 says nothing about MCP, because a `get_process_output` read is capped at 200 lines.
 The setting is persisted as `scrollback-lines` (see settings-storage.md) and
 described in terminal.md, "The server's own terminal".

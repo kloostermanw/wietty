@@ -59,15 +59,18 @@ enum ScrollbackControl {
     ///   columns, paid once the rows exist, hence "a full terminal". The example is
     ///   worked out for the default.
     /// - `GhosttyService.open` reads the setting once per terminal.
-    /// - This Mac's pane scrolls its surface's history, which Ghostty's own
-    ///   configuration sizes and Wietty never writes.
+    /// - A pane that shows the terminal, here or on another Mac, scrolls its
+    ///   surface's history, which Ghostty's own configuration sizes and Wietty
+    ///   never writes. Output that arrives while the pane shows the terminal piles
+    ///   up there whatever this setting is: with 1,000 set, `seq 1 200000` in a
+    ///   shown pane can be scrolled back about 46,000 lines.
     ///
     /// Nothing about MCP: `get_process_output` returns at most 200 lines.
     static func caption(locale: Locale = .current) -> String {
         let lines = TerminalScrollback.defaultLines
         // 1 KiB per line, in MiB, to the nearest whole one: 10 at the default.
         let mebibytes = Int((Double(lines) / 1_024).rounded())
-        return "Lines of history Wietty keeps for each terminal and sends to a viewer on another device. Another Mac and the browser can scroll back through it; the iPad shows the screen only. A full terminal costs about 1 KiB per line, so \(count(lines, locale: locale)) lines is about \(count(mebibytes, locale: locale)) MiB each. Applies to terminals opened after a change. This Mac's own pane keeps its own history."
+        return "Lines of history Wietty keeps for each terminal. It is what a viewer on another device is sent when it opens the terminal: another Mac and the browser can scroll back through it; the iPad shows the screen only. It does not limit how far back a pane that already shows the terminal can scroll, on this Mac or another. A full terminal costs about 1 KiB per line, so \(count(lines, locale: locale)) lines is about \(count(mebibytes, locale: locale)) MiB each. Applies to terminals opened after a change."
     }
 }
 

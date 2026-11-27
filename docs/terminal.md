@@ -756,6 +756,11 @@ still can); the ceiling is where a typo in the file stops being able to take the
   without it, which is reported as an error, and whenever the pane does attach its first snapshot
   holds what the child wrote meanwhile, or a full screen program's screen with no history under it,
   as after a lost link.
+- Output that arrives while a pane shows the terminal, on this Mac or on another. It goes into
+  the pane's surface as it arrives and stays there up to that surface's own limit, whatever the
+  setting is. With the setting at 1,000, `seq 1 200000` in a shown pane could be scrolled back
+  about 46,000 lines (seen by hand on 2026-11-27). The setting shows only in a viewer that opens
+  the terminal afterwards.
 - The surface history of a terminal on another Mac shown here, which is this Mac's
   `scrollback-limit` again. The other Mac's `scrollback-lines` bounds what is sent, this Mac's
   `scrollback-limit` bounds what is kept.
