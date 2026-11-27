@@ -488,8 +488,9 @@ updating.
 
 A remote workspace card supports exactly the subset of actions that have a
 server side endpoint: open a new terminal, open a new claude session, tap a
-session (which activates the row first, see below), restart a session, and
-close a session. Any
+session (which activates the row first, see below), stop a session, restart a
+session, and close a session. A running row therefore has the three buttons a
+local row has: stop, restart and delete. Any
 action without a remote equivalent (rename, remove a terminal, remove a
 project, enable sync, apply config, process controls) is wired to a no-op on
 remote cards; those controls render but do nothing. There is no way to
@@ -500,7 +501,16 @@ the next pushed snapshot (see below) reconcile the UI, typically within a few
 hundred milliseconds. A failure is not swallowed, though. If the request
 returns a non success status or the host cannot be reached, the store records a
 short message in `lastActionError` and the section shows it as a small red
-caption, so a rejected open, restart, or close is visible rather than silent.
+caption, so a rejected open, stop, restart, or close is visible rather than
+silent.
+
+Stop (`RemoteWorkspaceStore.stopSession(sessionId:)`, in the package since
+1.2.0) ends the session on the serving instance and keeps its row, where close
+removes the row too. The row is offered stop under the rule a local row follows:
+while it is running, which for a remote row is `run_state` `running` in the last
+snapshot. A serving instance from before the route answers `404`, and the
+section's caption then reads "Action failed (404).". Nothing probes for the
+route beforehand, so that caption is how an older serving Mac shows.
 
 Tapping a row is the exception: it waits for its reply. A tap first asks the
 serving instance to activate the row (`RemoteWorkspaceStore.activate(refId:)`),
@@ -580,6 +590,23 @@ The server (`RemoteServer.swift`) exposes, all token gated:
   bodies carry the reason as `{"error": "..."}`, worded for a person and safe to
   show; a client that reads only the status is unaffected. The reason is also
   logged on the serving instance under the `remote` category.
+- `POST /api/sessions/{sid}/stop`: stops the tracked session with that session
+  id and keeps its row. The child is terminated, the terminal's last screen is
+  kept, the row's bell and finished status are cleared, and every viewer of the
+  session gets `ended` on its stream. This is the work the stop button of a row
+  on the serving Mac does (`ProjectStore.stopTerminal`). Answers `200` with the
+  row's terminal JSON, the object `restart` and `activate` answer with. The row
+  keeps its `session_id`, so a later `restart` can name it. `run_state` in the
+  answer is the row as it is when the stop returns and may still read `running`;
+  the snapshot pushed afterwards is what reports `exited`. A session that has
+  already ended is answered `200` with its row as well, and nothing is stopped
+  twice. `404` with no body if no row carries that session id (the row was
+  closed, or restarted and so given another session), and for an empty id, which
+  never names a row that was not opened yet. `401` for a wrong token. Served
+  since the Wietty that pins `wietty-shared` 1.2.0, whose
+  `RemoteEndpoints.stop(sessionId:)` is the client side; an older serving
+  instance has no such route and answers `404` too, so a client cannot tell
+  "too old" from "no such session" by the status.
 - `POST /api/sessions/{sid}/restart`: restarts the tracked session with that
   session id.
 - `POST /api/sessions/{sid}/close`: closes the tracked session with that
@@ -639,7 +666,10 @@ carries another one, that one is selected, and the pane shows the replacement
 (`PaneRouter.remoteRowsChanged`). That holds for a restart from the sidebar row,
 from another viewer and on the serving Mac itself too. A row that is gone
 (closed) is not followed, and the pane stays on the stopped screen, which has no
-Restart button while no row of the last snapshot carries its session. A restart
+Restart button while no row of the last snapshot carries its session. A session
+stopped from its sidebar row, by any viewer or on the serving Mac, ends this way
+too: its row stays and keeps the session id, so the stopped screen has its
+Restart. A restart
 is not awaited, so a second press for the same session (on the stopped screen
 or on the sidebar row) is dropped until the selection moves, the connection's
 action error changes or 5 seconds pass. A refusal,

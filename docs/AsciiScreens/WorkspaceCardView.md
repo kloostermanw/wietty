@@ -141,8 +141,10 @@ Legend:
   deliberately distinct: stop terminates the session but leaves the row so it can be
   reopened (`ProjectStore.stopTerminal` via the service's `stop`, which keeps the last
   screen), while trash removes the row and its terminal (`closeTerminal`). A remote
-  card offers no stop button (`canStopTerminal` is false): the LAN protocol has only
-  restart and close. See `ProcessRowView.md` and `TerminalRowView.md`.
+  card wires the same three: stop to `RemoteWorkspaceStore.stopSession`, which ends
+  the session on the other Mac and keeps its row, restart to the held remote restart,
+  and trash to `close`. `onStopTerminal` is required rather than defaulted, because
+  the stop button is drawn on every running row. See `ProcessRowView.md` and `TerminalRowView.md`.
 - A terminal or Claude row's context menu offers "Rename" (terminal rows only),
   "Copy ID for agent", "Remove", and "Close terminal". Its items come from
   `TerminalRowMenu.items(kind:)`, a pure type, so which of them a row offers is

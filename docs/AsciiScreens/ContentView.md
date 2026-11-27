@@ -381,9 +381,13 @@ lists one `WorkspaceCardView` per project with a `Divider` between cards. Only
 the Local section has the trailing drop zone and drag-to-reorder support; a
 Remote section instead shows a state line ("Connecting…", "Unreachable.
 Retrying…", "Unauthorized: check the connection's token.") in place of cards
-whenever that connection isn't `.connected`. When a remote action (open,
-restart, or close) is rejected by the server, that section also shows a small
-red caption from `store.lastActionError`, so the failure is visible.
+whenever that connection isn't `.connected`. A running row of a remote card has
+the three hover buttons a local row has (stop, restart, trash), wired to
+`store.stopSession`, the held restart and `store.close`. When a remote action
+(open, stop, restart, or close) is rejected by the server, that section also shows a small
+red caption from `store.lastActionError`, so the failure is visible. A stop sent
+to a serving Mac that is too old to have the route shows there as
+"Action failed (404).".
 
 The Local section's cards are filtered by the active group. `ContentView.visibleProjects`
 runs `store.projects` through `WorkspaceGroupMenu.visible(_:selected:)`: with no group

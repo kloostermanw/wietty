@@ -96,9 +96,9 @@ struct RemoteSectionView: View {
             isSelected: isSelected,
             onActivate: { onAttach($0) },
             onRestartTerminal: { onRestart($0) },
-            // No stop button: the LAN protocol has no stop that keeps the row, only
-            // close (the trash button, wired below) and restart.
-            canStopTerminal: false,
+            // Ends the session and keeps the row, as a local stop does. A serving Mac
+            // from before the route answers 404, which the caption below reports.
+            onStopTerminal: { store.stopSession(sessionId: $0.sessionId) },
             onRenameTerminal: { _ in },
             onRemoveTerminal: { _ in },
             onCloseTerminal: { store.close(sessionId: $0.sessionId) },
