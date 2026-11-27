@@ -981,7 +981,7 @@ history full:
 How far each figure can be trusted differs, so the table says where it comes from.
 
 - **Gated check.** `scripts/remote-surface-check.sh` runs `RemoteSurfaceMeasurementTests`, whose
-  sessions (`showCases`) are filled with generated content: a log line is about 85 characters with a
+  sessions (`showCases`) are filled with generated content: a log line is about 90 characters with a
   dimmed timestamp and a green level (`logLines`), a dense line is 119 characters with a 256 colour
   change every eight cells (`denseLines`). The byte counts are what that run reported on 2026-11-26.
   They are exact for that content and say nothing certain about any other. The suite is skipped in an
