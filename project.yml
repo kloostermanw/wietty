@@ -17,9 +17,11 @@ packages:
   # stream protocol version 2, which this app serves and the iPad has to speak too.
   # 1.1.0 adds, with no change on the wire, what the local socket server needs from
   # the codec (`StreamFrameReader.failure`, `StreamCodec.checkedSocketFrame`).
+  # 1.2.0 adds the stop route's client (`RemoteEndpoints.stop(sessionId:)`,
+  # `RemoteWorkspaceStore.stopSession(sessionId:)`).
   WiettyShared:
     url: https://github.com/kloostermanw/wietty-shared
-    exactVersion: "1.1.0"
+    exactVersion: "1.2.0"
   # The libghostty embedding API is explicitly unstable: pin exactly, never a range.
   #
   # Unconditional on the app target on purpose, even though it is the largest
