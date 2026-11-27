@@ -1256,11 +1256,12 @@ struct RemoteSurfaceMeasurementTests {
         step("session-change", changed && panes.count == 1 && panes.pane(for: ref) == nil
              && alive.count == 1 && alive.first == current()?.surfaceId)
 
-        // The session ends on the server: the bar says so over the kept surface.
+        // The session ends on the server: the pane keeps its surface but shows the
+        // stopped screen in its place, so the surface is in no container.
         streams.end("pane-b")
         let ended = await waitUntil(10) { current()?.state == .ended }
-        step("session-ended", ended && current()?.surfaceView != nil && containerSize() == fullSize
-             && !barHitsSurface())
+        let offScreen = await waitUntil(5) { current()?.surfaceView?.superview == nil }
+        step("session-ended", ended && current()?.surfaceView != nil && offScreen)
 
         // The last hide.
         let lastId = current()?.surfaceId

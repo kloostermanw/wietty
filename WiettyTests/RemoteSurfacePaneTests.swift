@@ -3,8 +3,8 @@ import Testing
 @testable import Wietty
 
 /// What the pane of a terminal on another Mac draws for each state of its owner:
-/// whether there is a bar above the surface, what it says, which button it has, and
-/// whether the pane shows the surface or a message.
+/// whether there is a bar over the surface, what it says, which button it has, and
+/// whether the pane shows the surface, the stopped screen or a message.
 @Suite struct RemoteSurfacePaneTests {
     typealias Layout = RemotePaneLayout
 
@@ -32,10 +32,22 @@ import Testing
         #expect(layout.content == .surface)
     }
 
-    @Test func endedShowsTheBarWithNoButtonAndKeepsTheSurface() {
+    /// A session that ended on the other Mac looks as one that ended on this Mac
+    /// does: the stopped screen in place of the surface, and no bar.
+    @Test func endedShowsTheStoppedScreenWithNoBar() {
         let layout = Layout(state: .ended)
-        #expect(layout.bar == Layout.Bar(text: "This terminal has ended on the other Mac.", button: nil))
-        #expect(layout.content == .surface)
+        #expect(layout.bar == nil)
+        #expect(layout.content == .stopped)
+    }
+
+    /// The stopped screen is the one view both panes draw, so its wording is the
+    /// local pane's: by the kind of row, with Restart.
+    @Test func theStoppedScreenSaysWhatStoppedByTheKindOfRow() {
+        #expect(TerminalStoppedView.title(isAgent: false) == "Terminal stopped")
+        #expect(TerminalStoppedView.description(isAgent: false) == "The process has exited.")
+        #expect(TerminalStoppedView.title(isAgent: true) == "Agent stopped")
+        #expect(TerminalStoppedView.description(isAgent: true) == "The agent has exited.")
+        #expect(TerminalStoppedView.restartTitle == "Restart")
     }
 
     @Test func refusedFillsThePaneWithTheMessageAndNoBar() {
@@ -59,10 +71,17 @@ import Testing
     /// container keeps the pane's whole size is measured by the gated
     /// `RemoteSurfaceMeasurementTests.theSwiftUIPaneShowsReconnectsAndEnds`.)
     @Test func theBarNeverChangesWhatFillsThePane() {
-        for state in [RemoteReconnectPolicy.State.reconnecting, .waiting, .ended] {
+        for state in [RemoteReconnectPolicy.State.reconnecting, .waiting] {
             let layout = Layout(state: state)
             #expect(layout.bar != nil)
             #expect(layout.content == Layout(state: .live).content)
+        }
+    }
+
+    /// Only a lost link has a bar. Every other state has none.
+    @Test func onlyALostLinkHasABar() {
+        for state in [RemoteReconnectPolicy.State.connecting, .live, .ended, .refused("no")] {
+            #expect(Layout(state: state).bar == nil)
         }
     }
 

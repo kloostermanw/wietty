@@ -96,14 +96,7 @@ struct LocalTerminalView: View {
                 // code claiming to be a state.
                 if let surface { SurfaceContainer(surface: surface) } else { EmptyView() }
             case .stopped:
-                ContentUnavailableView {
-                    Label(isAgent ? "Agent stopped" : "Terminal stopped", systemImage: "terminal")
-                } description: {
-                    Text(isAgent ? "The agent has exited." : "The process has exited.")
-                } actions: {
-                    Button("Restart", action: onRestart)
-                        .keyboardShortcut(.defaultAction)
-                }
+                TerminalStoppedView(isAgent: isAgent, onRestart: onRestart)
             case .empty:
                 ContentUnavailableView {
                     Label("No terminal selected", systemImage: "terminal")

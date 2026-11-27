@@ -63,6 +63,9 @@ struct ContentView: View {
     /// Watches connected Macs for bells. Held here so its Combine subscriptions live
     /// as long as the window, and built once in `task`.
     @State private var remoteBells: RemoteBellObserver?
+    /// Hands connected Macs' rows to the router, so a selected remote session follows
+    /// its row through a restart. Held and built as `remoteBells` is.
+    @State private var remoteRows: RemoteRowsObserver?
 
     var body: some View {
         // Not `HSplitView`. It handed the surplus to the sidebar as the window
@@ -96,6 +99,7 @@ struct ContentView: View {
                                       promptTemplates: promptTemplates,
                                       selection: paneSelection,
                                       onRestartTerminal: { restartTerminal(sessionId: $0) },
+                                      onRestartRemoteTerminal: { restartRemoteTerminal($0) },
                                       onRestartMCPServer: { runtime.restartMCP() })
                 }
                 .frame(maxWidth: .infinity)
@@ -143,6 +147,7 @@ struct ContentView: View {
                 terminals.ghostty.onInput = { session in store.clearAttention(sessionId: session) }
             }
             startBellNotifications()
+            startFollowingRemoteRows()
             terminals.monitor.start { event in store.handle(event) }
             await runtime.start(store: store, terminals: terminals)
             remoteWorkspaces.sync()
@@ -599,6 +604,26 @@ struct ContentView: View {
         }
     }
 
+    /// The stopped screen of a terminal on another Mac. The same call the remote row's
+    /// own restart button makes (`RemoteSectionView`), and refused while the sidebar
+    /// is busy, as the local one is.
+    ///
+    /// Nothing is awaited and nothing is shown here: the package's restart does not
+    /// answer with the row's new session. The other Mac's next snapshot does, and the
+    /// router moves the selection to it (`PaneRouter.remoteRowsChanged`). A restart
+    /// that fails is said in the connection's red caption, as for the row's button.
+    private func restartRemoteTerminal(_ session: RemoteSessionRef) {
+        guard Self.remoteRestartIsAllowed(isBusy: isBusy),
+              let remoteStore = remoteWorkspaces.stores[session.connectionId] else { return }
+        remoteStore.restart(sessionId: session.sessionId)
+    }
+
+    /// Whether the stopped screen's Restart of a remote terminal goes out. A static
+    /// function so the rule is asserted rather than only reachable in the window.
+    static func remoteRestartIsAllowed(isBusy: Bool) -> Bool {
+        !isBusy
+    }
+
     private func stopTerminal(_ ref: TerminalRef, in project: Project) {
         Task {
             isBusy = true
@@ -760,6 +785,17 @@ struct ContentView: View {
             handleRemoteBells(connection: connection, diff: diff)
         }
         remoteBells = observer
+        observer.start(controller: remoteWorkspaces)
+    }
+
+    /// Starts handing every connection's rows to the router. Idempotent, as the bells'
+    /// observer is, because `task` can run again for the same window.
+    private func startFollowingRemoteRows() {
+        guard remoteRows == nil else { return }
+        let observer = RemoteRowsObserver { connection, rows in
+            router.remoteRowsChanged(on: connection, to: rows)
+        }
+        remoteRows = observer
         observer.start(controller: remoteWorkspaces)
     }
 

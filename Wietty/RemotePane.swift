@@ -626,8 +626,10 @@ final class RemotePane {
         armWatchdog()
     }
 
-    /// What a final state keeps: after `ended` the bridge, helper and surface (the
-    /// last screen stays) and nothing more is claimed; after `refused` nothing.
+    /// What a final state keeps: after `ended` the bridge, helper and surface, until
+    /// the pane is hidden, and nothing more is claimed; after `refused` nothing. The
+    /// view does not show the kept surface: it draws the stopped screen in its place
+    /// (`RemotePaneLayout`), as the own pane does for a terminal that has ended.
     private func afterStateChange() {
         switch policy.state {
         case .ended:
