@@ -16,7 +16,6 @@ Scalars (one key each):
 
 | Key | Meaning |
 |--------------------------|---------------------------------------------------|
-| `show-workspace-badge`   | `true`/`false`, the pane title badge toggle |
 | `bell-sound`             | the notification sound (`none`, `default`, or `named:<Sound>`) |
 | `notification-source`    | where program banners come from: `osc-9-777` (the default) or `osc-7501` |
 | `check-interval-fast`    | fast tier poll seconds |
@@ -36,6 +35,14 @@ Scalars (one key each):
 | `color-active-terminal-row-foreground`  | the selected terminal row foreground |
 | `color-pill-background`  | the Issue/PR pill background |
 | `color-pill-foreground`  | the Issue/PR pill foreground |
+
+One key is retired: `show-workspace-badge`. It belonged to a toggle that labelled
+terminals with their workspace's name, which did nothing once terminals were
+libghostty surfaces and was removed. A file from an older build still has the line.
+It loads as before, the line is read by nothing, a launch does not rewrite the file
+for it, and the next change of any setting removes it, the way a setting back at its
+default loses its line (`SettingsKeys.retired`, `RetiredSettingTests`). This differs
+from a key Wietty never knew, which is kept.
 
 Each colour key is present only when that colour is set. An absent key means "leave
 the default", which is what an untouched install has and what deleting the line
