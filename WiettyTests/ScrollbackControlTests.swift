@@ -154,10 +154,12 @@ import WiettyCore
     /// The whole caption, in one locale, word for word.
     @Test func theCaptionInFull() {
         #expect(ScrollbackControl.caption(locale: Self.american) == """
-            Lines of history Wietty keeps for each terminal and sends to a viewer on another device. \
-            Another Mac and the browser can scroll back through it; the iPad shows the screen only. \
+            Lines of history Wietty keeps for each terminal. It is what a viewer on another device is \
+            sent when it opens the terminal: another Mac and the browser can scroll back through it; \
+            the iPad shows the screen only. It does not limit how far back a pane that already shows \
+            the terminal can scroll, on this Mac or another. \
             A full terminal costs about 1 KiB per line, so 10,000 lines is about 10 MiB each. \
-            Applies to terminals opened after a change. This Mac's own pane keeps its own history.
+            Applies to terminals opened after a change.
             """)
     }
 
