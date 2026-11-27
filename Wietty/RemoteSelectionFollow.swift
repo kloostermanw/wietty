@@ -17,13 +17,6 @@ struct RemoteRow: Equatable {
             }
         }
     }
-
-    /// Whether the row carrying `sessionId` is an agent. False when no row carries it,
-    /// so a session the snapshot does not know gets the terminal wording.
-    static func isAgent(sessionId: String, in rows: [RemoteRow]) -> Bool {
-        guard !sessionId.isEmpty else { return false }
-        return rows.first { $0.sessionId == sessionId }?.isAgent ?? false
-    }
 }
 
 /// Where a selected remote session went when its row got another one.

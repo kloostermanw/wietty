@@ -104,23 +104,37 @@ import WiettyShared
         ])
     }
 
-    /// The stopped screen's wording: the agent's for an agent row, the terminal's for
-    /// a terminal row and for a session no row carries.
-    @Test func aSessionIsAnAgentOnlyWhenItsRowIsOne() {
+    // MARK: - The stopped screen
+
+    /// The agent's wording for an agent row, the terminal's for a terminal row, and
+    /// Restart for both.
+    @Test func aSessionARowCarriesCanBeRestartedAndIsWordedByItsRow() {
         let rows = [RemoteRow(id: row, sessionId: "agent", isAgent: true),
-                    RemoteRow(id: neighbour, sessionId: "shell", isAgent: false),
-                    RemoteRow(id: UUID(), sessionId: "", isAgent: true)]
-        #expect(RemoteRow.isAgent(sessionId: "agent", in: rows))
-        #expect(!RemoteRow.isAgent(sessionId: "shell", in: rows))
-        #expect(!RemoteRow.isAgent(sessionId: "gone", in: rows))
-        #expect(!RemoteRow.isAgent(sessionId: "", in: rows))
-        #expect(!RemoteRow.isAgent(sessionId: "agent", in: []))
+                    RemoteRow(id: neighbour, sessionId: "shell", isAgent: false)]
+        let agent = RemoteStoppedContent(sessionId: "agent", rows: rows)
+        #expect(agent.isAgent)
+        #expect(agent.canRestart)
+        let shell = RemoteStoppedContent(sessionId: "shell", rows: rows)
+        #expect(!shell.isAgent)
+        #expect(shell.canRestart)
     }
 
-    /// The stopped screen's Restart shares the sidebar's busy flag, as the local one
-    /// does: nothing goes out while an action of the sidebar is under way.
-    @Test func theRemoteRestartIsRefusedWhileTheSidebarIsBusy() {
-        #expect(ContentView.remoteRestartIsAllowed(isBusy: false))
-        #expect(!ContentView.remoteRestartIsAllowed(isBusy: true))
+    /// A session no row carries (its row was closed, or a stale id) can only be
+    /// answered 404, so there is no Restart, and the wording is the terminal's.
+    @Test func aSessionNoRowCarriesHasNoRestartAndTheTerminalWording() {
+        let rows = [RemoteRow(id: row, sessionId: "agent", isAgent: true)]
+        for content in [RemoteStoppedContent(sessionId: "gone", rows: rows),
+                        RemoteStoppedContent(sessionId: "agent", rows: [])] {
+            #expect(!content.isAgent)
+            #expect(!content.canRestart)
+        }
+    }
+
+    /// An empty id is no session: an agent row that carries none is not its row.
+    @Test func anEmptySessionIsNoRowsSession() {
+        let rows = [RemoteRow(id: row, sessionId: "", isAgent: true)]
+        let content = RemoteStoppedContent(sessionId: "", rows: rows)
+        #expect(!content.isAgent)
+        #expect(!content.canRestart)
     }
 }

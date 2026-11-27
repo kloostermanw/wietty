@@ -58,6 +58,24 @@ struct RemotePaneLayout: Equatable {
     }
 }
 
+/// What the stopped screen of a session on another Mac says and offers, from the rows
+/// of the connection's last snapshot.
+///
+/// A session no row carries (its row was closed there, or the id is a stale one from a
+/// notification tapped later) cannot be restarted: the other Mac answers 404. So the
+/// screen then has no Restart, and the terminal wording, since nothing says what the
+/// row was.
+struct RemoteStoppedContent: Equatable {
+    let isAgent: Bool
+    let canRestart: Bool
+
+    init(sessionId: String, rows: [RemoteRow]) {
+        let row = sessionId.isEmpty ? nil : rows.first { $0.sessionId == sessionId }
+        isAgent = row?.isAgent ?? false
+        canRestart = row != nil
+    }
+}
+
 /// A terminal that lives on another Mac, in the main window's pane, on a libghostty
 /// surface fed through the app's `TerminalBridge`.
 ///
@@ -92,11 +110,13 @@ struct RemotePaneLayout: Equatable {
 struct RemoteSurfacePane: View {
     let panes: RemotePanes
     let session: RemoteSessionRef
-    /// Whether the session's row is an agent, which only changes the wording of the
-    /// stopped screen. A closure, read when the stopped screen is drawn, so it is
-    /// answered from the snapshot of that moment and not from the one the pane was
-    /// opened under.
-    var isAgent: () -> Bool = { false }
+    /// The connection's store, for the stopped screen: whether the session's row is
+    /// an agent, and whether a row carries the session at all. Nil when there is none,
+    /// which draws the stopped screen with the terminal wording and no Restart.
+    var store: RemoteWorkspaceStore?
+    /// The restarts asked for and not answered yet, which hold the stopped screen's
+    /// button. Nil never holds it.
+    var restarts: RemoteRestartHolds?
     /// The stopped screen's Restart.
     var onRestart: () -> Void = {}
 
@@ -117,7 +137,12 @@ struct RemoteSurfacePane: View {
                     Color.clear
                 }
             case .stopped:
-                TerminalStoppedView(isAgent: isAgent(), onRestart: onRestart)
+                if let store {
+                    RemoteStoppedScreen(store: store, session: session, restarts: restarts,
+                                        onRestart: onRestart)
+                } else {
+                    TerminalStoppedView(isAgent: false, onRestart: nil)
+                }
             case .refused(let message):
                 ContentUnavailableView {
                     Label(RemotePaneLayout.refusedTitle, systemImage: "bolt.slash")
@@ -144,6 +169,28 @@ struct RemoteSurfacePane: View {
             pane = nil
             panes.close(session)
         }
+    }
+}
+
+/// The stopped screen of a session on another Mac.
+///
+/// A view of its own because it observes the connection's store: a snapshot that
+/// arrives while the screen is up (the row closed on the other Mac, or the first
+/// snapshot to carry a session just opened) and an action's error both have to redraw
+/// it, and a nested observable's changes do not redraw `RightTerminalView`.
+private struct RemoteStoppedScreen: View {
+    @ObservedObject var store: RemoteWorkspaceStore
+    let session: RemoteSessionRef
+    let restarts: RemoteRestartHolds?
+    let onRestart: () -> Void
+
+    var body: some View {
+        let content = RemoteStoppedContent(sessionId: session.sessionId,
+                                           rows: RemoteRow.rows(in: store.workspaces))
+        TerminalStoppedView(
+            isAgent: content.isAgent,
+            onRestart: content.canRestart ? onRestart : nil,
+            restartDisabled: restarts?.isHeld(session, lastActionError: store.lastActionError) ?? false)
     }
 }
 

@@ -1261,7 +1261,8 @@ struct RemoteSurfaceMeasurementTests {
         streams.end("pane-b")
         let ended = await waitUntil(10) { current()?.state == .ended }
         let offScreen = await waitUntil(5) { current()?.surfaceView?.superview == nil }
-        step("session-ended", ended && current()?.surfaceView != nil && offScreen)
+        step("session-ended", ended && current()?.surfaceView != nil && offScreen
+             && RemotePaneLayout(state: current()?.state).content == .stopped)
 
         // The last hide.
         let lastId = current()?.surfaceId

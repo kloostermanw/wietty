@@ -10,7 +10,12 @@ import SwiftUI
 struct TerminalStoppedView: View {
     /// Whether the row is an agent, which only changes the wording.
     let isAgent: Bool
-    let onRestart: () -> Void
+    /// What Restart does, or nil for no button: a session of another Mac that no row
+    /// there carries any more has nothing to restart.
+    let onRestart: (() -> Void)?
+    /// Shows the button but takes no press: a restart of another Mac's session that
+    /// has been asked for and not answered yet.
+    var restartDisabled = false
 
     static func title(isAgent: Bool) -> String {
         isAgent ? "Agent stopped" : "Terminal stopped"
@@ -28,8 +33,11 @@ struct TerminalStoppedView: View {
         } description: {
             Text(Self.description(isAgent: isAgent))
         } actions: {
-            Button(Self.restartTitle, action: onRestart)
-                .keyboardShortcut(.defaultAction)
+            if let onRestart {
+                Button(Self.restartTitle, action: onRestart)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(restartDisabled)
+            }
         }
     }
 }
