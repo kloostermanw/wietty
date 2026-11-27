@@ -69,6 +69,11 @@ The path from the browser back to the terminal, in order:
   snapshot brings; the page cannot know the setting, and xterm.js's default of
   1,000 lines would keep only the last thousand. `ScrollbackControlTests` reads
   the served page for that option; a real browser's behaviour was not observed.
+  The limit is the page's own, so output that arrives after the attach also
+  accumulates to 100,000 lines whatever the Mac's setting is. xterm.js keeps 12
+  bytes per cell, so a tab left open on a busy terminal can grow to about 150 MB
+  at 120 columns (estimated from the library's line storage, not measured),
+  where the default of 1,000 lines stopped near 1.5 MB.
 - **`RemoteServer.swift`.** A Hummingbird HTTP plus WebSocket server bound to
   `0.0.0.0` on the remote port (7434 by default), separate from the loopback
   MCP server. It serves the web client, the token gated session and workspace

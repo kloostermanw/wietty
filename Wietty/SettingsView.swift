@@ -334,9 +334,9 @@ struct SettingsView: View {
     }
 
     /// The section's one control, bound to the store's own property so the
-    /// property's `didSet` is what clamps and persists. Not private, and nothing
-    /// between it and the section, so a test can click the very stepper the tab
-    /// draws and see the store change.
+    /// property's `didSet` is what clamps and persists. Not private, so a test can
+    /// click this stepper and see the store change. That the section draws it, and
+    /// that its arrows call the right method, no test proves.
     var scrollbackStepper: ScrollbackStepper {
         ScrollbackStepper(lines: $store.scrollbackLines)
     }
