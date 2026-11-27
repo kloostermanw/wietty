@@ -44,9 +44,8 @@ private final class Flag: @unchecked Sendable {
     var isRaised: Bool { lock.lock(); defer { lock.unlock() }; return raised }
 }
 
-/// The substrate's composition root. Its contract is the same one `TmuxStack`
-/// has: always construct, and say what is wrong through `setupError` rather than
-/// failing every call site silently.
+/// The substrate's composition root. Its contract: always construct, and say what
+/// is wrong through `setupError` rather than failing every call site silently.
 @MainActor
 @Suite struct GhosttyStackTests {
     /// A local socket that cannot be bound is a startup error of its own, reported

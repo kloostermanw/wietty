@@ -68,9 +68,9 @@ package final class RawPTY: @unchecked Sendable {
     /// Serial because terminal input order is as load bearing as output order. One
     /// queue per pty keeps every writer's bytes in the order they were handed over,
     /// where a concurrent queue would scramble a paste that arrives as several
-    /// chunks. This is the same rule `TmuxStack.onSend` follows with its serial queue.
-    /// Upstream of here a remote viewer's input is handed over on the thread that
-    /// read it from the socket, one message after another, so it arrives in order.
+    /// chunks. Upstream of here a remote viewer's input is handed over on the
+    /// thread that read it from the socket, one message after another, so it
+    /// arrives in order.
     private let writes: DispatchQueue
 
     private let lock = NSLock()
@@ -391,8 +391,7 @@ package final class RawPTY: @unchecked Sendable {
                     // every keystroke, so an alert each time would be worse than
                     // useless. But discarding it silently made a terminal that had
                     // stopped accepting input indistinguishable from one being
-                    // typed into correctly, with nothing recorded anywhere. This is
-                    // the same rule `TmuxStack.onSend` follows.
+                    // typed into correctly, with nothing recorded anywhere.
                     guard written > 0 else {
                         GhosttyLog.stack.error("""
                             write to terminal \(self.pid, privacy: .public) failed: \

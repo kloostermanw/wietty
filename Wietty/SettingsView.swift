@@ -327,18 +327,18 @@ struct SettingsView: View {
     /// afterwards. The bounds, the step and the caption are `ScrollbackControl`'s.
     @ViewBuilder private var scrollbackSection: some View {
         Section("Terminal history") {
-            Stepper(value: $store.scrollbackLines, in: ScrollbackControl.range,
-                    step: ScrollbackControl.step) {
-                HStack {
-                    Text("Scrollback")
-                    Spacer()
-                    Text(ScrollbackControl.valueLabel(store.scrollbackLines))
-                        .foregroundStyle(.secondary).monospacedDigit()
-                }
-            }
-            Text(ScrollbackControl.caption)
+            scrollbackStepper
+            Text(ScrollbackControl.caption())
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    /// The section's one control, bound to the store's own property so the
+    /// property's `didSet` is what clamps and persists. Not private, and nothing
+    /// between it and the section, so a test can click the very stepper the tab
+    /// draws and see the store change.
+    var scrollbackStepper: ScrollbackStepper {
+        ScrollbackStepper(lines: $store.scrollbackLines)
     }
 
     @ViewBuilder private var periodicChecksSection: some View {

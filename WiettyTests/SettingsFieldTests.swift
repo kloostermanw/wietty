@@ -42,12 +42,28 @@ import WiettyShared
         return Double(size.width)
     }
 
-    /// The General tab holds the scrollback stepper, whose value is the widest
-    /// number in the panel at its ceiling.
-    @Test func theGeneralTabFitsThePaneFloorWithTheLongestScrollbackValue() {
+    /// The General tab holds the scrollback stepper. With its value at the ceiling,
+    /// the longest it gets, the tab still asks for the floor's width and no more.
+    /// That is all this shows: not that the value is drawn in full.
+    @Test func theGeneralTabDoesNotWidenThePaneFloorAtTheScrollbackCeiling() {
         let view = settings(.general)
         view.store.scrollbackLines = TerminalScrollback.range.upperBound
         #expect(widthAtPaneFloor(view) == SidebarWidth.paneMinimum)
+    }
+
+    /// The stepper the General tab draws is bound to the store: a click on it moves
+    /// the store's own value, by `ScrollbackControl`'s step and inside its range.
+    @Test func theGeneralTabsScrollbackStepperIsBoundToTheStore() {
+        let view = settings(.general)
+        #expect(view.store.scrollbackLines == TerminalScrollback.defaultLines)
+
+        view.scrollbackStepper.increment()
+        #expect(view.store.scrollbackLines == TerminalScrollback.defaultLines + ScrollbackControl.step)
+
+        view.store.scrollbackLines = ScrollbackControl.range.upperBound
+        #expect(!view.scrollbackStepper.canIncrement)
+        view.scrollbackStepper.decrement()
+        #expect(view.store.scrollbackLines == ScrollbackControl.range.upperBound - ScrollbackControl.step)
     }
 
     @Test func theAgentsTabFitsThePaneFloor() {
