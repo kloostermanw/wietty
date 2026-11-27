@@ -13,8 +13,7 @@ import Foundation
 /// discard, and both are reached only for a session this service handed out.
 package struct UnavailableTerminalService: TerminalService {
     package let error: TerminalError
-    package func open(folder: URL, existingWindowId: String?, command: String?,
-              badge: String?) async throws -> TerminalHandle {
+    package func open(folder: URL, existingWindowId: String?, command: String?) async throws -> TerminalHandle {
         throw error
     }
     package func probe(sessionId: String) async throws -> FocusResult { throw error }

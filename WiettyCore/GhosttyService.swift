@@ -320,8 +320,7 @@ package final class GhosttyService: TerminalService {
     /// attaches from its own thread as soon as the helper connects, which can be
     /// before `createSurface` returns, and an attach for a session the census does not
     /// hold is answered `ended`. A failed `createSurface` takes it out again.
-    package func open(folder: URL, existingWindowId: String?, command: String?,
-              badge: String?) async throws -> TerminalHandle {
+    package func open(folder: URL, existingWindowId: String?, command: String?) async throws -> TerminalHandle {
         let session = Self.sessionPrefix + UUID().uuidString.lowercased()
         // Before the pty, so a model that cannot be built leaves nothing to clean
         // up. At the grid the pty is about to be spawned with, which is the only
@@ -385,14 +384,8 @@ package final class GhosttyService: TerminalService {
         // Live before the surface exists; see the doc above.
         shared.note(live: liveSessions)
 
-        // `badge` travels as the surface's title. libghostty has no title setter,
-        // so today it reaches the host's own record and the view's accessibility
-        // label and no further: it labels nothing a sighted user can see. It is
-        // still passed rather than dropped, because the alternative is a substrate
-        // that silently ignores a workspace setting the other two honour, and the
-        // day the C API grows a setter this already carries the value.
         do {
-            try host.createSurface(id: session, directory: folder, title: badge)
+            try host.createSurface(id: session, directory: folder)
         } catch {
             // Nothing will read this terminal: everything registered above goes,
             // and a viewer that attached meanwhile is told it ended.

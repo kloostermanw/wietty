@@ -293,8 +293,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
         let probe = TestScratch.root.appendingPathComponent("claim-\(UUID().uuidString)").path
         let handle = try await stack.service.open(
             folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-            command: "trap 'stty size > \(probe)' WINCH; while true; do sleep 0.2; done",
-            badge: nil)
+            command: "trap 'stty size > \(probe)' WINCH; while true; do sleep 0.2; done")
         let answers = Answers()
         let claimant = stack.hub.attach(session: handle.sessionId, resize: .repaint) { answers.add($0) }
         try await Task.sleep(for: .milliseconds(600))
@@ -319,9 +318,9 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
         let shared = service.shared
 
         let exiting = try await service.open(folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-                                             command: "exit 0", badge: nil)
+                                             command: "exit 0")
         let staying = try await service.open(folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-                                             command: "sleep 5", badge: nil)
+                                             command: "sleep 5")
         #expect(shared.resizer(for: staying.sessionId) != nil)
         try await waitUntil { shared.writer(for: exiting.sessionId) == nil }
         #expect(shared.resizer(for: exiting.sessionId) == nil)
@@ -331,7 +330,7 @@ private func dataBytes(_ messages: [StreamMessage]) -> [UInt8] {
         #expect(shared.resizer(for: staying.sessionId) == nil)
 
         let last = try await service.open(folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-                                          command: "sleep 5", badge: nil)
+                                          command: "sleep 5")
         #expect(shared.resizer(for: last.sessionId) != nil)
         service.closeAll()
         #expect(shared.resizer(for: last.sessionId) == nil)

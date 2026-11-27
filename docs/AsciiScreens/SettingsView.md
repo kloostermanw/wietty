@@ -5,8 +5,8 @@ so the intended structure stays readable without running the app.
 
 The view is a segmented tab control above a grouped `Form`, and the tab decides
 what the form holds. Six tabs (`SettingsTab`), in this order: "General" (the
-badge toggle, the scrollback stepper, the groups editor, the three interval
-steppers, and the two colour sections),
+scrollback stepper, the groups editor, the three interval steppers, and the two
+colour sections),
 "Notifications" (the permission
 state, a test notification, and the sound), "Agents" (the agents a workspace's
 menu can start), "Prompts" (the prompt templates the ⌘P popup lists),
@@ -85,13 +85,6 @@ menu spell the feature out in full.
 │ │General│Notifi…│Agents │Prompts│Remote │ MCP │   │
 │ └───────┴───────┴───────┴───────┴───────┴─────┘   │
 │ ────────────────────────────────────────────────  │
-│  ☑ Show workspace name as terminal badge           │
-│    Marks each terminal Wietty opens with its       │
-│    workspace's name. Applies to terminals opened   │
-│    after this is turned on. Currently inert:       │
-│    libghostty exposes no way to set a surface's    │
-│    title.                                          │
-│                                                    │
 │  Terminal history                                 │
 │    Scrollback             10,000 lines   [－][＋]   │
 │    Lines of history Wietty keeps for each          │
@@ -174,9 +167,12 @@ The value is grouped as the user's region groups numbers ("10,000 lines", or
 same formatter, so the row and the caption under it always spell it the same way.
 The drawing shows a region that groups with a comma.
 
-The section sits directly under the badge toggle because those two are the tab's
-terminal settings and share a rule: each applies to terminals opened afterwards, and
-a terminal that is already open keeps the history limit it started with. The caption
+The section is the first in the tab and its only setting about terminals. It applies
+to terminals opened afterwards: a terminal that is already open keeps the history
+limit it started with. (A toggle "Show workspace name as terminal badge" used to sit
+above it. It did nothing once terminals were libghostty surfaces, which have no title
+to set, and was removed; see settings-storage.md for what happens to its line in an
+older config file.) The caption
 says what the number bounds, who can use it and what it does not bound. It bounds
 the history the server keeps per terminal, which is what a viewer on another device
 is sent when it attaches. The pane of another Mac and the browser page can scroll
@@ -491,11 +487,6 @@ Legend:
 - Only the selected tab's subtree is built, so a render test that does not name a
   tab covers one sixth of the panel. `SettingsPaneTests.everyTabRenders` renders
   all six, and `SettingsView`'s `init` takes a `tab:` for that.
-- `☑`: `Toggle("Show workspace name as terminal badge", isOn: $store.showWorkspaceBadge)`.
-  When on, `ProjectStore` passes the workspace name as `badge:` to
-  `TerminalService.open`. It has no effect today: libghostty exposes no way to
-  set a surface's title, which the caption says outright. It stays because the
-  plumbing is intact and the day libghostty gains a title setter it is one line.
 - `Permission`: what `BellNotifier.permission()` last answered, read in the tab's
   `task` on the way in rather than once per launch, because permission can be
   granted or revoked in System Settings while Wietty runs. Four states, each with

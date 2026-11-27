@@ -70,10 +70,9 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// a test hands the host a private one.
     let pasteboard: NSPasteboard
 
-    /// The label the app gave each surface. libghostty has no title setter of any
-    /// kind, so this is the host's own record rather than something pushed into
-    /// the terminal; `GHOSTTY_ACTION_SET_TITLE` overwrites it when the shell sets
-    /// one.
+    /// The title each surface's program last set (`GHOSTTY_ACTION_SET_TITLE`), as
+    /// the host's own record: libghostty has no title setter of any kind, so
+    /// nothing is pushed into the terminal.
     private var titles: [String: String] = [:]
 
     var onTitle: (@MainActor (String, String) -> Void)?
@@ -115,9 +114,9 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// another branch, because the stack would not be holding it. This can.
     static private(set) var initCount = 0
 
-    /// The bridge of every surface `createSurface(id:directory:title:)` made. Nil for
+    /// The bridge of every surface `createSurface(id:directory:)` made. Nil for
     /// a host built with none, which can create a surface only for an explicit
-    /// command (`createSurface(id:command:directory:title:)`).
+    /// command (`createSurface(id:command:directory:)`).
     private let bridges: PaneBridges?
 
     /// - Parameter bridges: joins each surface to its terminal's stream. The app
@@ -485,14 +484,14 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// listening first, then the surface runs the helper pointed at it
     /// (`PaneBridges.command`). A surface that cannot be created takes its bridge
     /// with it.
-    func createSurface(id: String, directory: URL, title: String?) throws {
+    func createSurface(id: String, directory: URL) throws {
         guard let bridges, app != nil, surfaces[id] == nil else { throw SurfaceHostError.surfaceFailed }
         // The pane's grid shows through the same `impose` any caller has.
         let command = try bridges.open(session: id) { [weak self] grid in
             self?.impose(grid: grid, on: id)
         }
         do {
-            try createSurface(id: id, command: command, directory: directory, title: title)
+            try createSurface(id: id, command: command, directory: directory)
         } catch {
             bridges.close(session: id)
             throw error
@@ -503,8 +502,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     /// shows is whatever `command` prints. Not part of `TerminalSurfaceHosting`; the
     /// coexistence check and the imposed grid measurement drive a surface this way.
     /// `destroySurface(id:)` frees it as any other.
-    func createSurface(id: String, command: String, directory: URL, title: String?) throws {
-        try makeSurface(id: id, command: command, directory: directory, title: title,
+    func createSurface(id: String, command: String, directory: URL) throws {
+        try makeSurface(id: id, command: command, directory: directory,
                         viewer: false, grid: nil)
     }
 
@@ -526,10 +525,10 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     func createViewerSurface(id: String, command: String, grid: OwnPaneGrid?) throws {
         try makeSurface(id: id, command: command,
                         directory: FileManager.default.homeDirectoryForCurrentUser,
-                        title: nil, viewer: true, grid: grid)
+                        viewer: true, grid: grid)
     }
 
-    private func makeSurface(id: String, command: String, directory: URL, title: String?,
+    private func makeSurface(id: String, command: String, directory: URL,
                              viewer: Bool, grid: OwnPaneGrid?) throws {
         guard let app else { throw SurfaceHostError.surfaceFailed }
         guard surfaces[id] == nil else { throw SurfaceHostError.surfaceFailed }
@@ -588,7 +587,6 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         }
         created = true
         surfaces[id] = Surface(view: view, handle: handle)
-        if let title { setTitle(title, for: id) }
         view.configuredBackground = background
         view.backgroundOpacity = backgroundOpacity
         view.adopt(surface: handle)
@@ -744,9 +742,8 @@ final class GhosttySurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         return rows.count > maxLines ? Array(rows.suffix(maxLines)) : rows
     }
 
-    /// Records a surface's label, and mirrors it onto the view so assistive
-    /// technology can read it. libghostty has no title setter, so this is as far
-    /// as a title can travel: the terminal itself never learns it.
+    /// Records the title a surface's program set, and mirrors it onto the view so
+    /// assistive technology can read it.
     private func setTitle(_ title: String, for id: String) {
         titles[id] = title
         surfaces[id]?.view.setAccessibilityLabel(title)

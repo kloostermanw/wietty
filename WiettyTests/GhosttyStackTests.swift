@@ -59,7 +59,7 @@ private final class Flag: @unchecked Sendable {
         #expect(stack.localServer == nil)
         await #expect(throws: expected) {
             _ = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                             existingWindowId: nil, command: nil, badge: nil)
+                                             existingWindowId: nil, command: nil)
         }
     }
 
@@ -86,7 +86,7 @@ private final class Flag: @unchecked Sendable {
         #expect(stack.service is UnavailableTerminalService)
         await #expect(throws: TerminalError.self) {
             _ = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                             existingWindowId: nil, command: nil, badge: nil)
+                                             existingWindowId: nil, command: nil)
         }
     }
 
@@ -116,7 +116,7 @@ private final class Flag: @unchecked Sendable {
         #expect(stack.setupError == expected.errorDescription)
         await #expect(throws: expected) {
             _ = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                             existingWindowId: nil, command: nil, badge: nil)
+                                             existingWindowId: nil, command: nil)
         }
     }
 
@@ -135,7 +135,7 @@ private final class Flag: @unchecked Sendable {
         defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
-                                                  command: "echo hubbed-21", badge: nil)
+                                                  command: "echo hubbed-21")
         // No `await` between the open and the attach on purpose: the child exits at
         // once, and the reap that follows it runs on this actor, so anything
         // suspending here would let the census answer `ended` before the viewer
@@ -159,7 +159,7 @@ private final class Flag: @unchecked Sendable {
         defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
-                                                  command: nil, badge: nil)
+                                                  command: nil)
         let seen = TextSink()
         stack.hub.attach(session: handle.sessionId, resize: .repaint) { message in
             if case let .data(chunk) = message { seen.append(chunk) }
@@ -194,7 +194,7 @@ private final class Flag: @unchecked Sendable {
         defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
-                                                  command: "cat", badge: nil)
+                                                  command: "cat")
         let seen = TextSink()
         stack.hub.attach(session: handle.sessionId, resize: .repaint) { message in
             if case let .data(chunk) = message { seen.append(chunk) }
@@ -257,7 +257,7 @@ private final class Flag: @unchecked Sendable {
         defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
-                                                  command: "exit 0", badge: nil)
+                                                  command: "exit 0")
         // No `await` between the open and the attach, for the reason
         // `terminalBytesReachTheHub` gives: the child exits at once, and a suspension
         // here would let the census answer `ended` before the viewer registered,
@@ -275,7 +275,7 @@ private final class Flag: @unchecked Sendable {
         defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
-                                                  command: "sleep 30", badge: nil)
+                                                  command: "sleep 30")
         let ended = Flag()
         stack.hub.attach(session: handle.sessionId, resize: .repaint) { if case .ended = $0 { ended.raise() } }
         #expect(ended.isRaised == false)
@@ -293,7 +293,7 @@ private final class Flag: @unchecked Sendable {
         defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
-                                                  command: "echo parted-$((7+6))", badge: nil)
+                                                  command: "echo parted-$((7+6))")
         // No `await` between the open and the attach, for the reason above.
         let log = MessageLog()
         stack.hub.attach(session: handle.sessionId, resize: .repaint) { log.add($0) }
@@ -321,7 +321,7 @@ private final class Flag: @unchecked Sendable {
         defer { stack.shutDown() }
         let handle = try await stack.service.open(
             folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-            command: #"printf '\033[31malpha\033[0m\r\nbeta-%s' $((3+4)); sleep 5"#, badge: nil)
+            command: #"printf '\033[31malpha\033[0m\r\nbeta-%s' $((3+4)); sleep 5"#)
         let model = try #require(stack.ghosttyService?.screenModel(for: handle.sessionId))
         try await waitUntil { model.text(maxLines: 10).contains("beta-7") }
         let claimer = stack.hub.attach(session: handle.sessionId, resize: .reflow) { _ in }
@@ -355,7 +355,7 @@ private final class Flag: @unchecked Sendable {
         // Ninety columns of output: two rows on a grid of eighty, one on a hundred.
         let handle = try await stack.service.open(
             folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-            command: #"printf '%090d' $((40+2)); sleep 5"#, badge: nil)
+            command: #"printf '%090d' $((40+2)); sleep 5"#)
         let line = String(repeating: "0", count: 88) + "42"
         let model = try #require(stack.ghosttyService?.screenModel(for: handle.sessionId))
         let answers = MessageLog()
@@ -402,7 +402,7 @@ private final class Flag: @unchecked Sendable {
         let stack = GhosttyStack.testing(host: FakeSurfaceHost())
         defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                                  existingWindowId: nil, command: "sleep 30", badge: nil)
+                                                  existingWindowId: nil, command: "sleep 30")
         let model = try #require(stack.ghosttyService?.screenModel(for: handle.sessionId))
         let local = MessageLog()
         let link = LocalSocketLink(path: stack.localSocketPath, session: handle.sessionId)
@@ -457,8 +457,7 @@ private final class Flag: @unchecked Sendable {
         stack.monitor.start { events.append($0) }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
-                                                  command: #"printf '\033]7501;state=working\033\\'"#,
-                                                  badge: nil)
+                                                  command: #"printf '\033]7501;state=working\033\\'"#)
         let working = MonitorEvent.programStatus(
             sessionId: handle.sessionId,
             .report(.set(id: nil, ProgramStatusRecord(state: .working))))
@@ -472,7 +471,7 @@ private final class Flag: @unchecked Sendable {
         defer { stack.shutDown() }
         let handle = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
                                                   existingWindowId: nil,
-                                                  command: "sleep 5", badge: nil)
+                                                  command: "sleep 5")
         let poll = stack.pollJobs
         try await waitUntil {
             poll().contains(.job(sessionId: handle.sessionId, jobName: "sleep"))

@@ -118,7 +118,7 @@ private final class BridgedHost: TerminalSurfaceHosting {
     func metrics(id: String) -> SurfaceMetrics? { nil }
     func impose(grid: TerminalSize?, on id: String) { imposed[id, default: []].append(grid) }
 
-    func createSurface(id: String, directory: URL, title: String?) throws {
+    func createSurface(id: String, directory: URL) throws {
         let command = try bridges.open(session: id) { [weak self] grid in
             self?.impose(grid: grid, on: id)
         }
@@ -208,7 +208,7 @@ private let folder = URL(fileURLWithPath: "/tmp")
 
         func open(_ command: String?) async throws -> (session: String, helper: HelperProcess) {
             let session = try await stack.service.open(folder: folder, existingWindowId: nil,
-                                                       command: command, badge: nil).sessionId
+                                                       command: command).sessionId
             return (session, try #require(host.helpers[session]))
         }
 
@@ -216,7 +216,7 @@ private let folder = URL(fileURLWithPath: "/tmp")
         /// for its helper.
         func openWithSocket(_ command: String?) async throws -> (session: String, socket: UnixTestSocket) {
             let session = try await stack.service.open(folder: folder, existingWindowId: nil,
-                                                       command: command, badge: nil).sessionId
+                                                       command: command).sessionId
             return (session, try #require(host.sockets[session]))
         }
 
@@ -552,8 +552,7 @@ private let folder = URL(fileURLWithPath: "/tmp")
         let stack = GhosttyStack.testing(host: FakeSurfaceHost(), readDelay: 30)
         defer { stack.shutDown() }
         let session = try await stack.service.open(folder: folder, existingWindowId: nil,
-                                                   command: "echo p2-$((9+9)); sleep 30",
-                                                   badge: nil).sessionId
+                                                   command: "echo p2-$((9+9)); sleep 30").sessionId
         let model = try #require(stack.ghosttyService?.screenModel(for: session))
         try await Task.sleep(for: .milliseconds(500))
         #expect(model.text(maxLines: 10) == "")
@@ -584,8 +583,7 @@ private let folder = URL(fileURLWithPath: "/tmp")
         defer { service.closeAll() }
         let opened = Date()
         let session = try await service.open(folder: folder, existingWindowId: nil,
-                                             command: "echo late-$((3+4)); sleep 30",
-                                             badge: nil).sessionId
+                                             command: "echo late-$((3+4)); sleep 30").sessionId
         try await Task.sleep(for: .milliseconds(300))
         #expect(seen.bytes.isEmpty)
         #expect(reports.all.isEmpty)
@@ -602,8 +600,7 @@ private let folder = URL(fileURLWithPath: "/tmp")
         let stack = GhosttyStack.testing(host: FakeSurfaceHost(), readDelay: 0.3)
         defer { stack.shutDown() }
         let session = try await stack.service.open(folder: folder, existingWindowId: nil,
-                                                   command: "echo early-$((5+6)); sleep 30",
-                                                   badge: nil).sessionId
+                                                   command: "echo early-$((5+6)); sleep 30").sessionId
         let model = try #require(stack.ghosttyService?.screenModel(for: session))
         #expect(await eventually { model.text(maxLines: 10).contains("early-11") })
 
@@ -631,8 +628,7 @@ private let folder = URL(fileURLWithPath: "/tmp")
                                      onTerminated: { _ in })
         defer { service.closeAll() }
         let session = try await service.open(folder: folder, existingWindowId: nil,
-                                             command: "echo never-$((1+1)); sleep 30",
-                                             badge: nil).sessionId
+                                             command: "echo never-$((1+1)); sleep 30").sessionId
         try await service.close(sessionId: session)
         try await Task.sleep(for: .milliseconds(700))
         #expect(seen.bytes.isEmpty)
@@ -666,7 +662,7 @@ private let folder = URL(fileURLWithPath: "/tmp")
             viewer = stack.hub.attachLocal(session: session, resize: .reflow) { log.add($0) }
         }
         _ = try await stack.service.open(folder: folder, existingWindowId: nil,
-                                         command: "sleep 30", badge: nil)
+                                         command: "sleep 30")
         defer { if let viewer { stack.hub.detach(connectionId: viewer) } }
         let messages = log.messages
         #expect(!messages.contains { if case .ended = $0 { true } else { false } })

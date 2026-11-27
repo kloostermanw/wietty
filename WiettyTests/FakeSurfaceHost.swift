@@ -13,7 +13,6 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     private(set) var created: [String] = []
     private(set) var destroyed: [String] = []
     private(set) var directories: [String: URL] = [:]
-    private(set) var titles: [String: String?] = [:]
 
     /// Scripted answers. A missing `size` stands for a surface with no grid yet,
     /// which is a real state: a view that has not been laid out has no columns.
@@ -40,7 +39,7 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
     var onCloseRequested: (@MainActor (String) -> Void)?
     var onInput: (@MainActor (String) -> Void)?
 
-    func createSurface(id: String, directory: URL, title: String?) throws {
+    func createSurface(id: String, directory: URL) throws {
         whileCreating?(id)
         if failNextCreate {
             failNextCreate = false
@@ -48,7 +47,6 @@ final class FakeSurfaceHost: TerminalSurfaceHosting, TerminalSurfaceViewing {
         }
         created.append(id)
         directories[id] = directory
-        titles[id] = title
         views[id] = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
     }
 

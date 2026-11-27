@@ -126,8 +126,9 @@ private final class ChangeFlag: @unchecked Sendable {
         #expect(store.liveLabels.isEmpty)
     }
 
-    /// A title equal to the workspace badge is the badge coming back, not a reported
-    /// title, so it is ignored the same way the old handler ignored it.
+    /// A title equal to the workspace's name is ignored. The guard was written for a
+    /// label a removed setting put on the terminal, and is kept (see
+    /// `ProjectStore.handle`).
     @Test func aTitleEqualToTheWorkspaceNameIsIgnored() {
         let (store, _) = makeStore(terminals: [
             TerminalRef(label: "Claude 1", sessionId: "sess-A", kind: .claude),

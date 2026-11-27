@@ -102,7 +102,7 @@ import WiettyCore
         // alive: one surface lives through every reload.
         try? FileManager.default.removeItem(at: overlay)
         host.reloadConfig()
-        try host.createSurface(id: "keeper", command: "/bin/sleep 600", directory: directory, title: nil)
+        try host.createSurface(id: "keeper", command: "/bin/sleep 600", directory: directory)
         defer { host.destroySurface(id: "keeper") }
         let keeper = try #require(host.view(id: "keeper"))
         keeper.frame = NSRect(x: 0, y: 0, width: 400, height: 480)
@@ -128,7 +128,7 @@ import WiettyCore
     private func attempt(_ host: GhosttySurfaceHost, id: String, in window: NSWindow,
                          directory: URL) async throws -> Bool {
         do {
-            try host.createSurface(id: id, command: "/bin/sleep 600", directory: directory, title: nil)
+            try host.createSurface(id: id, command: "/bin/sleep 600", directory: directory)
         } catch {
             print("RELOAD-FAIL \(id): createSurface threw \(error)")
             return false

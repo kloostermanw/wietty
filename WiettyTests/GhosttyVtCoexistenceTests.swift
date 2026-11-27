@@ -82,7 +82,7 @@ import WiettyCore
         let host = try GhosttySurfaceHost()
         if CoexistenceCheck.legacyGraphemes { #expect(host.graphemeClustering == false) }
         let id = "coexistence"
-        try host.createSurface(id: id, command: "/bin/sh \(scriptURL.path)", directory: directory, title: nil)
+        try host.createSurface(id: id, command: "/bin/sh \(scriptURL.path)", directory: directory)
         defer { host.destroySurface(id: id) }
 
         // On screen, because a surface only draws, and only answers a read, while
@@ -182,7 +182,7 @@ import WiettyCore
         let host = try GhosttySurfaceHost()
         let id = "command-quoting"
         try host.createSurface(id: id, command: PaneBridges.command(helper: script.path, socket: socket),
-                               directory: directory, title: nil)
+                               directory: directory)
         defer { host.destroySurface(id: id) }
         let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 600, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)

@@ -1619,7 +1619,7 @@ private final class SurfaceRig {
             if viewer {
                 try host.createViewerSurface(id: id, command: command, grid: grid)
             } else {
-                try host.createSurface(id: id, command: command, directory: directory, title: nil)
+                try host.createSurface(id: id, command: command, directory: directory)
             }
         } catch {
             bridge.stop()

@@ -8,7 +8,6 @@ import Foundation
 /// `approved.<uuid>.0`), which is also how a shrunk list drops its stale entries: see
 /// `WiettyConfigFile.write(_:managedKeys:managedPrefixes:)`.
 package enum SettingsKeys {
-    package static let showWorkspaceBadge = "show-workspace-badge"
     package static let bellSound = "bell-sound"
     package static let notificationSource = "notification-source"
     package static let checkIntervalFast = "check-interval-fast"
@@ -44,7 +43,7 @@ package enum SettingsKeys {
     /// The single-key settings, for `WiettyConfigFile.write`: a scalar the store no
     /// longer carries (back at its default) is removed rather than left behind.
     package static let scalars: Set<String> = [
-        showWorkspaceBadge, bellSound, notificationSource, checkIntervalFast, checkIntervalNormal,
+        bellSound, notificationSource, checkIntervalFast, checkIntervalNormal,
         checkIntervalSlow, sidebarWidth, remoteEnabled, remotePort, mcpPort,
         scrollbackLines, selectedGroup,
         colorBackground, colorForeground,
@@ -52,6 +51,17 @@ package enum SettingsKeys {
         colorActiveTerminalRowBackground, colorActiveTerminalRowForeground,
         colorPillBackground, colorPillForeground,
     ]
+
+    /// Keys Wietty once wrote and no longer reads. A file from an older build may
+    /// still hold one. It is read past like any key nothing asks for, and the next
+    /// write removes its line, as it removes the line of a setting back at its
+    /// default: a retired key is one Wietty knows, not one of the user's own, which
+    /// are kept. Not in `scalars`, so no source owns one and nothing preserves it.
+    ///
+    /// `show-workspace-badge` named terminals after their workspace when the
+    /// terminals were another application's windows. libghostty has no way to set a
+    /// surface's title, so the setting did nothing, and it was removed.
+    package static let retired: Set<String> = ["show-workspace-badge"]
 
     /// The order the managed lines appear in the file, as exact keys and as list
     /// prefixes.
@@ -66,7 +76,7 @@ package enum SettingsKeys {
     /// A key that matches nothing here is written after everything that does, in the
     /// order its source gave it.
     package static let fileOrder: [String] = [
-        showWorkspaceBadge, bellSound, notificationSource,
+        bellSound, notificationSource,
         checkIntervalFast, checkIntervalNormal, checkIntervalSlow,
         sidebarWidth, remoteEnabled, remotePort, mcpPort,
         // After the two ports: with them it is the block the server side reads, and

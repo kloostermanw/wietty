@@ -62,10 +62,7 @@ package struct FocusResult: Equatable, Sendable {
 }
 
 package protocol TerminalService: Sendable {
-    /// - Parameter badge: When non-nil, labels the terminal with this text,
-    ///   independent of any other name it carries. Nil leaves the
-    ///   label untouched.
-    func open(folder: URL, existingWindowId: String?, command: String?, badge: String?) async throws -> TerminalHandle
+    func open(folder: URL, existingWindowId: String?, command: String?) async throws -> TerminalHandle
     /// Answers whether a session is alive and what it is running.
     ///
     /// A question, not an instruction. It was called `focus` and showed the session in

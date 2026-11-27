@@ -130,7 +130,9 @@ package final class SettingsWriter {
                                                         owned: owned,
                                                         existing: try? file.read()))
         do {
-            try file.write(pairs, managedKeys: SettingsKeys.scalars,
+            // The retired keys are managed too, and nothing emits them, so a line an
+            // older build left behind goes with this write.
+            try file.write(pairs, managedKeys: SettingsKeys.scalars.union(SettingsKeys.retired),
                            managedPrefixes: SettingsKeys.prefixes)
             lastError = nil
             return true

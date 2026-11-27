@@ -354,7 +354,7 @@ private func faultInNumberedLines(_ lines: [String], endingAt last: Int,
             defer { stack.shutDown() }
             let handle = try await stack.service.open(
                 folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-                command: "i=0; while [ $i -lt \(lines) ]; do i=$((i+1)); echo $i; done", badge: nil)
+                command: "i=0; while [ $i -lt \(lines) ]; do i=$((i+1)); echo $i; done")
             // A different point in the run each round, the first before the shell
             // has printed anything.
             try await Task.sleep(for: .milliseconds(round * 25))

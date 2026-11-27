@@ -136,7 +136,7 @@ import WiettyCore
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
 
         let id = "imposed-\(number)"
-        try host.createSurface(id: id, command: "/bin/sh \(scriptURL.path)", directory: directory, title: nil)
+        try host.createSurface(id: id, command: "/bin/sh \(scriptURL.path)", directory: directory)
         defer { host.destroySurface(id: id) }
 
         let window = ScaledWindow(contentRect: NSRect(x: 80, y: 80, width: 1000, height: 700),

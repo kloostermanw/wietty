@@ -24,7 +24,6 @@ import WiettyCore
         let config = WiettyConfigFile.temporary()
         let storeFx = SettingsFixture(defaults: makeDefaults(), config: config, service: FakeTerminalService())
         let store = storeFx.store
-        store.showWorkspaceBadge = true
         storeFx.preferences.bellSound = .named("Ping")
         store.checkIntervals = CheckIntervals(fast: 20, normal: 90, slow: 400)
         storeFx.preferences.sidebarWidth = 350
@@ -33,7 +32,6 @@ import WiettyCore
         store.mcpPort = 4100
 
         let values = (try config.read())
-        #expect(values["show-workspace-badge"] == "true")
         #expect(values["bell-sound"] == BellSound.named("Ping").stored)
         #expect(values["check-interval-fast"] == "20")
         #expect(values["check-interval-normal"] == "90")
@@ -175,6 +173,8 @@ import WiettyCore
         let defaults = makeDefaults()
         defaults.set(9100, forKey: "wietty.remotePort")
         defaults.set("named:Submarine", forKey: "wietty.bellSound")
+        // A setting that no longer exists: read by nothing, written nowhere, and
+        // cleared with the rest (`migrationRemovesTheOldUserDefaultsKeys`).
         defaults.set(true, forKey: "wietty.showWorkspaceBadge")
 
         let config = WiettyConfigFile.temporary()
@@ -183,8 +183,8 @@ import WiettyCore
 
         #expect(store.remotePort == 9100)
         #expect(storeFx.preferences.bellSound == .named("Submarine"))
-        #expect(store.showWorkspaceBadge)
         #expect((try config.read())["remote-port"] == "9100")
+        #expect((try config.read())["show-workspace-badge"] == nil)
     }
 
     /// After migrating a value, the old `UserDefaults` key is removed so nothing reads
@@ -192,9 +192,12 @@ import WiettyCore
     @Test func migrationRemovesTheOldUserDefaultsKeys() {
         let defaults = makeDefaults()
         defaults.set(9100, forKey: "wietty.remotePort")
+        // Of a setting that was removed: nothing reads it, and it goes all the same.
+        defaults.set(true, forKey: "wietty.showWorkspaceBadge")
         let config = WiettyConfigFile.temporary()
         _ = ProjectStore(defaults: defaults, config: config, service: FakeTerminalService())
         #expect(defaults.object(forKey: "wietty.remotePort") == nil)
+        #expect(defaults.object(forKey: "wietty.showWorkspaceBadge") == nil)
     }
 
     /// The agent list an older build stored as JSON in `UserDefaults` survives the

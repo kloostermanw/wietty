@@ -103,7 +103,6 @@ struct SettingsView: View {
         switch tab {
         case .general:
             form {
-                badgeSection
                 scrollbackSection
                 groupsSection
                 periodicChecksSection
@@ -313,18 +312,10 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder private var badgeSection: some View {
-        Section {
-            Toggle("Show workspace name as terminal badge", isOn: $store.showWorkspaceBadge)
-            Text("Marks each terminal Wietty opens with its workspace's name. Applies to terminals opened after this is turned on. Currently inert: libghostty exposes no way to set a surface's title.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
     /// How much history the server keeps per terminal for the viewers it sends a
-    /// snapshot to. Directly under the badge toggle because the two are the tab's
-    /// terminal settings and share a rule: each applies to terminals opened
-    /// afterwards. The bounds, the step and the caption are `ScrollbackControl`'s.
+    /// snapshot to. First in the tab, as its one setting about terminals; it applies
+    /// to terminals opened afterwards. The bounds, the step and the caption are
+    /// `ScrollbackControl`'s.
     @ViewBuilder private var scrollbackSection: some View {
         Section("Terminal history") {
             scrollbackStepper

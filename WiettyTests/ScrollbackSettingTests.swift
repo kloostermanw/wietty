@@ -16,7 +16,8 @@ import WiettyCore
 
     /// A config as a real one looks before this setting existed: every scalar the
     /// store and the frontend write at their defaults, a colour, a comment and a key Wietty does not
-    /// know. No `scrollback-lines`.
+    /// know. No `scrollback-lines`. It still has `show-workspace-badge`, a setting
+    /// since removed (`SettingsKeys.retired`), as any file of that age does.
     private static let olderFile = """
         # mine
         show-workspace-badge = false
@@ -96,8 +97,8 @@ import WiettyCore
         let config = try olderConfig()
         let fixture = SettingsFixture(config: config)
         // Any setting that makes the store write, put back where it was.
-        fixture.store.showWorkspaceBadge = true
-        fixture.store.showWorkspaceBadge = false
+        fixture.store.remoteEnabled = false
+        fixture.store.remoteEnabled = true
 
         // The writer gathers managed lines under its header, so the comparison is
         // of which lines there are, then of where the new one went.
@@ -107,8 +108,9 @@ import WiettyCore
         let before = lines(Self.olderFile)
         let after = lines(try String(contentsOf: config.url, encoding: .utf8))
         #expect(after.filter { !before.contains($0) } == ["scrollback-lines = 10000"])
-        #expect(before.filter { !after.contains($0) }.isEmpty)
-        #expect(after.count == before.count + 1)
+        // The one line that goes is the retired setting's (`RetiredSettingTests`).
+        #expect(before.filter { !after.contains($0) } == ["show-workspace-badge = false"])
+        #expect(after.count == before.count)
         let index = try #require(after.firstIndex(of: "scrollback-lines = 10000"))
         #expect(after[index - 1] == "mcp-port = 7433")
         #expect(after[index + 1] == "color-background = #23292b")
