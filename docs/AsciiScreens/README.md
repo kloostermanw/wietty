@@ -163,12 +163,13 @@ Every view type, and where its layout is documented.
 | `RowActionButton` | `RowActionButton.swift` | no file of its own. The buttons it draws are described under "Action buttons" in both `TerminalRowView.md` and `ProcessRowView.md`, which are its two callers |
 | `ProcessRowView` | `ProcessRowView.swift` | `ProcessRowView.md` |
 | `LocalTerminalView`, `SurfaceContainer` | `LocalTerminalView.swift` | `ContentView.md` |
+| `TerminalStoppedView` | `TerminalStoppedView.swift` | `ContentView.md`, under the local terminal's stopped screen, and `RemoteSurfacePane.md`, under "A session that ended". Both panes draw it |
 | `RightTerminalView` | `RightTerminalView.swift` | `ContentView.md`, under "What the pane shows". Its selection rule is `PaneSelection.swift`, which is not a view |
 | `ProcessLogView` | `ProcessLogView.swift` | `ContentView.md`, under "What the pane shows" |
 | `NavBarView` | `NavBarView.swift` | `NavBarView.md`. What it says is `NavBarTitle.swift`, which is not a view |
 | `StatusBarView` | `StatusBarView.swift` | `StatusBarView.md`. What it says comes from `MCPServerStatus.swift`, `RunningProcessCounts.swift` and `AppMemory.swift`, none of which is a view |
 | `SidebarDivider` | `SidebarDivider.swift` | `ContentView.md`, under "Who gets the surplus, and where the divider is". Its arithmetic is `SidebarWidth.swift`, which is not a view |
-| `RemoteSurfacePane` | `RemoteSurfacePane.swift` | `RemoteSurfacePane.md`. What it draws for each state is `RemotePaneLayout`, in the same file; its pane is `RemotePane.swift`, which is not a view |
+| `RemoteSurfacePane` | `RemoteSurfacePane.swift` | `RemoteSurfacePane.md`. What it draws for each state is `RemotePaneLayout`, in the same file; its pane is `RemotePane.swift`, which is not a view. How its selection follows a restarted row is `RemoteSelectionFollow.swift`, `RemoteRowsObserver.swift` and `PaneRouter.swift`, none of which is a view |
 | `SettingsView`, `AgentRow`, `GroupRow`, `PromptTemplateRow`, `RemoteConnectionRow` | `SettingsView.swift` | `SettingsView.md`. Drawn in the pane, and reached through `PaneRouter.swift` and `SettingsCommand` (in `WiettyApp.swift`), neither of which is a view |
 | `PromptTemplatePickerView` | `PromptTemplatePickerView.swift` | `PromptTemplatePickerView.md`. A sheet over the main window, opened by ⌘P and `PromptTemplatesCommand` (in `WiettyApp.swift`), whose flag is `PromptTemplatePresentation.swift`; neither is a view |
 | `WorkspaceSettingsView` | `WorkspaceSettingsView.swift` | `WorkspaceSettingsView.md`. Drawn in the same pane, reached from a card's "Edit workspace…" |

@@ -1068,6 +1068,7 @@ in the app target:
 | `ObservedLink` | `Wietty/RemotePane.swift` | Wraps each link so the owner hears of its snapshot, its `resize` and its end, and holds a snapshot (below). |
 | `SizeAnswerFilter` | `Wietty/SizeAnswerFilter.swift` | Takes the answers to the pane's own size queries out of the input before it reaches the other Mac. |
 | `RemoteReconnectPolicy` | `Wietty/RemoteReconnectPolicy.swift` | When the next link is made and what the pane shows meanwhile. Pure. |
+| `RemoteSelectionFollow`, `RemoteRow` | `Wietty/RemoteSelectionFollow.swift` | Where a selected session goes when its row got another one (a restart). Pure. `RemoteRowsObserver` hands each snapshot's rows to `PaneRouter.remoteRowsChanged`, which applies it. |
 | `ViewerSurfaceGate` | `Wietty/RemotePane.swift` | Puts every create of a viewer surface on a main turn queued after every viewer destroy. |
 
 **It exists only while it is shown.** Showing the session makes the pane, which makes its surface, its
@@ -1127,8 +1128,13 @@ Input typed while no link is live is dropped. A wrong token arrives as a lost co
 refuses the HTTP upgrade and the package cannot see why), so it is retried like one.
 
 **Ends.** The session ending on the other Mac keeps the bridge, the helper and the surface until the
-pane is hidden, so the last screen stays and libghostty draws no notice of its own. A helper that goes
-away after that stops the bridge and still keeps the surface, with its last screen. A refusal (the
+pane is hidden, so libghostty draws no notice of its own. The pane does not show that surface: it
+draws the stopped screen with Restart in its place, the one view (`TerminalStoppedView`) the own pane
+draws for a terminal that has ended. Restart asks the other Mac to restart the session
+(`RemoteWorkspaceStore.restart`), which gives the row a new session id, and the selection follows the
+row to it when the next snapshot says so (`PaneRouter.remoteRowsChanged`), whoever restarted it. That
+closes the ended pane and opens one for the replacement. A row that is gone is not followed. A helper
+that goes away after the end stops the bridge and still keeps the surface. A refusal (the
 other Mac refused, runs an older or a newer Wietty, the connection was removed, this Mac could not make
 the surface or the bridge, or the helper went away before the session ended) keeps nothing: the bridge
 is stopped and the surface destroyed at once. What the pane draws in each state is in
