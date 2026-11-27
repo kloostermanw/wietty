@@ -89,6 +89,17 @@ private final class RoundTripGitInfoProvider: GitInfoProviding, @unchecked Senda
         #expect(info.hasBase == false)
     }
 
+    @Test func aRowWithNoSessionIsNotRunningWhateverTheServingInstanceSays() {
+        let sessionId = UUID()
+        let out = RemoteProjectAdapter.decoded([
+            RemoteWorkspace(id: UUID(), name: "demo",
+                            sessions: [RemoteSession(id: sessionId, sessionId: "", label: "shell",
+                                                     kind: .terminal, isRunning: true,
+                                                     needsAttention: false, jobName: nil)])
+        ])
+        #expect(out.runStates[sessionId] == .exited)
+    }
+
     @Test func aNotRunningSessionMapsToExited() {
         let sessionId = UUID()
         let out = RemoteProjectAdapter.decoded([

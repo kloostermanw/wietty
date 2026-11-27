@@ -508,7 +508,10 @@ Stop (`RemoteWorkspaceStore.stopSession(sessionId:)`, in the package since
 1.2.0) ends the session on the serving instance and keeps its row, where close
 removes the row too. The row is offered stop under the rule a local row follows:
 while it is running, which for a remote row is `run_state` `running` in the last
-snapshot. A serving instance from before the route answers `404`, and the
+snapshot and a session id on the row. A row with no session is drawn as not
+running whatever its `run_state` says (see the note on `run_state` below), so it
+offers play, which activates it, and neither stop nor restart, which could only
+answer `404`. A serving instance from before the route answers `404`, and the
 section's caption then reads "Action failed (404).". Nothing probes for the
 route beforehand, so that caption is how an older serving Mac shows.
 
