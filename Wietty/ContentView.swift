@@ -66,6 +66,10 @@ struct ContentView: View {
     /// Hands connected Macs' rows to the router, so a selected remote session follows
     /// its row through a restart. Held and built as `remoteBells` is.
     @State private var remoteRows: RemoteRowsObserver?
+    /// The restarts of remote sessions asked for and not answered yet. Held here
+    /// because the pane's stopped screen and the sidebar's rows both restart through
+    /// `restartRemoteTerminal`, and a press on either holds the other.
+    @State private var remoteRestarts = RemoteRestartHolds()
 
     var body: some View {
         // Not `HSplitView`. It handed the surplus to the sidebar as the window
@@ -100,6 +104,7 @@ struct ContentView: View {
                                       selection: paneSelection,
                                       onRestartTerminal: { restartTerminal(sessionId: $0) },
                                       onRestartRemoteTerminal: { restartRemoteTerminal($0) },
+                                      remoteRestarts: remoteRestarts,
                                       onRestartMCPServer: { runtime.restartMCP() })
                 }
                 .frame(maxWidth: .infinity)
@@ -168,6 +173,9 @@ struct ContentView: View {
         .onChange(of: store.projects.map(\.id)) { _, ids in
             router.workspacesChanged(to: ids)
         }
+        // A restart is held until the selection moves, which is also how one that
+        // worked ends: the selection follows the row to its new session.
+        .onChange(of: paneSelection) { remoteRestarts.selectionMoved() }
         .onChange(of: store.remoteEnabled) { Task { await runtime.syncRemote(store: store, terminals: terminals) } }
         .onChange(of: store.remotePort) {
             Task { await runtime.syncRemote(store: store, terminals: terminals, forceRestart: true) }
@@ -337,6 +345,10 @@ struct ContentView: View {
                                 remoteWorkspaces.sync()
                             },
                             onAttach: { openRemoteTerminal(remoteStore, $0) },
+                            onRestart: {
+                                restartRemoteTerminal(RemoteSessionRef(connectionId: connection.id,
+                                                                       sessionId: $0.sessionId))
+                            },
                             isSelected: {
                                 paneSelection.selects(remoteSession: $0.sessionId,
                                                       on: connection.id)
@@ -604,24 +616,25 @@ struct ContentView: View {
         }
     }
 
-    /// The stopped screen of a terminal on another Mac. The same call the remote row's
-    /// own restart button makes (`RemoteSectionView`), and refused while the sidebar
-    /// is busy, as the local one is.
+    /// A restart of a terminal on another Mac, from the pane's stopped screen or from
+    /// the sidebar row's restart button. Refused while the sidebar is busy, as the
+    /// local one is.
     ///
     /// Nothing is awaited and nothing is shown here: the package's restart does not
     /// answer with the row's new session. The other Mac's next snapshot does, and the
     /// router moves the selection to it (`PaneRouter.remoteRowsChanged`). A restart
-    /// that fails is said in the connection's red caption, as for the row's button.
+    /// that fails is said in the connection's red caption.
+    ///
+    /// Because nothing is awaited, `isBusy` cannot cover the time until the answer, so
+    /// `remoteRestarts` does: a second press for the same session is dropped until
+    /// the first has been answered or given up on (`RemoteRestartHold`). Without it a
+    /// second Return on the stopped screen, whose button is the window's default,
+    /// sent a second request for a session the first had already replaced, and its
+    /// 404 was left as a red caption over a restart that had worked.
     private func restartRemoteTerminal(_ session: RemoteSessionRef) {
-        guard Self.remoteRestartIsAllowed(isBusy: isBusy),
-              let remoteStore = remoteWorkspaces.stores[session.connectionId] else { return }
+        guard !isBusy, let remoteStore = remoteWorkspaces.stores[session.connectionId],
+              remoteRestarts.press(session, lastActionError: remoteStore.lastActionError) else { return }
         remoteStore.restart(sessionId: session.sessionId)
-    }
-
-    /// Whether the stopped screen's Restart of a remote terminal goes out. A static
-    /// function so the rule is asserted rather than only reachable in the window.
-    static func remoteRestartIsAllowed(isBusy: Bool) -> Bool {
-        !isBusy
     }
 
     private func stopTerminal(_ ref: TerminalRef, in project: Project) {

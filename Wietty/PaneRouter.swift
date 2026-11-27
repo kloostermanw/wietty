@@ -25,23 +25,29 @@ final class PaneRouter {
     /// The selected remote session with the rows of the last snapshot that still had a
     /// row carrying it. That is what says which row the selection belongs to once a
     /// restart has given that row another session and the old id is in no snapshot any
-    /// more. Counts only while `session` is the one in `override`.
+    /// more. Nil whenever `override` is not that session (`cover`).
     @ObservationIgnored private var remoteOwner: (session: RemoteSessionRef, rows: [RemoteRow])?
 
     /// Puts something in front of the local terminal.
     func show(_ override: PaneOverride) {
-        self.override = override
-        guard case let .remote(session) = override, remoteOwner?.session != session else { return }
+        cover(with: override)
+        guard case let .remote(session) = override, remoteOwner == nil,
+              let rows = remoteRows[session.connectionId],
+              rows.contains(where: { $0.sessionId == session.sessionId }) else { return }
+        remoteOwner = (session, rows)
+    }
+
+    /// Every change of `override` but the follow itself goes through here, so the
+    /// remembered rows never outlive the remote selection they belong to.
+    private func cover(with next: PaneOverride?) {
+        override = next
+        if case let .remote(session) = next, remoteOwner?.session == session { return }
         remoteOwner = nil
-        if let rows = remoteRows[session.connectionId],
-           rows.contains(where: { $0.sessionId == session.sessionId }) {
-            remoteOwner = (session, rows)
-        }
     }
 
     /// Uncovers the local terminal, whatever was over it.
     func clear() {
-        override = nil
+        cover(with: nil)
     }
 
     /// The gear's action, and it toggles rather than shows.
@@ -53,7 +59,7 @@ final class PaneRouter {
     /// install or after the last one is closed, there is no row to click either. A
     /// gear that only assigned `.settings` left both states with no way out.
     func toggleSettings() {
-        override = (override == .settings) ? nil : .settings
+        cover(with: (override == .settings) ? nil : .settings)
     }
 
     /// A local terminal the user activated takes the pane back.
@@ -63,7 +69,7 @@ final class PaneRouter {
     /// changes no selection and so produces no callback. That is exactly the row a
     /// user reaches for to leave whatever is covering it.
     func localTerminalActivated() {
-        override = nil
+        cover(with: nil)
     }
 
     /// A local selection made anywhere else: a click on another row, the MCP server,
@@ -71,7 +77,7 @@ final class PaneRouter {
     /// last local terminal is closed, and blanking a pane someone is reading would be
     /// a bug rather than an intent.
     func localSelectionChanged(to session: String?) {
-        if session != nil { override = nil }
+        if session != nil { cover(with: nil) }
     }
 
     /// A connection removed while its session was on screen takes the session with
@@ -83,7 +89,7 @@ final class PaneRouter {
     /// the cursor of the person using it.
     func connectionsChanged(to ids: [UUID]) {
         if case let .remote(session) = override, !ids.contains(session.connectionId) {
-            override = nil
+            cover(with: nil)
         }
         remoteRows = remoteRows.filter { ids.contains($0.key) }
     }
@@ -107,7 +113,7 @@ final class PaneRouter {
             remoteOwner = (session, rows)
             return
         }
-        guard let owner = remoteOwner, owner.session == session,
+        guard let owner = remoteOwner,
               let next = RemoteSelectionFollow.replacement(for: session.sessionId,
                                                            from: owner.rows, to: rows) else { return }
         let followed = RemoteSessionRef(connectionId: connection, sessionId: next)
@@ -126,7 +132,7 @@ final class PaneRouter {
     /// all, so removing one must not close it under the cursor of whoever is using it.
     func workspacesChanged(to ids: [UUID]) {
         if case let .workspaceSettings(project) = override, !ids.contains(project) {
-            override = nil
+            cover(with: nil)
         }
     }
 }

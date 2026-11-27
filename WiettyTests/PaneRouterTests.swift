@@ -271,4 +271,19 @@ import Foundation
         router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "new")])
         #expect(router.override == .remote(session("old", on: connection)))
     }
+
+    /// The rows remembered for a selection go with it. A session shown again after
+    /// the pane showed something else is given its row from the latest rows only, so
+    /// one that no row carries any more is not followed anywhere.
+    @Test func aSessionShownAgainIsNotFollowedFromRowsOfBefore() {
+        let router = PaneRouter()
+        let row = UUID()
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "old")])
+        router.show(.remote(session("old", on: connection)))
+        router.show(.settings)
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "new")])
+        router.show(.remote(session("old", on: connection)))
+        router.remoteRowsChanged(on: connection, to: [RemoteRow(id: row, sessionId: "newer")])
+        #expect(router.override == .remote(session("old", on: connection)))
+    }
 }

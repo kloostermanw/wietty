@@ -47,6 +47,8 @@ struct RightTerminalView: View {
     /// (`RemoteSurfacePane.onRestart`): handed up, so it is refused while the sidebar
     /// is busy, as the local one is.
     var onRestartRemoteTerminal: (RemoteSessionRef) -> Void = { _ in }
+    /// The remote restarts asked for and not answered yet, which hold that button.
+    var remoteRestarts: RemoteRestartHolds?
     /// Settings' MCP Restart, handed up to `ContentView`, which owns the server.
     var onRestartMCPServer: () -> Void = {}
 
@@ -106,7 +108,8 @@ struct RightTerminalView: View {
         if let panes = terminals.remotePanes,
            remoteConnections.connections.contains(where: { $0.id == session.connectionId }) {
             RemoteSurfacePane(panes: panes, session: session,
-                              isAgent: { isRemoteAgent(session) },
+                              store: remoteWorkspaces.stores[session.connectionId],
+                              restarts: remoteRestarts,
                               onRestart: { onRestartRemoteTerminal(session) })
                 // Load bearing. The pane opens its session in `onAppear` and closes
                 // it in `onDisappear`, and one pane position does not get a new view
@@ -140,14 +143,5 @@ struct RightTerminalView: View {
                        minHeight: SidebarWidth.paneMinimumHeight,
                        maxHeight: .infinity)
         }
-    }
-
-    /// Whether a remote session's row is an agent, from the connection's last
-    /// snapshot. False when the snapshot has no row carrying the session, so the
-    /// stopped screen then uses the terminal wording.
-    private func isRemoteAgent(_ session: RemoteSessionRef) -> Bool {
-        guard let remoteStore = remoteWorkspaces.stores[session.connectionId] else { return false }
-        return RemoteRow.isAgent(sessionId: session.sessionId,
-                                 in: RemoteRow.rows(in: remoteStore.workspaces))
     }
 }

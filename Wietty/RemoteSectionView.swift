@@ -14,6 +14,10 @@ struct RemoteSectionView: View {
     let sections: SectionCollapseState
     let onRemoveConnection: () -> Void
     let onAttach: (TerminalRef) -> Void
+    /// A row's restart button. Handed up to `ContentView`, which makes the call and
+    /// holds a second press for the same session, as it does for the pane's stopped
+    /// screen.
+    let onRestart: (TerminalRef) -> Void
     /// Whether a row is the terminal the main window's pane is showing. Answered by
     /// `ContentView`, which is where the pane's selection lives.
     let isSelected: (TerminalRef) -> Bool
@@ -91,7 +95,7 @@ struct RemoteSectionView: View {
             isLocalOnly: { _ in false },
             isSelected: isSelected,
             onActivate: { onAttach($0) },
-            onRestartTerminal: { store.restart(sessionId: $0.sessionId) },
+            onRestartTerminal: { onRestart($0) },
             // No stop button: the LAN protocol has no stop that keeps the row, only
             // close (the trash button, wired below) and restart.
             canStopTerminal: false,
