@@ -701,7 +701,7 @@ not yet solved.
 
 **History is a setting**, `scrollback-lines` in `~/.config/wietty/config`
 (`ProjectStore.scrollbackLines`, `TerminalScrollback`), with a control in Settings, General: a stepper
-of 1,000 lines under "Terminal history" (`ScrollbackControl`, drawn in
+of 1,000 lines under "Terminal history" (`ScrollbackStepper` and `ScrollbackControl`, drawn in
 `docs/AsciiScreens/SettingsView.md`). The default is 10,000 lines
 per terminal and the range is 1,000 to 100,000; a value outside it, typed into the file by hand, is
 brought to the nearer end. The number is a memory decision. A retained row costs roughly 1 KiB at 120
@@ -717,18 +717,26 @@ actor, and builds the model with it, so a change applies to terminals opened aft
 is already open keeps what it started with. Neither the pty's read queue nor the hub's ever reads the
 setting. The service is built before the store that holds it, so `GhosttyStack.followScrollbackSetting(of:)`
 is what points one at the other. A restart or a reopen of a row builds a new model, so that is how an
-open terminal takes a changed limit. The floor of 1,000 lines saves under a megabyte per terminal
-below it, less than one terminal's surface already costs, and it sits well above the 200 lines an MCP
-read may ask for (see "Reading a terminal's output"), so no value of the setting shortens such a read;
-the ceiling is where a typo in the file stops being able to take the machine with it.
+open terminal takes a changed limit. Below the floor of 1,000 lines there is under a megabyte per
+terminal to save, less than one terminal's surface already costs, and an MCP read, which may ask for
+200 lines, would come back short more and more often (see "Reading a terminal's output" for when it
+still can); the ceiling is where a typo in the file stops being able to take the machine with it.
 
 **What the setting bounds.** Three things, all of them the model's:
 
 - What a viewer on another device is sent. A `snapshot` is every row of history the model holds and
   then the screen, so the setting is how far back the browser, the iPad and the pane of another Mac
-  can be given on an attach and on a resync. What each of them keeps of it is its own emulator's
-  business: the pane of another Mac keeps what that Mac's Ghostty `scrollback-limit` allows (see
-  "Limitations"), and the iPad receives the history without offering a way to scroll into it.
+  are given on an attach and on a resync. What each of them can do with it is its own emulator's
+  business, and only two of the three can scroll into it:
+  - The pane of another Mac keeps what that Mac's Ghostty `scrollback-limit` allows (see
+    "Limitations"), which with Ghostty's default was about 46,000 to 48,000 of 100,000 log lines.
+  - The browser page gives xterm.js a `scrollback` of 100,000 lines, the setting's ceiling, because
+    the page cannot know the setting (`Wietty/remote_index.html`). Without it xterm.js keeps its
+    default of 1,000 lines, the setting's floor, and no value of the setting would have changed what
+    a browser shows. A test reads the served page for the option; what a real browser then keeps
+    was not observed.
+  - The iPad receives the history and shows the screen only: its terminal view has scrolling turned
+    off. For the iPad a higher setting costs a larger snapshot and buys nothing.
 - The memory per terminal given above.
 - The size of a snapshot, and the cost of a reflow on a change of column count. Nothing else caps a
   snapshot: see "Snapshot sizes" under "Serving the stream".
@@ -740,15 +748,21 @@ the ceiling is where a typo in the file stops being able to take the machine wit
   configuration. Wietty never writes that key: `GhosttyOverrideFile` writes only the lines it manages
   into `~/.config/wietty/ghostty.cfg`, and `scrollback-limit` is not one of them, so there is no
   control for it and a line the user adds by hand is kept. The own pane is attached before its pty is
-  read, so the snapshot it is sent at open is empty and everything after it is the live stream. The
-  one exception is a lost local link, see "After a lost link, the pane's history is the model's"
-  under "The link and the bridge".
+  read, so the snapshot it is sent at open is empty and everything after it is the live stream.
+  There are two exceptions, and in both the pane is sent a snapshot that is not empty, so its history
+  starts from the model's. One is a lost local link, see "After a lost link, the pane's history is
+  the model's" under "The link and the bridge". The other is a pane that has not attached within 5
+  seconds of its terminal opening (`GhosttyService.unattachedReadDelay`): the pty is then read
+  without it, which is reported as an error, and whenever the pane does attach its first snapshot
+  holds what the child wrote meanwhile, or a full screen program's screen with no history under it,
+  as after a lost link.
 - The surface history of a terminal on another Mac shown here, which is this Mac's
   `scrollback-limit` again. The other Mac's `scrollback-lines` bounds what is sent, this Mac's
   `scrollback-limit` bounds what is kept.
-- How far an MCP read reaches. `readOutput` could reach every line the model keeps, but its one
-  caller, `get_process_output`, returns at most 200 lines (`MCPToolRouter.maxOutputLines`), under the
-  setting's floor.
+- How far an MCP read reaches, at the default and above. `readOutput` could reach every line the
+  model keeps, but its one caller, `get_process_output`, returns at most 200 lines
+  (`MCPToolRouter.maxOutputLines`). Only near the floor can the setting shorten such a read, and only
+  for long lines: see "Reading a terminal's output".
 - Terminals that are already open.
 
 A line of the setting is a row of the model's history at the grid in force, so a line the terminal
@@ -955,20 +969,31 @@ history.
 size follows the `scrollback-lines` setting and what the rows hold. Measured at 120 columns with the
 history full:
 
-| history | content | snapshot |
-|---|---|---|
-| 1,000 lines (the floor) | coloured log lines | 0.1 MB |
-| 10,000 lines (the default) | short coloured log lines | 0.63 MB |
-| 10,000 lines (the default) | coloured log lines | 1.2 MB |
-| 100,000 lines (the ceiling) | short coloured log lines | 6.4 MB |
-| 100,000 lines (the ceiling) | coloured log lines | 12.3 MB |
-| 100,000 lines (the ceiling) | a 256 colour change every eight cells | 34.3 MB |
+| history | content | snapshot | source |
+|---|---|---|---|
+| 1,000 lines (the floor) | synthetic log lines | 0.1 MB (97,982 bytes) | gated check, `hist1k` |
+| 10,000 lines (the default) | synthetic log lines | 1.2 MB (1,200,362 bytes) | gated check, `hist10k` |
+| 100,000 lines (the ceiling) | synthetic log lines | 12.3 MB (12,312,356 bytes) | gated check, `hist100k` |
+| 100,000 lines (the ceiling) | synthetic dense lines | 34.3 MB (34,288,049 bytes) | gated check, `dense100k` |
+| 10,000 lines (the default) | "coloured log lines", not recorded further | about 630 KB | a source comment only |
+| 100,000 lines (the ceiling) | the same | about 6.4 MB | a source comment only |
 
-The 0.63 and 6.4 MB are the format measured on the model alone (`GhosttyVtTerminal.snapshotFrame()`);
-the others are what `scripts/remote-surface-check.sh` reported for its `hist1k`, `hist10k`, `hist100k`
-and `dense100k` sessions. So a snapshot is about 0.6 to 1.2 MB at the default and 6 to 12 MB at the
-ceiling for ordinary output, and about three times that for output that changes colour all along
-every line. Content denser still was not measured.
+How far each figure can be trusted differs, so the table says where it comes from.
+
+- **Gated check.** `scripts/remote-surface-check.sh` runs `RemoteSurfaceMeasurementTests`, whose
+  sessions (`showCases`) are filled with generated content: a log line is about 85 characters with a
+  dimmed timestamp and a green level (`logLines`), a dense line is 119 characters with a 256 colour
+  change every eight cells (`denseLines`). The byte counts are what that run reported on 2026-11-26.
+  They are exact for that content and say nothing certain about any other. The suite is skipped in an
+  ordinary test run, so nothing reproduces them without running the check.
+- **A source comment only.** The 630 KB and 6.4 MB stand in the comment on
+  `GhosttyVtTerminal.snapshotFrame()`, as measured on the model alone. No committed test produces
+  them and the comment does not say what the lines held beyond "coloured log lines". That they are
+  about half the gated figures suggests shorter lines, which is a guess.
+
+Read together: a snapshot of log output is somewhere around 0.6 to 1.2 MB at the default and 6 to
+12 MB at the ceiling, and output that changes colour all along every line was 2.8 times the larger
+figure. Real terminal output was not measured, and neither was content denser than the dense lines.
 
 Nothing but the setting caps a snapshot on the server. An upper size reached by sending less history
 was planned for step 4b of phase 3 and was not built: the hub sends all the model holds, to every
@@ -1071,9 +1096,11 @@ seconds. The helper going away means the surface went away, and the bridge is st
 `LocalStreamServer` calls `PaneStreamHub.attachLocal`, which answers with a `resize` and a
 `snapshot`, and the snapshot is `TerminalPaint.hardReset` (`ESC c`) followed by every row of history
 the model holds and the screen. The bridge writes that payload to the helper unchanged, so the
-surface is reset, its own history with it, and rebuilt from the server's. This is the one case in
-which `scrollback-lines` bounds what this Mac's own pane can scroll back to: a pane that had kept
-more than the model (Ghostty's `scrollback-limit` allowing it) has the model's rows afterwards. A local link is lost when the server
+surface is reset, its own history with it, and rebuilt from the server's. Here `scrollback-lines`
+does bound what this Mac's own pane can scroll back to: a pane that had kept more than the model
+(Ghostty's `scrollback-limit` allowing it) has the model's rows afterwards. The only other case is a
+pane that attached late (see "What it does not bound" under "The server's own terminal"). A local
+link is lost when the server
 drops a pane that stopped reading for 5 seconds (see "Serving the stream") or when its socket fails;
 it is not part of ordinary use. Two things follow from the pane being a local viewer. If the terminal
 is on the alternate screen at that moment, the snapshot carries that screen and no history, and
@@ -1242,9 +1269,12 @@ every read an agent makes, used to fall back to a single recorded viewport howev
 asked for. The model holds the scrollback for every terminal, displayed or not, running or exited, and
 reaches as far into it as the caller asks, up to the lines it keeps (the `scrollback-lines` setting,
 10,000 by default). Its one caller asks for little: `get_process_output` clamps the request to 200
-lines (`MCPToolRouter.maxOutputLines`), which is under the setting's floor of 1,000, so the setting
-does not decide how far an MCP read reaches. A line here is a joined line, so 200 of them can span
-more than 200 rows of history.
+lines (`MCPToolRouter.maxOutputLines`). At the default that cap, and not the setting, decides how far
+an MCP read reaches. It is not so at every value. A line of a read is a joined line and a line of the
+setting is a row, so 200 lines can need many more than 200 rows, and a full history holds fewer rows
+than its limit: at the floor, 605 to 1,000 at 120 columns and 409 to 1,000 at 80. A read of 200 lines
+that wrap over three or four rows each can therefore come back with fewer than 200 from a terminal
+set near the floor, where the same read at the default would not.
 
 The read formats only the rows it needs. It starts from the active screen plus one row per line asked
 for, and widens while wrapped lines leave it short, so a small read stays cheap on a deep scrollback.
@@ -1464,7 +1494,7 @@ read them before touching any.
 
 ## Failing to start, and reporting it
 
-`GhosttyStack` always constructs, exactly as `TmuxStack` does. Three things can be missing (libghostty
+`GhosttyStack` always constructs. Three things can be missing (libghostty
 would not initialise, the bundled helper is absent, or the local socket cannot be made or bound), and
 all are reported through `setupError` rather than thrown, so the app launches and can explain itself instead of failing at every call site.
 `ContentView` surfaces that error on launch rather than waiting for the first click, and
@@ -1495,7 +1525,9 @@ a socket that then stays silent forever.
   attaches while a full screen program runs gets that program's screen with no history, and a fresh
   snapshot when the program leaves it. Causes above, under "Serving the stream" and "The server's own
   terminal". This Mac's own pane, a local viewer, gets no such second snapshot. It attaches before its
-  pty is read, so that only matters after a lost local link: see "The link and the bridge".
+  pty is read, so that only matters after a lost local link and for a pane that attached later than
+  5 seconds after its terminal opened: see "The link and the bridge" and "What it does not bound"
+  under "The server's own terminal".
 - **After a lost local link the own pane's history is the server's**, at most `scrollback-lines`
   rows, whatever its surface had kept. See "The link and the bridge".
 - **The palette is left out of the paint frame, on purpose.** A viewer draws indexed colours with its
