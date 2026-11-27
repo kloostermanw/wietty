@@ -3,9 +3,9 @@ import Foundation
 /// Stands in when a substrate cannot work, so every terminal action that can fail
 /// does so with the actionable setup message instead of appearing to do nothing.
 ///
-/// Shared by `TmuxStack` and `GhosttyStack`, which have the same contract: always
-/// construct, and report what is wrong through `setupError`. A stack that failed
-/// to build its real service installs this, and the app still launches.
+/// Installed by `GhosttyStack`, whose contract is to always construct and report
+/// what is wrong through `setupError`: when it failed to build its real service it
+/// installs this, and the app still launches.
 ///
 /// `stop` and `discard` are the two non-throwing actions in the protocol, so they
 /// cannot surface the error and stay no-ops here. That is harmless: nothing ever

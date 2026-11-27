@@ -149,9 +149,11 @@ package enum TerminalScrollback {
     /// What the setting may be.
     ///
     /// The floor is 1,000 lines, about 1 MiB: below it there is less to save
-    /// than one terminal's surface already costs, and it stays well above the
-    /// 200 lines an MCP read may ask for (`MCPToolRouter`), so no value of the
-    /// setting shortens such a read. The ceiling is 100,000
+    /// than one terminal's surface already costs, and a read of a terminal's
+    /// output, which may ask for 200 lines (`MCPToolRouter`), comes back short
+    /// more and more often. Even at the floor it can: a line of a read is a
+    /// joined line and a line here is a row, so 200 long lines may need more
+    /// rows than a full history of 605 to 1,000 holds. The ceiling is 100,000
     /// lines, about 100 MiB for one full terminal, which is where a typo in a
     /// hand edited config stops being able to take the machine with it.
     package static let range = 1_000...100_000
