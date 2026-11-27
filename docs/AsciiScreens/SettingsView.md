@@ -5,8 +5,8 @@ so the intended structure stays readable without running the app.
 
 The view is a segmented tab control above a grouped `Form`, and the tab decides
 what the form holds. Six tabs (`SettingsTab`), in this order: "General" (the
-badge toggle, the groups editor, the three interval steppers, and the two colour
-sections),
+badge toggle, the scrollback stepper, the groups editor, the three interval
+steppers, and the two colour sections),
 "Notifications" (the permission
 state, a test notification, and the sound), "Agents" (the agents a workspace's
 menu can start), "Prompts" (the prompt templates the ⌘P popup lists),
@@ -40,7 +40,7 @@ a look at another tab, because its state is held on `SettingsView` rather than
 inside the tab's own subtree.
 
 Every field is bordered, and that is set in one place: `SettingsView.form(_:)`, the
-one grouped `Form` all five tabs draw, carries `.textFieldStyle(.roundedBorder)`.
+one grouped `Form` all six tabs draw, carries `.textFieldStyle(.roundedBorder)`.
 The style travels down the environment, so it reaches every `TextField` and
 `SecureField` in every tab and a field added later gets it without anyone
 remembering to. Without it a grouped form draws a field as its label with the value
@@ -92,6 +92,16 @@ menu spell the feature out in full.
 │    libghostty exposes no way to set a surface's    │
 │    title.                                          │
 │                                                    │
+│  Terminal history                                 │
+│    Scrollback             10,000 lines   [－][＋]   │
+│    Lines of history Wietty keeps for each          │
+│    terminal for viewers on other devices: the      │
+│    iPad, the browser and another Mac. A full       │
+│    terminal costs about 1 KiB per line, so 10,000  │
+│    lines is about 10 MiB each. Applies to          │
+│    terminals opened after a change. This Mac's     │
+│    own pane keeps its own history.                 │
+│                                                    │
 │  Groups                                     Add   │
 │    Work                                (✎) (🗑)   │
 │    Private                             (✎) (🗑)   │
@@ -139,6 +149,24 @@ menu spell the feature out in full.
 │    reset button clears one back to that.          │
 └──────────────────────────────────────────────────┘
 ```
+
+The "Terminal history" section (`SettingsView.scrollbackSection`) is one stepper,
+bound to `store.scrollbackLines` and stepping 1,000 lines at a time between
+`TerminalScrollback.range`'s 1,000 and 100,000, with the value drawn as the interval
+steppers draw theirs. Its bounds, step, value label and caption are
+`ScrollbackControl`'s, outside the view so `ScrollbackControlTests` can read them. It
+sits directly under the badge toggle because those two are the tab's terminal
+settings and share a rule: each applies to terminals opened afterwards, and a
+terminal that is already open keeps the history limit it started with. The caption
+says what the number bounds and what it does not. It bounds the history the server
+keeps per terminal, which is what a viewer on another device is sent when it attaches
+(the iPad, the browser, the pane of another Mac), and it costs memory, which is the
+trade. It does not bound what this Mac's own pane scrolls through: that is the
+surface's own history, sized by Ghostty's `scrollback-limit`, which Wietty does not
+write and has no control for. The caption says nothing about MCP, because a
+`get_process_output` read is capped at 200 lines, under the setting's floor. The
+setting is persisted as `scrollback-lines` (see settings-storage.md) and described in
+terminal.md, "The server's own terminal".
 
 The Groups section (`SettingsView.groupsSection`) is a `ListSettingsSection`: the
 title with an Add button on the right, then one row per `store.groups` (`GroupRow`):
