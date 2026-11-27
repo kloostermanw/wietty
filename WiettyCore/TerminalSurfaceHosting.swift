@@ -30,12 +30,11 @@ package protocol TerminalSurfaceHosting: AnyObject {
     /// terminal's stream: the host joins it to the session through a bridge of its
     /// own (the app's `TerminalBridge`, attached to `LocalStreamServer` as the
     /// session's local viewer). What the surface runs to get there is the host's
-    /// business, and no part of the core builds it. `title` labels the surface,
-    /// which is what the workspace badge setting sets.
+    /// business, and no part of the core builds it.
     ///
     /// The session must be live in the census when this is called: the bridge may
     /// attach before it returns.
-    func createSurface(id: String, directory: URL, title: String?) throws
+    func createSurface(id: String, directory: URL) throws
 
     /// Frees the surface of `id` and stops its bridge, which removes the bridge's
     /// socket file. A surface that does not exist is nothing to do.
@@ -188,7 +187,7 @@ package final class InertSurfaceHost: TerminalSurfaceHosting {
     package var onCloseRequested: (@MainActor (String) -> Void)?
     package var onInput: (@MainActor (String) -> Void)?
 
-    package func createSurface(id: String, directory: URL, title: String?) throws {
+    package func createSurface(id: String, directory: URL) throws {
         throw SurfaceHostError.surfaceFailed
     }
     package func destroySurface(id: String) {}

@@ -56,9 +56,9 @@ import WiettyCore
         defer { app.stack.shutDown() }
         let service = app.terminals.service
         let first = try await service.open(folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-                                           command: "echo first-$((10+1)); sleep 5", badge: nil).sessionId
+                                           command: "echo first-$((10+1)); sleep 5").sessionId
         let second = try await service.open(folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-                                            command: "echo second-$((20+2)); sleep 5", badge: nil).sessionId
+                                            command: "echo second-$((20+2)); sleep 5").sessionId
         #expect(app.displayed == second)
         let models = try #require(app.stack.ghosttyService)
         let deadline = ContinuousClock.now + .seconds(6)
@@ -78,7 +78,7 @@ import WiettyCore
 
     private func open(_ app: Wired) async throws -> String {
         try await app.terminals.service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                         existingWindowId: nil, command: "sleep 5", badge: nil).sessionId
+                                         existingWindowId: nil, command: "sleep 5").sessionId
     }
 
     /// Asking for a row, as a click, `select_process` and an iPad tap all do. The

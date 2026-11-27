@@ -52,7 +52,6 @@ import WiettyCore
     /// emits a key when it is set still emits it here.
     @Test func noSourceEmitsAScalarItDoesNotOwn() {
         let fixture = SettingsFixture(config: WiettyConfigFile.temporary())
-        fixture.store.showWorkspaceBadge = true
         fixture.store.notificationSource = .programStatus
         fixture.store.checkIntervals = CheckIntervals(fast: 20, normal: 90, slow: 400)
         fixture.store.remoteEnabled = true

@@ -62,7 +62,7 @@ import WiettyShared
             #expect(stack.service is UnavailableTerminalService)
             await #expect(throws: TerminalError.ghosttyHelperMissing) {
                 _ = try await stack.service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                                 existingWindowId: nil, command: nil, badge: nil)
+                                                 existingWindowId: nil, command: nil)
             }
         }
     }

@@ -71,7 +71,7 @@ import WiettyCore
         let before = try? Data(contentsOf: realConfig)
 
         let store = ProjectStore(service: FakeTerminalService())
-        store.showWorkspaceBadge = !store.showWorkspaceBadge
+        store.remoteEnabled.toggle()
         store.mcpPort = 4321
         store.clearDeadSessions()
 

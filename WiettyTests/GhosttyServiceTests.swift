@@ -82,7 +82,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let command = #"stty raw -echo; printf '\033]7501;?\033\\'; "#
             + #"r=$(dd bs=1 count=10 2>/dev/null | od -An -tx1 | tr -d ' \n'); stty sane; echo "got:$r""#
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: command, badge: nil)
+                                            existingWindowId: nil, command: command)
         try await waitUntil { seen.text(for: handle.sessionId).contains("got:1b5d373530313b3f1b5c") }
     }
 
@@ -95,8 +95,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
                                             existingWindowId: nil,
-                                            command: #"printf '\033]7501;state=done:msg=aGk=\033\\'"#,
-                                            badge: nil)
+                                            command: #"printf '\033]7501;state=done:msg=aGk=\033\\'"#)
         let done = ProgramStatusScanner.Event.report(
             .set(id: nil, ProgramStatusRecord(state: .done, msg: "hi")))
         try await waitUntil { reported.events(for: handle.sessionId) == [done] }
@@ -107,7 +106,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: nil, badge: nil)
+                                            existingWindowId: nil, command: nil)
         #expect(handle.sessionId.hasPrefix("gt:"))
         #expect(host.created == [handle.sessionId])
         #expect(service.liveSessions == [handle.sessionId])
@@ -127,7 +126,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         defer { service.closeAll() }
         let folder = URL(fileURLWithPath: "/private/tmp")
         let handle = try await service.open(folder: folder, existingWindowId: nil,
-                                            command: nil, badge: nil)
+                                            command: nil)
         #expect(host.created == [handle.sessionId])
         #expect(host.directories[handle.sessionId] == folder)
     }
@@ -139,24 +138,8 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: "w0t2p0", command: nil, badge: nil)
+                                            existingWindowId: "w0t2p0", command: nil)
         #expect(handle.windowId == "w0t2p0")
-    }
-
-    /// The badge reaches the surface as its title.
-    ///
-    /// That is as far as it goes today: libghostty has no title setter of any
-    /// kind, so `GhosttySurfaceHost` keeps it as its own record and hangs it on
-    /// the view's accessibility label, and nothing a sighted user sees is
-    /// labelled by it. Asserted anyway, because the alternative is a substrate
-    /// that silently drops a workspace setting the other two honour.
-    @Test func theBadgeIsHandedToTheSurfaceAsItsTitle() async throws {
-        let host = FakeSurfaceHost()
-        let service = service(host)
-        defer { service.closeAll() }
-        let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: nil, badge: "api")
-        #expect((host.titles[handle.sessionId] ?? nil) == "api")
     }
 
     /// A surface that will not create leaves nothing behind. Without the cleanup
@@ -170,7 +153,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         host.whileCreating = { asked = $0 }
         await #expect(throws: (any Error).self) {
             _ = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                        existingWindowId: nil, command: nil, badge: nil)
+                                        existingWindowId: nil, command: nil)
         }
         let session = try #require(asked)
         #expect(service.liveSessions.isEmpty)
@@ -194,7 +177,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
                                             existingWindowId: nil,
-                                            command: "echo tagged-$((6+7))", badge: nil)
+                                            command: "echo tagged-$((6+7))")
         try await waitUntil { seen.text(for: handle.sessionId).contains("tagged-13") }
     }
 
@@ -212,7 +195,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         ended.service = service
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "exit 0", badge: nil)
+                                            existingWindowId: nil, command: "exit 0")
         try await waitUntil { ended.names.contains(handle.sessionId) }
         #expect(ended.liveAtExit?.contains(handle.sessionId) == false)
     }
@@ -228,7 +211,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         ended.service = service
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 60", badge: nil)
+                                            existingWindowId: nil, command: "sleep 60")
         try await waitUntil { service.liveSessions.contains(handle.sessionId) }
 
         await service.stop(sessionId: handle.sessionId)
@@ -249,7 +232,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host)
         defer { service.closeAll() }
         _ = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                   existingWindowId: nil, command: "exit 0", badge: nil)
+                                   existingWindowId: nil, command: "exit 0")
         try await waitUntil { service.liveSessions.isEmpty }
         #expect(liveSessionsOffTheMainActor(service).isEmpty)
         #expect(service.jobEvents().isEmpty)
@@ -268,7 +251,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
                                             existingWindowId: nil,
-                                            command: "echo died-$((20+3))", badge: nil)
+                                            command: "echo died-$((20+3))")
         try await waitUntil { service.liveSessions.isEmpty }
         #expect(host.destroyed.isEmpty)
         let text = try await service.readOutput(sessionId: handle.sessionId, maxLines: 10)
@@ -291,7 +274,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host, onTerminated: { log.ids.append($0) })
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 30", badge: nil)
+                                            existingWindowId: nil, command: "sleep 30")
         #expect(service.liveSessions == [handle.sessionId])
         host.onCloseRequested?(handle.sessionId)
         #expect(service.liveSessions.isEmpty)
@@ -309,7 +292,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host, onTerminated: { log.ids.append($0) })
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 30", badge: nil)
+                                            existingWindowId: nil, command: "sleep 30")
         host.onCloseRequested?(handle.sessionId)
         host.onCloseRequested?(handle.sessionId)
         #expect(log.ids == [handle.sessionId])
@@ -325,9 +308,9 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host)
         defer { service.closeAll() }
         let first = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                           existingWindowId: nil, command: "sleep 5", badge: nil)
+                                           existingWindowId: nil, command: "sleep 5")
         let second = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                             existingWindowId: nil, command: "sleep 5", badge: nil)
+                                             existingWindowId: nil, command: "sleep 5")
         let result = try await service.probe(sessionId: first.sessionId)
         #expect(result.found)
         #expect(result.jobKnown)
@@ -352,7 +335,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
                                             existingWindowId: nil,
-                                            command: "echo died-$((20+3))", badge: nil)
+                                            command: "echo died-$((20+3))")
         try await waitUntil { service.liveSessions.isEmpty }
 
         let result = try await service.probe(sessionId: handle.sessionId)
@@ -371,7 +354,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "exit 0", badge: nil)
+                                            existingWindowId: nil, command: "exit 0")
         try await waitUntil { service.liveSessions.isEmpty }
 
         await service.discard(sessionId: handle.sessionId)
@@ -392,7 +375,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 5", badge: nil)
+                                            existingWindowId: nil, command: "sleep 5")
         await service.discard(sessionId: handle.sessionId)
         #expect(service.liveSessions == [handle.sessionId])
         #expect(host.destroyed.isEmpty)
@@ -406,7 +389,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "exit 0", badge: nil)
+                                            existingWindowId: nil, command: "exit 0")
         try await waitUntil { service.liveSessions.isEmpty }
         await #expect(throws: (any Error).self) {
             try await service.send(sessionId: handle.sessionId, text: "hello\n")
@@ -423,7 +406,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         })
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "cat", badge: nil)
+                                            existingWindowId: nil, command: "cat")
         let writer = try #require(service.shared.writer(for: handle.sessionId))
         // A pty echoes what is written to its master, so the marker comes back
         // whether or not `cat` has started reading.
@@ -441,7 +424,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(FakeSurfaceHost())
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "exit 0", badge: nil)
+                                            existingWindowId: nil, command: "exit 0")
         try await waitUntil { service.liveSessions.isEmpty }
         #expect(service.shared.writer(for: handle.sessionId) == nil)
         #expect(service.screenModel(for: handle.sessionId) != nil)
@@ -477,7 +460,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         })
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: nil, badge: nil)
+                                            existingWindowId: nil, command: nil)
         // A shell reaching its first read is not an event the test can observe, so
         // a short settle is the honest way to wait for it.
         try await Task.sleep(for: .milliseconds(600))
@@ -513,7 +496,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 5", badge: nil)
+                                            existingWindowId: nil, command: "sleep 5")
         let paste = String(repeating: "line\n", count: 1 << 17)
         let started = ContinuousClock.now
         try await service.send(sessionId: handle.sessionId, text: paste)
@@ -536,7 +519,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 5", badge: nil)
+                                            existingWindowId: nil, command: "sleep 5")
         try await service.close(sessionId: handle.sessionId)
         #expect(service.liveSessions.isEmpty)
         // Destroying the surface is what stops the pane's bridge and removes its
@@ -552,8 +535,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
                                             existingWindowId: nil,
-                                            command: #"printf 'one\ntwo\nthree-%s\n' $((1+2)); sleep 5"#,
-                                            badge: nil)
+                                            command: #"printf 'one\ntwo\nthree-%s\n' $((1+2)); sleep 5"#)
         try await waitUntil {
             service.screenModel(for: handle.sessionId)?.text(maxLines: 10).contains("three-3") ?? false
         }
@@ -587,8 +569,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         defer { service.closeAll() }
         let handle = try await service.open(
             folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-            command: "i=0; while [ $i -lt 300 ]; do i=$((i+1)); echo row-$i; done; sleep 5",
-            badge: nil)
+            command: "i=0; while [ $i -lt 300 ]; do i=$((i+1)); echo row-$i; done; sleep 5")
         try await waitUntil {
             service.screenModel(for: handle.sessionId)?.text(maxLines: 1).contains("row-300") ?? false
         }
@@ -614,8 +595,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         defer { try? FileManager.default.removeItem(atPath: probe) }
         let handle = try await service.open(
             folder: URL(fileURLWithPath: "/tmp"), existingWindowId: nil,
-            command: "trap 'stty size > \(probe)' WINCH; while true; do sleep 0.2; done",
-            badge: nil)
+            command: "trap 'stty size > \(probe)' WINCH; while true; do sleep 0.2; done")
         try await Task.sleep(for: .milliseconds(600))
         // Nothing has resized this terminal yet, so a probe file here would mean
         // the assertion below could pass on a stale reading.
@@ -641,7 +621,7 @@ private func liveSessionsOffTheMainActor(_ service: GhosttyService) -> Set<Strin
         let service = service(host)
         defer { service.closeAll() }
         let handle = try await service.open(folder: URL(fileURLWithPath: "/tmp"),
-                                            existingWindowId: nil, command: "sleep 5", badge: nil)
+                                            existingWindowId: nil, command: "sleep 5")
         try await waitUntil {
             service.jobEvents().contains(.job(sessionId: handle.sessionId, jobName: "sleep"))
         }

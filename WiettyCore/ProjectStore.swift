@@ -170,7 +170,9 @@ package final class ProjectStore: SettingsPairSource {
     // The old `UserDefaults` keys, read once during migration and then removed. Their
     // values now live in `~/.config/wietty/config`; see `SettingsKeys`.
     private let storageKey = "wietty.projects.bookmarks"
-    private let badgeKey = "wietty.showWorkspaceBadge"
+    /// Of a setting that no longer exists (see `SettingsKeys.retired`). Never read,
+    /// only cleared with the others, so a migrating install does not keep it.
+    private let retiredBadgeKey = "wietty.showWorkspaceBadge"
     private let bellSoundKey = "wietty.bellSound"
     private let intervalsKey = "wietty.checkIntervals"
     private let remoteEnabledKey = "wietty.remote.enabled"
@@ -185,7 +187,7 @@ package final class ProjectStore: SettingsPairSource {
     /// secret and is not managed here at all: `RemoteAccessToken` keeps it in
     /// `UserDefaults`, so it is neither in this list nor ever written to the file.
     private var migratedDefaultsKeys: [String] {
-        [storageKey, badgeKey, bellSoundKey, intervalsKey, remoteEnabledKey,
+        [storageKey, retiredBadgeKey, bellSoundKey, intervalsKey, remoteEnabledKey,
          mcpPortKey, remotePortKey, sidebarWidthKey, agentsKey, approvedCommandsKey]
     }
 
@@ -226,16 +228,6 @@ package final class ProjectStore: SettingsPairSource {
     /// pullRequest/ciChecks checks (and the issue/PR URL composition) so those
     /// checks do not need to re-derive it themselves.
     private var ownerRepo: [UUID: (String?, String?)] = [:]
-
-    /// When on, newly opened (or reopened) sessions are given the workspace name as
-    /// a badge. Off by default, and inert today: libghostty exposes no way to set a
-    /// surface's title. Persisted; changing it affects future sessions only.
-    package var showWorkspaceBadge: Bool {
-        didSet {
-            guard showWorkspaceBadge != oldValue else { return }
-            persistSettings()
-        }
-    }
 
     /// Which sequence a program's banners come from. Persisted, and applied to the
     /// next event rather than needing a restart.
@@ -554,7 +546,6 @@ package final class ProjectStore: SettingsPairSource {
         self.launch = SettingsLaunch(values: launchValues, migrating: migrating)
 
         if !migrating {
-            self.showWorkspaceBadge = cfg[SettingsKeys.showWorkspaceBadge] == "true"
             self.notificationSource = NotificationSource(stored: cfg[SettingsKeys.notificationSource] ?? "")
             self.checkIntervals = Self.intervals(from: cfg)
             self.remoteEnabled = cfg[SettingsKeys.remoteEnabled] == "true"
@@ -565,7 +556,6 @@ package final class ProjectStore: SettingsPairSource {
             self.approvedCommands = Self.approvals(from: cfg)
             self.groups = Self.groups(from: cfg)
         } else {
-            self.showWorkspaceBadge = defaults.bool(forKey: badgeKey)
             // New with the file: no build wrote it to `UserDefaults`.
             self.notificationSource = .desktopNotifications
             if let arr = defaults.array(forKey: intervalsKey) as? [Int], arr.count == 3 {
@@ -853,10 +843,10 @@ package final class ProjectStore: SettingsPairSource {
     ///
     /// - Parameter command: the row's stored line (`TerminalRef.command`), or nil for
     ///   a row that runs whatever its kind runs.
-    private func openShell(folder: URL, existingWindowId: String?, badge: String?,
+    private func openShell(folder: URL, existingWindowId: String?,
                            kind: TerminalKind, command: String? = nil) async throws -> TerminalHandle {
         let handle = try await service.open(folder: folder, existingWindowId: existingWindowId,
-                                            command: nil, badge: badge)
+                                            command: nil)
         if let line = command ?? Self.command(for: kind) {
             try await service.send(sessionId: handle.sessionId, text: line + "\n")
         }
@@ -906,11 +896,10 @@ package final class ProjectStore: SettingsPairSource {
         }
         let folder = projects[preIndex].url
         let existingWindowId = settleWorkspaceId(at: preIndex)
-        let badge = showWorkspaceBadge ? projects[preIndex].name : nil
         let handle: TerminalHandle
         do {
             handle = try await openShell(folder: folder, existingWindowId: existingWindowId,
-                                          badge: badge, kind: kind, command: agent?.line)
+                                          kind: kind, command: agent?.line)
         } catch {
             throw StoreError.terminal((error as? TerminalError)?.errorDescription ?? error.localizedDescription)
         }
@@ -1003,7 +992,6 @@ package final class ProjectStore: SettingsPairSource {
         let command = Self.command(for: projects[prePIndex].terminals[preTIndex])
         let folder = projects[prePIndex].url
         let existingWindowId = settleWorkspaceId(at: prePIndex)
-        let badge = showWorkspaceBadge ? projects[prePIndex].name : nil
         attention.remove(ref.id)
         acknowledgeProgramStatus(ref.id)
         do {
@@ -1039,7 +1027,7 @@ package final class ProjectStore: SettingsPairSource {
                 // NSView on every revival.
                 if !sessionId.isEmpty { await service.discard(sessionId: sessionId) }
                 let handle = try await openShell(folder: folder, existingWindowId: existingWindowId,
-                                                  badge: badge, kind: kind, command: command)
+                                                  kind: kind, command: command)
                 guard let pIndex = projects.firstIndex(where: { $0.id == project.id }),
                       let tIndex = projects[pIndex].terminals.firstIndex(where: { $0.id == ref.id }) else { return }
                 // The pane id is recorded either way: a rename moves a session's
@@ -1069,13 +1057,13 @@ package final class ProjectStore: SettingsPairSource {
             // drop the rest without touching any existing override:
             //   - A `fixed_naming` row is pinned to its slot and ignores reported
             //     titles, which is the whole point of the flag.
-            //   - A title equal to the workspace name is the badge coming back, not a
-            //     real title. With "show workspace name as pane title" on, the badge
-            //     travels as the surface's initial title (`GhosttyService`, passed on
-            //     `open`/`activate`/`restart`) and the poll reads it straight back;
-            //     acting on it would flip the row to the workspace name the instant the
-            //     terminal opens. The price is that an agent that genuinely reports its
-            //     workspace's own name is ignored, which is indistinguishable and rarer.
+            //   - A title equal to the workspace name is ignored. The guard was written
+            //     for a setting that is gone, which labelled a terminal with its
+            //     workspace's name and got that label read straight back as a title.
+            //     Nothing sets such a label now. The guard is kept because taking it
+            //     out changes what a row shows (a program that reports the folder's
+            //     name as its title would rename its row to it), and that is a
+            //     decision of its own, not part of removing the setting.
             let ref = projects[p].terminals[t]
             guard ref.kind == .claude, !name.isEmpty, !ref.fixedNaming,
                   name != projects[p].name else { return }
@@ -1650,7 +1638,6 @@ package final class ProjectStore: SettingsPairSource {
         let command = Self.command(for: projects[p].terminals[t])
         let folder = projects[p].url
         let existingWindowId = settleWorkspaceId(at: p)
-        let badge = showWorkspaceBadge ? projects[p].name : nil
         do {
             // Propagated, not swallowed. A restart that could not stop the old
             // session has not restarted anything, and carrying on repoints the row at
@@ -1658,7 +1645,7 @@ package final class ProjectStore: SettingsPairSource {
             // its write access to the folder and nothing left referencing it.
             try await service.close(sessionId: sessionId)
             let handle = try await openShell(folder: folder, existingWindowId: existingWindowId,
-                                              badge: badge, kind: kind, command: command)
+                                              kind: kind, command: command)
             guard let (np, nt) = indexOfSession(sessionId) else {
                 // The row went away while the replacement was opening, so nothing will
                 // ever point at the shell just opened. Closed here rather than left
@@ -2428,7 +2415,6 @@ package final class ProjectStore: SettingsPairSource {
 
     package var settingsPairs: [(key: String, value: String)] {
         var pairs: [(key: String, value: String)] = [
-            (SettingsKeys.showWorkspaceBadge, showWorkspaceBadge ? "true" : "false"),
             (SettingsKeys.notificationSource, notificationSource.stored),
             (SettingsKeys.checkIntervalFast, String(checkIntervals.fast)),
             (SettingsKeys.checkIntervalNormal, String(checkIntervals.normal)),

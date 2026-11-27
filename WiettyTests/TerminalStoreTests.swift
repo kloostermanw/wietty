@@ -17,7 +17,7 @@ private struct LegacyStored: Codable {
 }
 
 final class FakeTerminalService: TerminalService, @unchecked Sendable {
-    var openCalls: [(folder: URL, existingWindowId: String?, command: String?, badge: String?)] = []
+    var openCalls: [(folder: URL, existingWindowId: String?, command: String?)] = []
     var focusCalls: [String] = []
     var closeCalls: [String] = []
     var discardCalls: [String] = []
@@ -50,9 +50,9 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
     var openGate: (@MainActor () async -> Void)?
     private var openIndex = 0
 
-    func open(folder: URL, existingWindowId: String?, command: String?, badge: String?) async throws -> TerminalHandle {
+    func open(folder: URL, existingWindowId: String?, command: String?) async throws -> TerminalHandle {
         if let error = errorToThrow ?? openErrorToThrow { throw error }
-        openCalls.append((folder, existingWindowId, command, badge))
+        openCalls.append((folder, existingWindowId, command))
         discardAndOpenOrder.append("open")
         await openGate?()
         let handle = openIndex < handles.count
@@ -890,52 +890,14 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(store.liveLabels[ref.id] == nil)       // liveLabels override purged too
     }
 
-    @Test func workspaceBadgeSettingDefaultsOff() {
-        let store = ProjectStore(defaults: makeDefaults(), service: FakeTerminalService())
-        #expect(store.showWorkspaceBadge == false)
-    }
-
-    @Test func openPassesNilBadgeWhenSettingOff() async {
+    @Test func titleEqualToTheWorkspaceNameIsIgnoredOnARowOpenedThroughTheStore() async {
+        // The guard was written for a setting that is gone: it labelled a
+        // terminal with its workspace's name, and that label came straight back
+        // as a `.title` event. The guard outlived it (see `ProjectStore.handle`),
+        // so a title equal to the workspace name still leaves the row alone.
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
         let store = ProjectStore(defaults: makeDefaults(), service: fake)
-        store.addProject(url: makeTempFolder(named: "proj"))
-
-        await store.openTerminal(for: store.projects[0])
-        #expect(fake.openCalls[0].badge == nil)
-    }
-
-    @Test func openPassesWorkspaceNameAsBadgeWhenSettingOn() async {
-        let fake = FakeTerminalService()
-        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
-        let store = ProjectStore(defaults: makeDefaults(), service: fake)
-        store.showWorkspaceBadge = true
-        store.addProject(url: makeTempFolder(named: "acme-api"))
-
-        await store.openClaude(for: store.projects[0])
-        #expect(fake.openCalls[0].badge == "acme-api")
-    }
-
-    @Test func workspaceBadgeSettingPersistsAcrossStoreInstances() {
-        let defaults = makeDefaults()
-        let store1 = ProjectStore(defaults: defaults, service: FakeTerminalService())
-        store1.showWorkspaceBadge = true
-
-        let store2 = ProjectStore(defaults: defaults, service: FakeTerminalService())
-        #expect(store2.showWorkspaceBadge == true)
-    }
-
-    @Test func titleEqualToWorkspaceBadgeIsIgnored() async {
-        // With the badge setting on, `TmuxService.open` writes the workspace
-        // name into `pane_title` via `select-pane -T`, and the poll reads that
-        // straight back as a `.title` event carrying the same name.
-        // Relabelling from it would flip the row from "Claude 1" to the
-        // workspace name the instant the pane opens, before Claude ever sets
-        // its own title.
-        let fake = FakeTerminalService()
-        fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
-        let store = ProjectStore(defaults: makeDefaults(), service: fake)
-        store.showWorkspaceBadge = true
         store.addProject(url: makeTempFolder(named: "acme-api"))
         await store.openClaude(for: store.projects[0])
 
@@ -943,36 +905,18 @@ final class FakeTerminalService: TerminalService, @unchecked Sendable {
         #expect(store.projects[0].terminals[0].label == "Claude 1")
     }
 
-    @Test func genuineTitleStillAppliesWithBadgeSettingOn() async {
-        // A title that differs from the workspace badge is a real one (from
-        // Claude's own OSC title) and must still show on the row, now as the
-        // display-only override rather than a rewrite of `label`. Issue #60.
+    @Test func aTitleOtherThanTheWorkspaceNameAppliesToARowOpenedThroughTheStore() async {
+        // A title that differs from the workspace's name (Claude's own OSC title)
+        // shows on the row, as the display-only override rather than a rewrite of
+        // `label`. Issue #60.
         let fake = FakeTerminalService()
         fake.handles = [TerminalHandle(sessionId: "sess-A", windowId: "win-1")]
         let store = ProjectStore(defaults: makeDefaults(), service: fake)
-        store.showWorkspaceBadge = true
         store.addProject(url: makeTempFolder(named: "acme-api"))
         await store.openClaude(for: store.projects[0])
 
         store.handle(.title(sessionId: "sess-A", name: "refactor parser"))
         #expect(store.displayName(for: store.projects[0].terminals[0]) == "refactor parser")
-    }
-
-    @Test func reopeningDeadSessionCarriesBadgeWhenSettingOn() async {
-        let fake = FakeTerminalService()
-        fake.handles = [
-            TerminalHandle(sessionId: "sess-A", windowId: "win-1"),
-            TerminalHandle(sessionId: "sess-B", windowId: "win-1"),
-        ]
-        let store = ProjectStore(defaults: makeDefaults(), service: fake)
-        store.showWorkspaceBadge = true
-        store.addProject(url: makeTempFolder(named: "acme-api"))
-        await store.openTerminal(for: store.projects[0])
-
-        fake.focusResult = FocusResult(found: false, jobName: nil)
-        await store.activate(store.projects[0].terminals[0], in: store.projects[0])
-        #expect(fake.openCalls.count == 2)
-        #expect(fake.openCalls[1].badge == "acme-api")
     }
 
     /// A row being reopened gives up what the service still held under the old id,

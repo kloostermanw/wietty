@@ -86,7 +86,7 @@ private final class RecordingScreenModel: TerminalScreenModel, @unchecked Sendab
 
     private func open(_ service: GhosttyService, _ command: String?) async throws -> String {
         try await service.open(folder: Self.folder, existingWindowId: nil,
-                               command: command, badge: nil).sessionId
+                               command: command).sessionId
     }
 
     // MARK: - Scrollback limit

@@ -56,7 +56,6 @@ import WiettyCore
         let preferences = fixture.preferences
 
         // One of each kind of setting the writer emits, so a block that moves is caught.
-        store.showWorkspaceBadge = true
         preferences.bellSound = .named("Ping")
         store.notificationSource = .programStatus
         store.checkIntervals = CheckIntervals(fast: 20, normal: 90, slow: 400)
@@ -79,7 +78,6 @@ import WiettyCore
         let text = try String(contentsOf: config.url, encoding: .utf8)
         #expect(normalised(text, root: root) == """
         # Managed by Wietty. Hand-editable: key = value, one per line, # starts a comment. Secrets are never written here.
-        show-workspace-badge = true
         bell-sound = named:Ping
         notification-source = osc-7501
         check-interval-fast = 20
