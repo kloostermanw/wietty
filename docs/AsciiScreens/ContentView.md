@@ -142,11 +142,14 @@ another. Without that id one pane position would keep the first session's pane w
 claiming to show the second. Coming back attaches again and the server sends the
 history its model keeps and the current screen, of which this Mac keeps what its own
 Ghostty `scrollback-limit` allows. A
-remote session that ends while it is on screen keeps its last screen, with a bar over
-its top saying so and no button. That differs from a local terminal whose command
-exited, which hides its last screen behind the stopped screen with Restart (below):
-the session belongs to the other Mac, and clicking its row there asks that Mac for a
-new one. See `RemoteSurfacePane.md`.
+remote session that ends while it is on screen gets the stopped screen with Restart
+that a local terminal whose command exited gets (below), drawn by the same
+`TerminalStoppedView`. Its Restart is handed up to `ContentView` as the local one is,
+which asks the other Mac for a restart unless the sidebar is busy. The row then
+carries a new session, and the selection follows it there
+(`PaneRouter.remoteRowsChanged`, fed by a `RemoteRowsObserver` that `task` starts), so
+the pane shows the replacement. The same happens when the row is restarted from the
+sidebar or on the other Mac. See `RemoteSurfacePane.md`.
 
 A connection removed, from the sidebar or from the settings panel, takes its
 terminal off the screen and puts the local one back, because the rows went with it
@@ -235,6 +238,9 @@ Restart calls `ProjectStore.restartTerminal`, the same path as the row's restart
 button: the row reopens with its own command, the new session is selected, and the
 pane shows its terminal again. Clicking the stopped row in the sidebar reopens it
 too, as it always did.
+
+The screen is `TerminalStoppedView`, which the pane of a terminal on another Mac
+draws too for a session that ended there, so the two cannot drift apart.
 
 Dropping files from Finder onto the pane inserts their paths at the cursor, shell
 quoted and space separated, the standard macOS terminal gesture for handing a file

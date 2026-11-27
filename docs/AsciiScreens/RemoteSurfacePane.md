@@ -19,7 +19,8 @@ another. Showing a session again after a hide makes a new pane, a new surface an
 new attach, and the server paints the current screen. Clicking the row that is already
 shown changes nothing, so there is still one pane and one surface. After the session
 ended, clicking its row asks the other Mac for a new session (`activate`), which has a
-new id, so the ended pane closes and a new one opens.
+new id, so the ended pane closes and a new one opens. A restart does the same without
+a click, see "A session that ended" below.
 
 A connection that is gone before the pane is made shows the "Connection removed"
 placeholder instead (see `ContentView.md`). A stack with no surface host or no helper
@@ -35,10 +36,10 @@ already closed and makes no surface.
 The surface fills the pane, in the same `SurfaceContainer` the own pane uses. It is
 pinned to the top left, has the size of the grid in force when another viewer holds
 it, and sits in a margin painted in the terminal's background colour (see "The local
-terminal in the pane" in `ContentView.md`). While the link is down or the session is
-over, a bar is drawn over the top of the surface, in the window status bar's style
-(caption text on the bar material, a divider under it). It covers the top of the first
-row while it shows.
+terminal in the pane" in `ContentView.md`). While the link is down, a bar is drawn
+over the top of the surface, in the window status bar's style (caption text on the bar
+material, a divider under it). It covers the top of the first row while it shows. A
+session that ended gets no bar: the stopped screen replaces the surface.
 
 Over, never above: the container keeps the whole pane whether the bar shows or not.
 A bar above it would make the pane shorter, so a pane that owns the grid would claim a
@@ -61,11 +62,11 @@ connecting, live                          reconnecting
 
 waiting                                   ended
 ┌────────────────────────────────┐        ┌────────────────────────────────┐
-│Connection lost.   [Reconnect]  │        │This terminal has ended on the  │
-├────────────────────────────────┤        │other Mac.                      │  no button
-│README.md  docs/                │        ├────────────────────────────────┤
-│$ _                             │        │README.md  docs/                │  the last
-│                                │        │$ _                             │  screen, kept
+│Connection lost.   [Reconnect]  │        │              [>_]              │  the stopped
+├────────────────────────────────┤        │        Terminal stopped        │  screen of a
+│README.md  docs/                │        │    The process has exited.     │  local terminal,
+│$ _                             │        │           [Restart]            │  no surface and
+│                                │        │                                │  no bar
 └────────────────────────────────┘        └────────────────────────────────┘
 
 refused
@@ -94,14 +95,61 @@ asserts it.
 | `live` | none | none | the surface |
 | `reconnecting` | "Connection lost. Reconnecting…" | "Reconnect now" | the surface |
 | `waiting` | "Connection lost." | "Reconnect" | the surface |
-| `ended` | "This terminal has ended on the other Mac." | none | the surface, with its last screen |
+| `ended` | none | "Restart", on the stopped screen | the stopped screen (`TerminalStoppedView`), in place of the surface |
 | `refused(message)` | none | none | a `ContentUnavailableView`, "Cannot show this terminal" and the message |
 
-Both buttons call `RemotePane.reconnectPressed()`: in `reconnecting` it makes an
-attempt now, in `waiting` an attempt now and a new two minutes of automatic attempts.
-A refusal covers the other Mac refusing, a Wietty too old or newer, a connection
-removed while the pane is open, and the two failures of this Mac (no surface or no
-bridge, and the helper going away). There is never a button then.
+Both of the bar's buttons call `RemotePane.reconnectPressed()`: in `reconnecting` it
+makes an attempt now, in `waiting` an attempt now and a new two minutes of automatic
+attempts. A refusal covers the other Mac refusing, a Wietty too old or newer, a
+connection removed while the pane is open, and the two failures of this Mac (no surface
+or no bridge, and the helper going away). There is never a button then.
+
+## A session that ended
+
+A session that ended on the other Mac looks and works as a terminal of this Mac that
+has ended (see "The local terminal in the pane" in `ContentView.md`). Both panes draw
+the one `TerminalStoppedView`: "Terminal stopped" and "The process has exited.", or
+"Agent stopped" and "The agent has exited." for an agent row, and a Restart button
+that is the window's default (return). Whether the row is an agent is read from the
+connection's last snapshot when the screen is drawn. A session no row of that snapshot
+carries gets the terminal wording.
+
+The pane still holds its surface, bridge and helper until it is hidden (see "Ends" in
+`docs/terminal.md`), but the surface is not shown, as a local terminal's is not.
+
+Restart is handed up to `ContentView`, which refuses it while the sidebar is busy and
+otherwise makes the call the remote row's own restart button makes
+(`RemoteWorkspaceStore.restart(sessionId:)`). That call does not wait and does not
+answer with the new session. The other Mac closes the session and opens a new one for
+the same row, so the row keeps its id and gets a new session id, and its next snapshot
+says so.
+
+The selection follows the row. `RemoteRowsObserver` hands every snapshot's rows to
+`PaneRouter.remoteRowsChanged`, which remembers the rows of the last snapshot that
+still had a row carrying the selected session. When a later snapshot of that
+connection no longer has the session, and the row that carried it now carries another
+one, the router selects that one. The view is keyed by its session, so the ended pane
+closes and a pane for the replacement opens. `RemoteSelectionFollow.replacement` is
+the decision, and `RemoteSelectionFollowTests` and `PaneRouterTests` assert it.
+
+That holds whoever restarted the row: this stopped screen, the sidebar row's restart
+button, another viewer, or the other Mac itself. It is what a local restart does,
+which selects the replacement. What is not followed:
+
+- A row that is gone (closed on the other Mac). The pane stays on the stopped screen,
+  and its Restart is then refused by the other Mac, which the connection's red caption
+  says.
+- A row that carries no session. It is followed once a snapshot gives it one.
+- Another connection's rows. Session ids and row ids are only unique on the Mac that
+  hands them out.
+- Anything while the pane shows something else (a local terminal, a log, settings).
+  There is no remote selection to move then.
+
+A restart that fails (the other Mac unreachable, or the session unknown there) leaves
+the stopped screen up, with the reason in the connection's red caption in the sidebar.
+A second press before the first has been answered sends a second request for the same
+session. Nothing on this Mac holds the button meanwhile, because the call cannot be
+awaited.
 
 The bar appears and disappears with no animation. A link that keeps dropping switches
 between `live` and `reconnecting`, and an animated bar would make that worse to look

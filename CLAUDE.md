@@ -66,8 +66,10 @@ The app is split in two, and the split is enforced by the compiler rather than b
   `PaneBridges`), its link to `LocalStreamServer` (`LocalSocketLink`, behind `TerminalStreamLink`),
   and what decides when the pane claims the grid (`PaneGrid`, carried out by `OwnPaneGrid`). The
   pane of a terminal on another Mac is frontend too: its link (`RemoteSocketLink`), its owner and
-  registry (`RemotePane`, `RemotePanes`, with `ObservedLink` and `RemoteReconnectPolicy`), and the
-  filter that keeps its size queries' answers from the other Mac (`SizeAnswerFilter`).
+  registry (`RemotePane`, `RemotePanes`, with `ObservedLink` and `RemoteReconnectPolicy`), the
+  filter that keeps its size queries' answers from the other Mac (`SizeAnswerFilter`), and what
+  moves the selection to a restarted row's new session (`RemoteSelectionFollow`, fed by
+  `RemoteRowsObserver` and applied by `PaneRouter`).
 
 Members the app or the tests need are `package`, never `public`. The three targets share a
 `SWIFT_PACKAGE_NAME`, so `package` reaches all of them and nothing outside sees a line of it. A

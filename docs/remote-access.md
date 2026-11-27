@@ -628,9 +628,19 @@ last screen stays. A wrong token arrives as a lost connection too, because the
 server refuses the HTTP upgrade and the package cannot see the status, so it is
 retried. Input typed while there is no link is dropped.
 
-**A session that ends** while it is on screen keeps its last screen, with a bar
-over it saying so. A refusal, and a serving Wietty that is too old or newer,
-show a message that fills the pane, and nothing is retried.
+**A session that ends** while it is on screen gets the stopped screen a local
+terminal gets: "Terminal stopped" (or "Agent stopped" for an agent row) and a
+Restart button, in place of the surface. Restart posts
+`/api/sessions/{sid}/restart`, as the row's own restart button does. The serving
+Mac closes the session and opens a new one for the same row, so the row keeps
+its id and gets a new session id. The pane's selection follows the row: when a
+pushed snapshot shows that the row which carried the selected session now
+carries another one, that one is selected, and the pane shows the replacement
+(`PaneRouter.remoteRowsChanged`). That holds for a restart from the sidebar row,
+from another viewer and on the serving Mac itself too. A row that is gone
+(closed) is not followed, and the pane stays on the stopped screen. A refusal,
+and a serving Wietty that is too old or newer, show a message that fills the
+pane, and nothing is retried.
 
 **Known limits.** A live link that goes silent (the other Mac asleep, Wi-Fi gone
 without a close) shows no bar until a send fails or TCP gives up, because nothing
