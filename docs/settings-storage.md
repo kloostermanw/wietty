@@ -44,12 +44,20 @@ colours are libghostty's to apply, so they live in `ghostty.cfg` rather than her
 "What does not live in the file" below).
 
 `scrollback-lines` is how much history each terminal's screen model keeps, which is
-how far an MCP read of a terminal's output can reach. It costs memory: about 1 KiB
+the history a viewer on another device is sent when it attaches: the iPad, the browser
+and the pane of another Mac. It costs memory: about 1 KiB
 per line once a terminal has filled it, so the default of 10,000 lines is about 10 MiB
 per terminal and the maximum of 100,000 about 100 MiB. A value outside 1,000 to
 100,000 is brought to the nearer end when the file is read, and one that is not a
-number reads as the default. A change applies to terminals opened afterwards. The file
-is the only place to set it, there is no control for it in the settings panel. Like the
+number reads as the default. A change applies to terminals opened afterwards. Its
+control is the "Scrollback" stepper in Settings, General, under "Terminal history",
+which moves in steps of 1,000 (see `docs/AsciiScreens/SettingsView.md`); a value typed
+into the file by hand need not be a multiple of that. The setting does not bound the
+history this Mac's own pane scrolls through, nor what the pane of a terminal on
+another Mac keeps: both are the surface's, sized by Ghostty's `scrollback-limit` (in
+bytes) in your Ghostty configuration, a key Wietty never writes. It does not decide how
+far an MCP read reaches either, since `get_process_output` returns at most 200 lines.
+Like the
 ports, the line is written at its default too, so a file from before the setting
 existed reads as 10,000 and gains this one line, under `mcp-port`, the next time
 anything is saved. See terminal.md, "The server's own terminal".

@@ -14,9 +14,10 @@ the local network. There are two related but separate pieces:
   a separate app.
 
 Both are opt in and off by default, and both are scoped to a trusted local
-network. An iPadOS client is in development, sharing the controlling side with
-this app through the [wietty-shared](https://github.com/kloostermanw/wietty-shared)
-package. Any client reachable outside the LAN remains future work.
+network. The iPadOS client ([wietty-ios](https://github.com/kloostermanw/wietty-ios))
+speaks the same protocol, version 2 of the terminal stream included, and shares the
+controlling side with this app through the
+[wietty-shared](https://github.com/kloostermanw/wietty-shared) package. Any client reachable outside the LAN remains future work.
 
 ## Served side: browser based remote terminal
 
@@ -297,7 +298,10 @@ server knows the grid, and then live `data`. Every frame after the hello
 is written by one writer per socket, in the order the hub delivered it.
 
 **Sizes.** Outbound frames are written whole, whatever their size: a snapshot of
-a full history is one binary frame of up to about 11 MB, and a client should
+a full history is one binary frame, 0.6 to 1.2 MB at the default of 10,000 lines
+and 6 to 12 MB at the ceiling of 100,000 for ordinary output, 34 MB measured for
+100,000 lines that change colour every eight cells (the `scrollback-lines` setting
+of the serving Mac, see `docs/terminal.md`, "Snapshot sizes"), and a client should
 accept messages up to `StreamProtocol.maxMessageSize` (64 MiB).
 `TerminalStreamConnection` does. Inbound, a frame and a message may each be up to
 1 MiB (`RemoteServer.maxInboundMessage`); the WebSocket library's default of
@@ -409,12 +413,15 @@ A snapshot is one message, however large, and a ping is written behind the
 message being written, so the viewer can answer it only once the whole snapshot has
 reached it. A link too slow to carry a snapshot within the 30 second ping period is
 therefore closed in the middle of the snapshot, and a client that reconnects is sent
-the same snapshot and closed again. At the default 10,000 lines of history (about
-0.63 MB) that takes a link under roughly 170 kbit/s; at 100,000 lines (6 to 11 MB)
-one of 1.7 to 3 Mbit/s, which a VPN over a mobile link can be. Nothing on the server
-caps a snapshot either, while a client accepts messages of at most 64 MiB
-(`StreamProtocol.maxMessageSize`): a larger snapshot fails at the client, which
-sees a lost connection.
+the same snapshot and closed again. At the default 10,000 lines of history (0.63 to
+1.2 MB) that takes a link under roughly 170 to 330 kbit/s; at 100,000 lines (6.4 to
+12.3 MB of ordinary output) one of 1.7 to 3.3 Mbit/s, which a VPN over a mobile link
+can be, and for the 34 MB measured with densely coloured output one of about
+9 Mbit/s. Nothing on the server caps a snapshot but the serving Mac's
+`scrollback-lines` setting (Settings, General, "Terminal history"), which is how
+much history it keeps per terminal and so how much it sends, while a client accepts
+messages of at most 64 MiB (`StreamProtocol.maxMessageSize`): a larger snapshot
+fails at the client, which sees a lost connection.
 
 ## Controlling side: connecting to another instance
 
@@ -635,9 +642,11 @@ draws in each state is in `docs/AsciiScreens/RemoteSurfacePane.md`.
 Only the session on screen holds a connection, a bridge and a surface: switching
 away destroys all three, and coming back makes new ones and attaches again.
 Nothing is lost by that beyond what the server's screen model no longer holds,
-because the server sends a snapshot of the history it keeps and the screen on
-every attach. This Mac keeps as much of that history as its own Ghostty
-`scrollback-limit` allows. The font, theme and padding are this Mac's too.
+because the server sends a snapshot of the history it keeps (its
+`scrollback-lines` setting, in lines) and the screen on every attach. This Mac
+keeps as much of that history as its own Ghostty `scrollback-limit` (in bytes)
+allows; Wietty writes neither Mac's `scrollback-limit`. The font, theme and
+padding are this Mac's too.
 
 **Sizing.** Showing a session claims nothing: the pane shows the grid in force,
 with a margin or clipped, until the user acts in it (a key, a press of a mouse
@@ -742,7 +751,7 @@ Accepted risk: on a shared or hostile network, screen contents, keystrokes,
 and workspace state travel unencrypted, and the token can be observed by an
 on path attacker. Use these features only on networks you trust; the
 Settings UI states this. TLS and internet (WAN) access are future work, as
-is Bonjour discovery. An iPadOS client is in development.
+is Bonjour discovery.
 
 The serving Mac's own panes use the local socket, which takes no token. It is
 reachable only by this user: its file has mode 0600 and the server closes any

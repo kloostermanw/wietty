@@ -85,11 +85,14 @@ Sessions: `list_processes`, `get_process_status`, `spawn_process`,
 
 `get_process_output` answers from the server's own model of the terminal, not
 from the window. It returns the last lines the terminal printed, most recent
-last, up to the number asked for: a line the terminal wrapped is one line, and
+last, up to the number asked for and never more than 200 (`lines`, 50 when
+left out): a line the terminal wrapped is one line, and
 the blank rows below the last line are left off. It reaches into scrollback
-(10,000 lines are kept per terminal by default, the `scrollback-lines` setting
-described in terminal.md) for any terminal, whether or not it is the one on
-screen and whether or not its command has exited. That is a change for a
+for any terminal, whether or not it is the one on
+screen and whether or not its command has exited. The `scrollback-lines` setting
+(10,000 lines per terminal by default, described in terminal.md) does not decide
+how far a read reaches: its floor is 1,000 lines, above the 200 a read may ask
+for. That is a change for a
 terminal that is not displayed: such a read used to return one viewport however
 many lines were asked for, so a consumer that assumed a screenful now gets as
 many lines as it requested.
