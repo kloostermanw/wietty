@@ -17,7 +17,8 @@ Both are opt in and off by default, and both are scoped to a trusted local
 network. The iPadOS client ([wietty-ios](https://github.com/kloostermanw/wietty-ios))
 speaks the same protocol, version 2 of the terminal stream included, and shares the
 controlling side with this app through the
-[wietty-shared](https://github.com/kloostermanw/wietty-shared) package. Any client reachable outside the LAN remains future work.
+[wietty-shared](https://github.com/kloostermanw/wietty-shared) package. Any client
+reachable outside the LAN remains future work.
 
 ## Served side: browser based remote terminal
 
@@ -63,6 +64,11 @@ The path from the browser back to the terminal, in order:
   the page without reconnecting (`error` shows its message in red), and input goes
   out as binary `data` frames of at most 64 KiB of payload. The page sends no
   `resize` and has no fit addon: the terminal stays at the grid the server says.
+  Its terminal is made with a `scrollback` of 100,000 lines, the ceiling of the
+  serving Mac's `scrollback-lines` setting, so the page keeps whatever history a
+  snapshot brings; the page cannot know the setting, and xterm.js's default of
+  1,000 lines would keep only the last thousand. `ScrollbackControlTests` reads
+  the served page for that option; a real browser's behaviour was not observed.
 - **`RemoteServer.swift`.** A Hummingbird HTTP plus WebSocket server bound to
   `0.0.0.0` on the remote port (7434 by default), separate from the loopback
   MCP server. It serves the web client, the token gated session and workspace
@@ -414,7 +420,7 @@ message being written, so the viewer can answer it only once the whole snapshot 
 reached it. A link too slow to carry a snapshot within the 30 second ping period is
 therefore closed in the middle of the snapshot, and a client that reconnects is sent
 the same snapshot and closed again. At the default 10,000 lines of history (0.63 to
-1.2 MB) that takes a link under roughly 170 to 330 kbit/s; at 100,000 lines (6.4 to
+1.2 MB) that takes a link under roughly 170 to 320 kbit/s; at 100,000 lines (6.4 to
 12.3 MB of ordinary output) one of 1.7 to 3.3 Mbit/s, which a VPN over a mobile link
 can be, and for the 34 MB measured with densely coloured output one of about
 9 Mbit/s. Nothing on the server caps a snapshot but the serving Mac's

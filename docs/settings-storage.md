@@ -44,19 +44,24 @@ colours are libghostty's to apply, so they live in `ghostty.cfg` rather than her
 "What does not live in the file" below).
 
 `scrollback-lines` is how much history each terminal's screen model keeps, which is
-the history a viewer on another device is sent when it attaches: the iPad, the browser
-and the pane of another Mac. It costs memory: about 1 KiB
+the history a viewer on another device is sent when it attaches. The pane of another
+Mac and the browser page can scroll back through it; the iPad is sent it and shows
+the screen only. It costs memory: about 1 KiB
 per line once a terminal has filled it, so the default of 10,000 lines is about 10 MiB
 per terminal and the maximum of 100,000 about 100 MiB. A value outside 1,000 to
 100,000 is brought to the nearer end when the file is read, and one that is not a
 number reads as the default. A change applies to terminals opened afterwards. Its
-control is the "Scrollback" stepper in Settings, General, under "Terminal history",
-which moves in steps of 1,000 (see `docs/AsciiScreens/SettingsView.md`); a value typed
-into the file by hand need not be a multiple of that. The setting does not bound the
+control is the "Scrollback" stepper in Settings, General, under "Terminal history"
+(see `docs/AsciiScreens/SettingsView.md`). A value typed into the file by hand need
+not be a multiple of 1,000: it is kept and shown as it is, opening Settings does not
+rewrite it, and a click on the stepper moves it to the next multiple of 1,000 in that
+direction (1,500 goes up to 2,000 and down to 1,000). The setting does not bound the
 history this Mac's own pane scrolls through, nor what the pane of a terminal on
 another Mac keeps: both are the surface's, sized by Ghostty's `scrollback-limit` (in
-bytes) in your Ghostty configuration, a key Wietty never writes. It does not decide how
-far an MCP read reaches either, since `get_process_output` returns at most 200 lines.
+bytes) in your Ghostty configuration, a key Wietty never writes. At the default and
+above it does not decide how far an MCP read reaches either, since
+`get_process_output` returns at most 200 lines; set near the floor it can shorten a
+read of long, wrapped lines (see terminal.md, "Reading a terminal's output").
 Like the
 ports, the line is written at its default too, so a file from before the setting
 existed reads as 10,000 and gains this one line, under `mcp-port`, the next time

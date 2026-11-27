@@ -89,10 +89,11 @@ last, up to the number asked for and never more than 200 (`lines`, 50 when
 left out): a line the terminal wrapped is one line, and
 the blank rows below the last line are left off. It reaches into scrollback
 for any terminal, whether or not it is the one on
-screen and whether or not its command has exited. The `scrollback-lines` setting
-(10,000 lines per terminal by default, described in terminal.md) does not decide
-how far a read reaches: its floor is 1,000 lines, above the 200 a read may ask
-for. That is a change for a
+screen and whether or not its command has exited. At the default of the `scrollback-lines` setting
+(10,000 lines per terminal, described in terminal.md) the cap of 200 decides how
+far a read reaches, not the setting. With the setting near its floor of 1,000 a
+read of long lines can come back shorter than asked: a wrapped line is one line
+of the read and several of the history. That is a change for a
 terminal that is not displayed: such a read used to return one viewport however
 many lines were asked for, so a consumer that assumed a screenful now gets as
 many lines as it requested.
