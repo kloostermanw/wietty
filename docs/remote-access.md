@@ -638,7 +638,11 @@ pushed snapshot shows that the row which carried the selected session now
 carries another one, that one is selected, and the pane shows the replacement
 (`PaneRouter.remoteRowsChanged`). That holds for a restart from the sidebar row,
 from another viewer and on the serving Mac itself too. A row that is gone
-(closed) is not followed, and the pane stays on the stopped screen. A refusal,
+(closed) is not followed, and the pane stays on the stopped screen, which has no
+Restart button while no row of the last snapshot carries its session. A restart
+is not awaited, so a second press for the same session (on the stopped screen
+or on the sidebar row) is dropped until the selection moves, the connection's
+action error changes or 5 seconds pass. A refusal,
 and a serving Wietty that is too old or newer, show a message that fills the
 pane, and nothing is retried.
 
